@@ -9,6 +9,8 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-07-24
+
 ### Added
 
 - **Eleven-vendor parity in the macOS menu bar app.** The selector previously
@@ -929,7 +931,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.13.0...v0.14.0
