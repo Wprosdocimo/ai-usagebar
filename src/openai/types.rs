@@ -212,6 +212,11 @@ enum WindowKind {
     Weekly,
 }
 
+/// `limit_window_seconds` value the Codex API reports for the 5-hour window.
+pub(crate) const SESSION_WINDOW_SECS: u64 = 18_000;
+/// `limit_window_seconds` value the Codex API reports for the 7-day window.
+pub(crate) const WEEKLY_WINDOW_SECS: u64 = 604_800;
+
 fn classify_rate_limit(
     rate_limit: RateLimit,
 ) -> AppResult<(Option<UsageWindow>, Option<UsageWindow>)> {
@@ -269,8 +274,8 @@ fn window_kind(window: &Window) -> Option<WindowKind> {
     // OpenAI temporarily moved the 7d window into `primary_window` and omitted
     // `secondary_window`; wire position is not semantic (openai/codex#32707).
     match window.limit_window_seconds {
-        18_000 => Some(WindowKind::Session),
-        604_800 => Some(WindowKind::Weekly),
+        s if s == SESSION_WINDOW_SECS as i64 => Some(WindowKind::Session),
+        s if s == WEEKLY_WINDOW_SECS as i64 => Some(WindowKind::Weekly),
         _ => None,
     }
 }
@@ -288,8 +293,8 @@ fn duplicate_window_error(kind: WindowKind, seconds: i64) -> AppError {
 impl WindowKind {
     fn default_duration(self) -> chrono::Duration {
         match self {
-            Self::Session => chrono::Duration::hours(5),
-            Self::Weekly => chrono::Duration::days(7),
+            Self::Session => chrono::Duration::seconds(SESSION_WINDOW_SECS as i64),
+            Self::Weekly => chrono::Duration::seconds(WEEKLY_WINDOW_SECS as i64),
         }
     }
 }
@@ -427,6 +432,21 @@ mod tests {
         let error = response.into_snapshot(None).unwrap_err().to_string();
         assert!(error.contains("duplicate OpenAI 7d window"));
         assert!(error.contains("limit_window_seconds=604800"));
+    }
+
+    #[test]
+    fn unknown_duration_falls_back_to_wire_position() {
+        // A `limit_window_seconds` value we do not recognize (e.g. 3600) is
+        // classified by wire position: `primary_window` → session,
+        // `secondary_window` → weekly.
+        let body = r#"{"rate_limit":{
+            "primary_window":{"used_percent":10,"limit_window_seconds":3600},
+            "secondary_window":{"used_percent":20,"limit_window_seconds":3600}
+        }}"#;
+        let response: UsageResponse = serde_json::from_str(body).unwrap();
+        let snapshot = response.into_snapshot(None).unwrap();
+        assert_eq!(snapshot.session.unwrap().utilization_pct, 10);
+        assert_eq!(snapshot.weekly.unwrap().utilization_pct, 20);
     }
 
     #[test]

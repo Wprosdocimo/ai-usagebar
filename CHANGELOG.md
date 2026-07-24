@@ -21,6 +21,9 @@ Each release is also published at
   absent in the widget, tooltip, TUI, GNOME extension, and macOS menu bar.
   Accounts that still receive both 5-hour and 7-day windows keep the existing
   layout and placeholders.
+- **macOS menu bar now shows OpenAI pace markers.** The `{session_elapsed}` and
+  `{weekly_elapsed}` cross-vendor aliases were never registered for OpenAI, so
+  the fields always rendered empty and the pace markers never appeared.
 
 ## [0.16.0] — 2026-07-22
 

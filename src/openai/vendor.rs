@@ -61,6 +61,8 @@ pub fn build_placeholders(
         ("session_reset", session.reset.clone()),
         ("weekly_pct", weekly.pct.clone()),
         ("weekly_reset", weekly.reset.clone()),
+        ("session_elapsed", session.elapsed.clone()),
+        ("weekly_elapsed", weekly.elapsed.clone()),
         ("plan", snap.plan.clone()),
         ("oai_plan", snap.plan.clone()),
         ("oai_session_pct", session.pct),
@@ -80,6 +82,7 @@ pub fn build_placeholders(
     ])
 }
 
+#[derive(Default)]
 struct WindowPlaceholderValues {
     pct: String,
     reset: String,
@@ -94,37 +97,21 @@ fn window_placeholders(
     now: DateTime<Utc>,
 ) -> WindowPlaceholderValues {
     let Some(window) = window else {
-        return WindowPlaceholderValues::empty();
+        return WindowPlaceholderValues::default();
     };
-    let pace = window_pacing(window, opts, now);
+    let pace = pacing::calc(
+        window.utilization_pct,
+        window.resets_at,
+        now,
+        window.window_duration,
+        opts.pace_tolerance,
+    );
     WindowPlaceholderValues {
         pct: window.utilization_pct.to_string(),
         reset: countdown::format(window.resets_at, now),
         elapsed: pace.elapsed_pct.to_string(),
         ratio_pace: pace.ratio_pace.glyph().to_string(),
         point_pace: pace.point_pace.glyph().to_string(),
-    }
-}
-
-fn window_pacing(window: &UsageWindow, opts: &RenderOpts, now: DateTime<Utc>) -> pacing::Pacing {
-    pacing::calc(
-        window.utilization_pct,
-        window.resets_at,
-        now,
-        window.window_duration,
-        opts.pace_tolerance,
-    )
-}
-
-impl WindowPlaceholderValues {
-    fn empty() -> Self {
-        Self {
-            pct: String::new(),
-            reset: String::new(),
-            elapsed: String::new(),
-            ratio_pace: String::new(),
-            point_pace: String::new(),
-        }
     }
 }
 
@@ -373,6 +360,12 @@ mod tests {
         assert_eq!(values["oai_weekly_pct"], "0");
         assert_eq!(values["session_pct"], "1");
         assert_eq!(values["weekly_pct"], "0");
+        // Cross-vendor elapsed aliases must mirror the oai_* values so the
+        // macOS menu bar can render pace markers for OpenAI.
+        assert_eq!(values["session_elapsed"], values["oai_session_elapsed"]);
+        assert_eq!(values["weekly_elapsed"], values["oai_weekly_elapsed"]);
+        assert!(!values["session_elapsed"].is_empty());
+        assert!(!values["weekly_elapsed"].is_empty());
     }
 
     #[test]
@@ -398,6 +391,38 @@ mod tests {
         let values = build_placeholders(&s, &opts(), Utc::now());
         assert_eq!(values["oai_session_pct"], "");
         assert_eq!(values["oai_weekly_pct"], "66");
+    }
+
+    #[test]
+    fn no_windows_uses_plan_only_format_and_reports_absence() {
+        let mut s = sample();
+        s.session = None;
+        s.weekly = None;
+        let out = render(&oc(s.clone()), &s, &Theme::default(), &opts(), Utc::now());
+        assert!(out.text.contains("ChatGPT Plus"));
+        assert!(!out.text.contains('%'));
+        assert!(out.tooltip.contains("no usage windows reported"));
+        assert!(!out.tooltip.contains("Codex 5h"));
+        assert!(!out.tooltip.contains("Codex weekly"));
+        // No windows means max utilization is 0, i.e. the lowest severity.
+        assert_eq!(severity(&s), PaceSeverity::Low);
+    }
+
+    #[test]
+    fn session_only_snapshot_renders_default_with_weekly_placeholders_empty() {
+        let mut s = sample();
+        s.weekly = None;
+        let out = render(&oc(s.clone()), &s, &Theme::default(), &opts(), Utc::now());
+        assert!(out.text.contains("1%"));
+        assert!(out.tooltip.contains("Codex 5h"));
+        assert!(!out.tooltip.contains("Codex weekly"));
+
+        let values = build_placeholders(&s, &opts(), Utc::now());
+        assert_eq!(values["oai_session_pct"], "1");
+        assert_eq!(values["oai_weekly_pct"], "");
+        assert_eq!(values["oai_weekly_reset"], "");
+        assert_eq!(values["oai_weekly_elapsed"], "");
+        assert_eq!(values["weekly_pct"], "");
     }
 
     #[test]

@@ -951,6 +951,23 @@ mod tests {
     }
 
     #[test]
+    fn openai_no_windows_renders_message() {
+        let snap = OpenAiSnapshot {
+            plan: "ChatGPT Plus".into(),
+            session: None,
+            weekly: None,
+            code_review: None,
+            credits: None,
+            source: OpenAiSource::CodexOauth,
+        };
+        let sections = sections_for(&ready(VendorSnapshot::Openai(snap)), now(), 5);
+        assert!(sections.iter().any(|s| matches!(
+            s,
+            Section::Text { value, .. } if value.contains("no usage windows reported")
+        )));
+    }
+
+    #[test]
     fn loading_state_yields_loading_section() {
         let sections = sections_for(&TabState::Loading, now(), 5);
         assert!(sections.iter().any(|s| matches!(
