@@ -9,6 +9,22 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- **OpenAI's temporary weekly-only Codex limit is labeled and rendered
+  correctly.** During the July 2026 rollout, OpenAI moved the 7-day window into
+  `primary_window` and omitted `secondary_window`
+  ([openai/codex#32707](https://github.com/openai/codex/issues/32707)).
+  ai-usagebar treated wire position as meaning, so the real weekly percentage
+  appeared under "Codex 5h" while a fabricated 0% weekly gauge was shown.
+  Windows are now classified from `limit_window_seconds`; absent windows stay
+  absent in the widget, tooltip, TUI, GNOME extension, and macOS menu bar.
+  Accounts that still receive both 5-hour and 7-day windows keep the existing
+  layout and placeholders.
+- **macOS menu bar now shows OpenAI pace markers.** The `{session_elapsed}` and
+  `{weekly_elapsed}` cross-vendor aliases were never registered for OpenAI, so
+  the fields always rendered empty and the pace markers never appeared.
+
 ## [0.16.0] — 2026-07-22
 
 ### Added
