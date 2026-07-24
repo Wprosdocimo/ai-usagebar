@@ -219,7 +219,8 @@ func testParserBalances() {
     assertEqual(klo?.hasUsageWindows, false, "kilo suppresses 5h/7d windows")
 
     // Moonshot: balance at 21 (km_balance) — proves the dispatch keys on the
-    // selected vendor, not on vendor_short "kmi" (which collides with Kimi).
+    // selected vendor, not on vendor_short ("kmi" collided with Kimi on
+    // binaries up to 0.16).
     let moon = snapshot(FORMAT, vendor: "moonshot",
                         fields: fields(through: 21, set: [21: "¥42.00"]))
     assertEqual(moon?.creditBalance, "¥42.00", "moonshot balance via km_balance")

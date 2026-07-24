@@ -406,9 +406,9 @@ func parse(_ text: String, vendor: String) -> Snapshot? {
     let limit = t(9)
     let extra: (pct: Int, spent: String, limit: String)? =
         (spent.isEmpty || limit.isEmpty) ? nil : n(7).map { (pct: $0, spent: spent, limit: limit) }
-    // Dispatch the balance by the SELECTED vendor, not by vendor_short: Kimi and
-    // Moonshot both report vendor_short = "kmi" in the Rust binary, so keying on
-    // vendor_short would collide and read the wrong field.
+    // Dispatch the balance by the SELECTED vendor, not by vendor_short: binaries
+    // up to 0.16 report vendor_short = "kmi" for both Kimi and Moonshot, so
+    // keying on vendor_short would collide and read the wrong field.
     let balanceFieldIndex: Int?
     switch vendor {
     case "openrouter": balanceFieldIndex = 17

@@ -61,6 +61,10 @@ Each release is also published at
 
 ### Fixed
 
+- **Moonshot's `{vendor_short}` no longer collides with Kimi's.** Both reported
+  `kmi`; Moonshot now reports `msh`. Anything dispatching on `vendor_short`
+  (custom Waybar formats, desktop integrations) could attribute one vendor's
+  data to the other.
 - **Ring pace arc.** The overshoot arc previously restarted at 12 o'clock and
   overpainted the start of the calm fill; it now spans from the elapsed marker
   to the current percentage.

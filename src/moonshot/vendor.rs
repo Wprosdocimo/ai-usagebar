@@ -21,7 +21,7 @@ pub const DEFAULT_FORMAT: &str = "{km_balance}";
 pub fn build_placeholders(snap: &MoonshotSnapshot) -> HashMap<&'static str, String> {
     placeholders(vec![
         ("icon", "󰚩".to_string()),
-        ("vendor_short", "kmi".to_string()),
+        ("vendor_short", "msh".to_string()),
         // Cross-vendor aliases — Kimi has no rate-limit windows here.
         ("session_pct", "0".to_string()),
         ("session_reset", "—".to_string()),
