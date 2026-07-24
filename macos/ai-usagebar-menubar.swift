@@ -75,9 +75,11 @@ let POINT_CRITICAL_MIN = 10
 // "Fable") from the API's `limits[]`; empty on older binaries → the row falls
 // back to the flat `{sonnet_*}` window and the "Sonnet only" label. The trailing
 // `*_elapsed` fields (13-15) carry the meta (pace) position; `vendor_short`
-// (16) lets balance-only vendors suppress meaningless quota rows; the trailing
-// OpenRouter balance (17) is shown as credits. A final literal sentinel absorbs
-// the widget's stale suffix, preserving these fields.
+// (16) lets balance-only vendors suppress meaningless quota rows. The balance
+// fields (17-22) carry the per-vendor credits — only the selected vendor's is
+// populated — and the `aapi_*` fields (23-26) carry the Anthropic API headline
+// plus its spend-vs-limit bar. A final literal sentinel absorbs the widget's
+// stale suffix, preserving these fields.
 let FORMAT = "{plan};;{session_pct};;{session_reset};;{weekly_pct};;{weekly_reset};;" +
              "{sonnet_pct};;{sonnet_reset};;{extra_pct};;{extra_spent};;{extra_limit};;" +
              "{scoped_model};;{scoped_pct};;{scoped_reset};;" +
@@ -520,21 +522,25 @@ func tomlValueInText(_ text: String, section: String, key: String) -> String? {
         guard inSection, !line.hasPrefix("#") else { continue }
         let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
         guard parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces) == key else { continue }
-        // Strip an inline comment before evaluating the value: `enabled = false  # opt-in`
-        // is a bare boolean, not a string starting with '#'.
-        var value = parts[1].trimmingCharacters(in: .whitespaces)
-        if let hash = value.firstIndex(of: "#") {
-            value = String(value[..<hash]).trimmingCharacters(in: .whitespaces)
-        }
+        // A `#` starts a comment only outside quotes. Check for a quoted value
+        // first so `api_key = "sk-abc#def"` keeps its embedded `#` instead of
+        // being truncated into an unterminated string.
+        let value = parts[1].trimmingCharacters(in: .whitespaces)
         if let quote = value.first, quote == "\"" || quote == "'" {
             let content = value.dropFirst()
             guard let end = content.firstIndex(of: quote) else { continue }
             return String(content[..<end])
         }
+        // Unquoted value: strip a trailing inline comment — `enabled = false
+        // # opt-in` is a bare boolean, not a string starting with '#'.
+        var bare = value
+        if let hash = bare.firstIndex(of: "#") {
+            bare = String(bare[..<hash]).trimmingCharacters(in: .whitespaces)
+        }
         // Bare tokens (booleans, numbers) reach here. Only `true`/`false` are
         // meaningful for the keys this reader serves; everything else is left
         // for the caller to ignore.
-        return value
+        return bare
     }
     return nil
 }
@@ -818,7 +824,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // one is checked. Kept as a field so the menu owns it for its lifetime.
     let vendorSubmenu = NSMenu()
     let vendorSubmenuItem = NSMenuItem(title: "Trocar vendor", action: nil, keyEquivalent: "")
-    var vendorItems: [NSMenuItem] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -1092,7 +1097,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // refresh via the shared settings-change observer.
     func rebuildVendorSubmenu() {
         vendorSubmenu.removeAllItems()
-        vendorItems = []
         let active = VENDOR
         let configured = VENDOR_AUTH.filter { vendorEnabled($0) && ($0.id == active || vendorConfigured($0)) }
         if configured.isEmpty {
@@ -1108,7 +1112,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             it.representedObject = v.id
             it.state = (v.id == active) ? .on : .off
             vendorSubmenu.addItem(it)
-            vendorItems.append(it)
         }
         vendorSubmenuItem.isHidden = false
     }

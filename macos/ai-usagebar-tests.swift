@@ -1,11 +1,10 @@
 // Test harness for ai-usagebar-menubar.swift.
 //
 // The app is a single Swift file with no Xcode project, so there is no XCTest
-// bundle. Instead, the entry point (`app.run()`) is guarded by
-// `#if !SWIFT_TEST_HARNESS`, and this file is compiled together with the app in
-// one module (the only top-level code, so Swift treats it as the main file),
-// calling the app's helpers (arcAngles, tomlValueInText, defaultEnabled, parse)
-// directly.
+// bundle. Instead, the app's `@main` entry point is guarded by
+// `#if !SWIFT_TEST_HARNESS`, and this file — compiled together with the app in
+// one module — supplies its own `@main TestRunner`, calling the app's helpers
+// (arcAngles, tomlValueInText, defaultEnabled, parse) directly.
 //
 // Run:  ./macos/run-tests.sh
 // Gate: pure-logic regression coverage for the review fixes.
@@ -116,6 +115,22 @@ func testTomlParsing() {
     """
     assertEqual(tomlValueInText(quoted, section: "grok", key: "api_key"), "sk-test-123",
                 "quoted api_key")
+
+    // `#` inside a quoted value is data, not a comment.
+    let hashInQuotes = """
+    [grok]
+    api_key = "sk-abc#def"
+    """
+    assertEqual(tomlValueInText(hashInQuotes, section: "grok", key: "api_key"), "sk-abc#def",
+                "quoted api_key keeps an embedded #")
+
+    // Trailing comment after a quoted value.
+    let quotedComment = """
+    [grok]
+    api_key = "x" # trailing comment
+    """
+    assertEqual(tomlValueInText(quotedComment, section: "grok", key: "api_key"), "x",
+                "quoted api_key with trailing comment")
 
     // Custom api_key_env.
     let customEnv = """

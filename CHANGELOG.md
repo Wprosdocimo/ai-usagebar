@@ -37,11 +37,13 @@ Each release is also published at
 
 - **Optional ring indicator layout in the macOS app.** A new "Estilo do
   indicador" preference selects between the default block bars (`░█`) and a
-  Core Graphics ring. The ring paints the usage fraction as a severity-colored
-  arc over a faint track, and honors the pace marker the same way the block bar
-  does (calm fill up to a blue tick at the elapsed position, warning color on
-  the overshoot). Both the menu bar and the dropdown rows honor the choice. The
-  track adapts to the effective appearance — faint white on dark menu bars /
+  ring drawn with `NSBezierPath` (AppKit). The ring paints the usage fraction
+  as a severity-colored arc over a faint track, and honors the pace marker the
+  same way the block bar does (calm fill up to the lesser of the current
+  percentage and the blue tick at the elapsed position, warning color on any
+  fill past the tick). Both the menu bar and the dropdown rows honor the
+  choice. The track adapts to the effective appearance — faint white on dark
+  menu bars /
   wallpapers (where the block bar's dark `COLOR_EMPTY` would be invisible),
   `COLOR_EMPTY` on light ones.
 

@@ -3,7 +3,9 @@
 A native macOS menu bar app for [`ai-usagebar`](../README.md). It shows the
 **5-hour (session)** and **weekly** usage bars — plus an optional
 dynamic **model-scoped** bar (for example, Fable) and **extra-usage (cost)**
-bar — in the menu bar next to the clock, with a native dropdown. It's the macOS counterpart to the [GNOME Shell
+bar — in the menu bar next to the clock, with a native dropdown. For most
+vendors there are no usage windows to chart, so showing their **balance/credits**
+is the primary display mode (see [Vendor scope](#vendor-scope)). It's the macOS counterpart to the [GNOME Shell
 extension](https://github.com/akitaonrails/ai-usagebar/tree/main/gnome-extension): same binary, same One Dark colors and
 severity thresholds.
 
@@ -93,18 +95,20 @@ reset (including a displayed `—`) retain their row but do not draw a marker.
 ## Indicator style
 
 The "Estilo do indicador" preference chooses between **block bars** (`░█`, the
-default) and a **ring** (`○`) drawn with Core Graphics. The ring paints the
-usage fraction as a severity-colored arc over a faint track, with the same pace
-marker as the block bar: calm fill from 12 o'clock to the elapsed tick, then
-warning-colored overshoot from the tick to the current percentage. Both the menu
+default) and a **ring** (`○`) drawn with `NSBezierPath` (AppKit). The ring paints
+the usage fraction as a severity-colored arc over a faint track, with the same
+pace marker as the block bar: calm fill from 12 o'clock up to the lesser of the
+current percentage and the elapsed tick; any fill past the tick is
+warning-colored. Both the menu
 bar and the dropdown rows honor the choice. The track adapts to the effective
 appearance — faint white on dark menu bars (where the dark `COLOR_EMPTY` would
 be invisible) and `COLOR_EMPTY` on light ones.
 
 ## Quick vendor switch
 
-A **"Trocar vendor"** submenu in the dropdown (between the usage rows and
-Preferences) lists only configured vendors, with a checkmark on the active one.
+A **"Trocar vendor"** submenu in the dropdown (between "Atualizar agora" /
+"Abrir TUI" and "Preferências…") lists only configured vendors, with a
+checkmark on the active one.
 Selecting one switches immediately, without opening Preferences.
 
 ## How it works

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Run the pure-logic test harness for the menu bar app.
 #
-# The app file is compiled with -D SWIFT_TEST_HARNESS, which strips its top-level
-# entry point (app.run()); the test file then provides the only top-level code in
-# the combined module, so Swift treats it as the main file. No Xcode project or
-# XCTest bundle is needed. Internal helpers are reached directly (no `public`
+# The app file is compiled with -D SWIFT_TEST_HARNESS, which strips its @main
+# entry point (app.run()); the test file supplies its own @main TestRunner
+# instead, so the combined module has exactly one entry point. No Xcode project
+# or XCTest bundle is needed. Internal helpers are reached directly (no `public`
 # ceremony).
 #
 # Run:  ./macos/run-tests.sh

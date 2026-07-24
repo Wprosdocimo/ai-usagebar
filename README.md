@@ -259,7 +259,7 @@ It runs in any terminal emulator (Kitty, Alacritty, Foot, Ghostty, etc.), works 
 
 The Waybar widget is optional. The TUI is the best way to see every enabled vendor at once, even if you never set up the widget.
 
-## Native desktop integrations (v0.13)
+## Native desktop integrations
 
 The [macOS menu bar app](macos/README.md) supports eleven vendors — **Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok (xAI), and Anthropic (API)**. The [GNOME Shell extension](gnome-extension/README.md) supports **Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, and Google Antigravity**, whose two independent quota pools it renders as grouped rows. macOS does not support Antigravity: the binary only discovers its local server on Linux.
 
