@@ -3,7 +3,9 @@
 A native macOS menu bar app for [`ai-usagebar`](../README.md). It shows the
 **5-hour (session)** and **weekly** usage bars — plus an optional
 dynamic **model-scoped** bar (for example, Fable) and **extra-usage (cost)**
-bar — in the menu bar next to the clock, with a native dropdown. It's the macOS counterpart to the [GNOME Shell
+bar — in the menu bar next to the clock, with a native dropdown. For most
+vendors there are no usage windows to chart, so showing their **balance/credits**
+is the primary display mode (see [Vendor scope](#vendor-scope)). It's the macOS counterpart to the [GNOME Shell
 extension](https://github.com/akitaonrails/ai-usagebar/tree/main/gnome-extension): same binary, same One Dark colors and
 severity thresholds.
 
@@ -11,12 +13,26 @@ A single Swift file (`NSStatusItem` + `NSAttributedString`); no Xcode project.
 
 > **Installing?** Follow the step-by-step in **[INSTALL.md](INSTALL.md)**.
 
-## v0.13 vendor scope
+## Vendor scope
 
-The selector supports **Anthropic, OpenAI, Z.AI, OpenRouter, and DeepSeek**.
-**Kimi is widget/TUI-only in this release**; desktop protocol and marker parity
-for Kimi is dedicated future work. DeepSeek is balance-only, so the app shows
-its balance in the header and suppresses the 5h/weekly quota rows.
+The selector supports **eleven vendors** that ship in the binary:
+
+- **Rate-limit windows (5h / weekly):** Anthropic (Claude), OpenAI (Codex), and
+  Z.AI (GLM).
+- **Balance-only:** OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok
+  (xAI), and Anthropic (API). These have no 5h/weekly quota windows, so the app
+  shows their balance/credits in the header (`cr <amount>`) and suppresses the
+  session/weekly rows. Anthropic (API) additionally renders a spend-vs-limit
+  bar when a monthly limit is configured.
+
+Only **enabled** vendors appear in the selector. The opt-in balance vendors
+(DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok, Anthropic API) default to
+disabled in the Rust config, matching `src/config.rs`; set
+`[vendor].enabled = true` (or save an API key via the TUI) to turn one on.
+
+Google Antigravity is **not** supported in the macOS app: the binary only
+discovers its local language server on Linux, so on macOS it has no reachable
+quota source.
 
 ## Requirements
 
@@ -31,6 +47,7 @@ its balance in the header and suppresses the 5h/weekly quota rows.
 ```bash
 cd macos
 ./build.sh                 # swiftc -O → ./ai-usagebar-menubar
+./run-tests.sh             # optional: pure-logic test harness
 ./ai-usagebar-menubar &    # appears in the menu bar (no Dock icon)
 ```
 
@@ -59,7 +76,7 @@ Settings persist in `UserDefaults` and apply **live, no rebuild**.
 | Bar width | 8 | cells per menu-bar bar (4–20) |
 | Colors (low/mid/high/critical/empty) | One Dark | bar color per severity (≥90 / ≥75 / ≥50 / else) |
 | Refresh interval | 30 s | 5–3600 |
-| Vendor | anthropic | selectors: Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek (not Kimi). Anthropic, OpenAI, and Z.AI expose generic session/weekly windows; pace markers require Anthropic elapsed placeholders. |
+| Vendor | anthropic | selectors: only enabled vendors (see [Vendor scope](#vendor-scope)). Anthropic, OpenAI, and Z.AI expose session/weekly windows; balance-only vendors show a credit balance instead. |
 | Binary path | auto | empty = `~/.cargo/bin`, Homebrew, then `PATH` |
 
 The Preferences window needs **macOS 12+** (the menu bar itself works on
@@ -74,6 +91,25 @@ point-delta colors used by the Rust widget: at
 least 10 points ahead is critical/red, 1–9 ahead is high/orange, -10 through
 on-pace is mid/yellow, and more than 10 under is low/green. Windows without a
 reset (including a displayed `—`) retain their row but do not draw a marker.
+
+## Indicator style
+
+The "Estilo do indicador" preference chooses between **block bars** (`░█`, the
+default) and a **ring** (`○`) drawn with `NSBezierPath` (AppKit). The ring paints
+the usage fraction as a severity-colored arc over a faint track, with the same
+pace marker as the block bar: calm fill from 12 o'clock up to the lesser of the
+current percentage and the elapsed tick; any fill past the tick is
+warning-colored. Both the menu
+bar and the dropdown rows honor the choice. The track adapts to the effective
+appearance — faint white on dark menu bars (where the dark `COLOR_EMPTY` would
+be invisible) and `COLOR_EMPTY` on light ones.
+
+## Quick vendor switch
+
+A **"Trocar vendor"** submenu in the dropdown (between "Atualizar agora" /
+"Abrir TUI" and "Preferências…") lists only configured vendors, with a
+checkmark on the active one.
+Selecting one switches immediately, without opening Preferences.
 
 ## How it works
 
