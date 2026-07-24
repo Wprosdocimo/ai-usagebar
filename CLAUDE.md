@@ -15,22 +15,42 @@ When cutting a new version (patch, minor, or major):
 3. **Bump `packaging/aur/PKGBUILD`** — `pkgver=X.Y.Z`, `pkgrel=1`, reset `sha256sums` to `'SKIP'`.
 4. **Bump `packaging/aur/PKGBUILD-bin`** — same `pkgver`, `pkgrel=1`, reset both
    `sha256sums_x86_64` and `sha256sums_aarch64` to `'SKIP'`.
-5. **Run gate before tagging**:
+5. **Regenerate both `.SRCINFO`s NOW, before tagging** — the release
+   workflow's `verify-version` job rejects the tag if `packaging/aur/.SRCINFO`
+   or `.SRCINFO-bin` still carry the old `pkgver` (learned at v0.17.0, which
+   never shipped for exactly this reason):
+   ```
+   cd packaging/aur && makepkg --printsrcinfo > .SRCINFO
+   # PKGBUILD-bin must be named PKGBUILD for makepkg — use a scratch dir:
+   t=$(mktemp -d) && cp PKGBUILD-bin "$t/PKGBUILD" &&
+     (cd "$t" && makepkg --printsrcinfo > .SRCINFO-bin) &&
+     cp "$t/.SRCINFO-bin" .SRCINFO-bin && rm -rf "$t"
+   ```
+   The committed files keep `sha256sums = SKIP`; CI pins the real hashes later.
+6. **Run gate before tagging**:
    ```
    cargo test                                  # 200+ tests must pass
    cargo clippy --all-targets -- -D warnings   # clean
    cargo machete                               # no unused deps
    ```
-6. **Commit, tag, push**:
+7. **Commit, tag, push**:
    ```
    git commit -m "vX.Y.Z — …"
    git tag -a vX.Y.Z -m "vX.Y.Z — …"
    git push origin main && git push origin vX.Y.Z
    ```
-7. **Wait for CI** (3–5 min): the tag push auto-triggers
+8. **Wait for CI** (3–5 min): the tag push auto-triggers
    `.github/workflows/release.yml` which builds both x86_64 and
    aarch64 tarballs and publishes a GitHub Release.
-8. **Pin the real sha256s** in both PKGBUILDs:
+9. **AUR push is automated via CI** when `AUR_SSH_KEY` is set (since
+   v0.4.4). The `publish-aur` job in `.github/workflows/release.yml`
+   runs after `build` + `release` succeed, pins the real sha256s into
+   both PKGBUILDs (steps 3-4's `'SKIP'`s), regenerates the `.SRCINFO`s,
+   and pushes via `KSXGitHub/github-actions-deploy-aur`. The manual
+   fallback below is for when the secret isn't configured or CI is
+   unavailable.
+
+   **Manual fallback** — pin the real sha256s in both PKGBUILDs first:
    ```
    cd packaging/aur
    # Source:
@@ -41,31 +61,20 @@ When cutting a new version (patch, minor, or major):
    # Bin aarch64:
    curl -sL https://github.com/akitaonrails/ai-usagebar/releases/download/vX.Y.Z/ai-usagebar-linux-aarch64.tar.gz.sha256
    ```
-9. **Regenerate `.SRCINFO`s**:
-   ```
-   cd packaging/aur && makepkg --printsrcinfo > .SRCINFO
-   # And from a scratch dir with the bin PKGBUILD: makepkg --printsrcinfo > .SRCINFO-bin
-   ```
-10. **AUR push is automated via CI** when `AUR_SSH_KEY` is set (since
-    v0.4.4). The `publish-aur` job in `.github/workflows/release.yml`
-    runs after `build` + `release` succeed, pins the real sha256s into
-    both PKGBUILDs, and pushes via `KSXGitHub/github-actions-deploy-aur`.
-    Step 10 below is the manual fallback when the secret isn't
-    configured or when CI is unavailable.
+   Then regenerate the `.SRCINFO`s exactly as in step 5 (now with the
+   real hashes), and push to the separate AUR git repos:
+   - `~/Projects/aur-ai-usagebar` → `ssh://aur@aur.archlinux.org/ai-usagebar.git`
+   - `~/Projects/aur-ai-usagebar-bin` → `ssh://aur@aur.archlinux.org/ai-usagebar-bin.git`
 
-    **Manual fallback** — separate AUR git repos:
-    - `~/Projects/aur-ai-usagebar` → `ssh://aur@aur.archlinux.org/ai-usagebar.git`
-    - `~/Projects/aur-ai-usagebar-bin` → `ssh://aur@aur.archlinux.org/ai-usagebar-bin.git`
+   **Always `git fetch origin && git reset --hard origin/master` in each
+   AUR clone first.** A previous session may have pushed an intermediate
+   release that your local clone never saw — in which case naively
+   committing on top diverges and produces a non-trivial rebase
+   conflict. The clones are throwaway: reset, then overlay the canonical
+   `packaging/aur/PKGBUILD*` + regen'd `.SRCINFO*` from the main repo,
+   commit, push.
 
-    **Always `git fetch origin && git reset --hard origin/master` in each
-    AUR clone first.** A previous session may have pushed an intermediate
-    release that your local clone never saw — in which case naively
-    committing on top diverges and produces a non-trivial rebase
-    conflict. The clones are throwaway: reset, then overlay the canonical
-    `packaging/aur/PKGBUILD*` + regen'd `.SRCINFO*` from the main repo,
-    commit, push.
-
-**Anything skipping any of 1–10 is an incomplete release.** Tags are
+**Anything skipping any of 1–9 is an incomplete release.** Tags are
 immutable; do **not** force-move a tag once it's pushed. Cut a new
 patch version instead.
 
