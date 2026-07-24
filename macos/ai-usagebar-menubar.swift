@@ -336,8 +336,8 @@ struct Snapshot {
     let plan: String
     let hasUsageWindows: Bool
     let creditBalance: String?
-    let session: Window
-    let weekly: Window
+    let session: Window?
+    let weekly: Window?
     /// The per-model weekly bar (model-scoped window, e.g. Fable, or the legacy
     /// flat sonnet window).
     let sonnet: Window?
@@ -374,6 +374,14 @@ func parse(_ text: String, vendor: String) -> Snapshot? {
         let value = t(i)
         guard value.range(of: "^-?[0-9]+$", options: .regularExpression) != nil else { return nil }
         return Int(value)
+    }
+    func quotaWindow(_ pctIndex: Int, _ resetIndex: Int, _ elapsedIndex: Int) -> Window? {
+        guard let pct = n(pctIndex), (0...100).contains(pct) else { return nil }
+        let reset = t(resetIndex)
+        return Window(
+            pct: pct,
+            reset: reset,
+            elapsed: markerElapsed(reset: reset, elapsed: n(elapsedIndex)))
     }
     // Third bar = the per-model weekly window: a non-empty scoped model is the
     // presence signal. Its reset can legitimately be unavailable, so do not
@@ -434,8 +442,8 @@ func parse(_ text: String, vendor: String) -> Snapshot? {
     return Snapshot(plan: t(0),
                     hasUsageWindows: !balanceOnly,
                     creditBalance: displayBalance,
-                    session: Window(pct: n(1) ?? 0, reset: t(2), elapsed: markerElapsed(reset: t(2), elapsed: n(13))),
-                    weekly: Window(pct: n(3) ?? 0, reset: t(4), elapsed: markerElapsed(reset: t(4), elapsed: n(14))),
+                    session: quotaWindow(1, 2, 13),
+                    weekly: quotaWindow(3, 4, 14),
                     sonnet: sonnet,
                     sonnetLabel: sonnetLabel,
                     extra: aapiExtra ?? extra)
@@ -1045,11 +1053,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let creditBalance = s.creditBalance {
             title.append(run("cr ", secondaryTextColor))
             title.append(run(creditBalance, primaryTextColor))
-        } else if s.hasUsageWindows && SHOW_SESSION {
-            seg("5h", s.session.pct, "\(s.session.pct)%", s.session.elapsed)
+        } else if s.hasUsageWindows && SHOW_SESSION, let session = s.session {
+            seg("5h", session.pct, "\(session.pct)%", session.elapsed)
         }
-        if s.creditBalance == nil && s.hasUsageWindows && SHOW_WEEKLY {
-            seg("7d", s.weekly.pct, "\(s.weekly.pct)%", s.weekly.elapsed)
+        if s.creditBalance == nil && s.hasUsageWindows && SHOW_WEEKLY, let weekly = s.weekly {
+            seg("7d", weekly.pct, "\(weekly.pct)%", weekly.elapsed)
         }
         if SHOW_EXTRA, let e = s.extra { seg("ex", e.pct, e.spent, nil) } // $ budget → no meta
         statusItem.button?.attributedTitle = title.length > 0 ? title : run("ai", secondaryTextColor)
@@ -1078,12 +1086,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             rows["session"]?.attributedTitle = run("Credits      \(creditBalance)", .labelColor)
             rows["weekly"]?.isHidden = true
             rows["sonnet"]?.isHidden = true
-        } else if s.hasUsageWindows {
-            row("session", "Session", s.session.pct, "\(s.session.pct)%", s.session.reset, s.session.elapsed)
-            row("weekly", "Weekly", s.weekly.pct, "\(s.weekly.pct)%", s.weekly.reset, s.weekly.elapsed)
         } else {
-            rows["session"]?.isHidden = true
-            rows["weekly"]?.isHidden = true
+            if s.hasUsageWindows, let session = s.session {
+                row("session", "Session", session.pct, "\(session.pct)%", session.reset, session.elapsed)
+            } else { rows["session"]?.isHidden = true }
+            if s.hasUsageWindows, let weekly = s.weekly {
+                row("weekly", "Weekly", weekly.pct, "\(weekly.pct)%", weekly.reset, weekly.elapsed)
+            } else { rows["weekly"]?.isHidden = true }
         }
         if let sn = s.sonnet { row("sonnet", s.sonnetLabel, sn.pct, "\(sn.pct)%", sn.reset, sn.elapsed) }
         else { rows["sonnet"]?.isHidden = true }

@@ -254,7 +254,7 @@ func testParserBalances() {
                        ]))
     assertEqual(cld?.hasUsageWindows, true, "anthropic shows windows")
     assertNil(cld?.creditBalance, "anthropic has no balance")
-    assertEqual(cld?.session.pct, 42, "anthropic session pct")
+    assertEqual(cld?.session?.pct, 42, "anthropic session pct")
 }
 
 // ─── Run ─────────────────────────────────────────────────────────────────
