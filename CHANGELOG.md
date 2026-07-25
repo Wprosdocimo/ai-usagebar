@@ -9,6 +9,13 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- **TUI redraws on terminal resize.** The crossterm reader thread discarded
+  `Event::Resize`, so maximizing or restoring the terminal left the UI painted
+  in a corner of the alternate screen until a manual `R`. Resize events are now
+  forwarded to the main loop, which resizes the viewport and redraws.
+
 ## [0.17.1] — 2026-07-24
 
 ### Added
