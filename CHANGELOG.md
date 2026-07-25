@@ -9,6 +9,12 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed terminal resize no longer exits the TUI.** A transient
+  `terminal.resize` error (e.g. an ioctl failure) now just skips that resize
+  instead of tearing down the whole UI; the next resize or redraw recovers.
+
 ## [0.17.2] — 2026-07-25
 
 ### Fixed

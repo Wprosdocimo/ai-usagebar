@@ -189,7 +189,10 @@ where
                         // terminal doesn't answer. resize() for Fullscreen
                         // clears the viewport + resets the diff buffer without
                         // that round-trip; the next draw fills the new area.
-                        terminal.resize(Rect::new(0, 0, cols, rows))?;
+                        // Ignore the result: a failed resize (e.g. a transient
+                        // ioctl error) must not tear down the whole TUI — the
+                        // next successful resize or redraw recovers.
+                        let _ = terminal.resize(Rect::new(0, 0, cols, rows));
                         continue;
                     }
                     InputEvent::Key(k) => k,
