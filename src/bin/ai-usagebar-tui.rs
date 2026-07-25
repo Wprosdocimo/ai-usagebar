@@ -26,6 +26,7 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::layout::Rect;
 use reqwest::Client;
 use tokio::sync::mpsc;
 
@@ -127,15 +128,24 @@ where
     // raced each other on `event::read()`, so keypresses could be consumed by
     // an orphan and lost. A dedicated thread also means a slow branch can never
     // delay input.
-    let (key_tx, mut key_rx) = mpsc::unbounded_channel::<event::KeyEvent>();
+    //
+    // Resize must wake the loop too: discarding `Event::Resize` left the
+    // alternate screen at the previous paint size (UI stuck in a corner after
+    // maximize, or ghost cells after shrink) until a keypress forced a draw.
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<InputEvent>();
     std::thread::spawn(move || {
         loop {
             // A blocking read is fine here: this thread does nothing else, and
             // the channel send wakes the runtime.
             match event::read() {
                 Ok(Event::Key(k)) => {
-                    if key_tx.send(k).is_err() {
+                    if input_tx.send(InputEvent::Key(k)).is_err() {
                         return; // receiver gone: the TUI is shutting down.
+                    }
+                }
+                Ok(Event::Resize(cols, rows)) => {
+                    if input_tx.send(InputEvent::Resize { cols, rows }).is_err() {
+                        return;
                     }
                 }
                 Ok(_) => {}
@@ -167,10 +177,22 @@ where
             _ = tick.tick() => {
                 spawn_all(app, client, config, &tx);
             }
-            // Keyboard events, delivered by the single reader thread.
-            maybe_key = key_rx.recv() => {
-                let Some(k) = maybe_key else {
+            // Keyboard + resize, delivered by the single reader thread.
+            maybe_input = input_rx.recv() => {
+                let Some(input) = maybe_input else {
                     return Ok(()); // reader thread ended: stdin closed.
+                };
+                let k = match input {
+                    InputEvent::Resize { cols, rows } => {
+                        // Prefer resize() over clear(): clear() snapshots the
+                        // cursor via DSR (\x1b[6n) and can hang/fail when the
+                        // terminal doesn't answer. resize() for Fullscreen
+                        // clears the viewport + resets the diff buffer without
+                        // that round-trip; the next draw fills the new area.
+                        terminal.resize(Rect::new(0, 0, cols, rows))?;
+                        continue;
+                    }
+                    InputEvent::Key(k) => k,
                 };
                 {
                     // On Windows Terminal (and terminals advertising the
@@ -276,6 +298,12 @@ where
             return Ok(());
         }
     }
+}
+
+/// Crossterm events the dedicated reader thread forwards into the async loop.
+enum InputEvent {
+    Key(event::KeyEvent),
+    Resize { cols: u16, rows: u16 },
 }
 
 fn spawn_context_scan(
