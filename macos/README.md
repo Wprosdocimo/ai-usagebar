@@ -51,7 +51,8 @@ cd macos
 ./ai-usagebar-menubar &    # appears in the menu bar (no Dock icon)
 ```
 
-Start at login:
+Start at login — toggle **Preferências… → Sistema → "Iniciar no login"** in the
+app, or from the shell:
 
 ```bash
 ./install-agent.sh         # installs a LaunchAgent (RunAtLoad)

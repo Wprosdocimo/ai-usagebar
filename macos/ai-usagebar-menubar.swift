@@ -747,6 +747,7 @@ struct SettingsView: View {
     @AppStorage("colorCritical") private var colorCritical = "#e06c75"
     @AppStorage("colorEmpty") private var colorEmpty = "#3e4451"
     @AppStorage("binaryPath") private var binaryPath = ""
+    @AppStorage("launchAtLogin") private var launchAtLogin = false
 
     // Only enabled vendors appear in the selector: Rust treats opt-in vendors
     // (deepseek/kimi/kilo/novita/moonshot/grok/anthropic_api) as disabled when
@@ -797,6 +798,15 @@ struct SettingsView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                GroupBox("Sistema") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Iniciar no login", isOn: $launchAtLogin)
+                            .onChange(of: launchAtLogin) { value in setLaunchAtLogin(value) }
+                        Text("Instala um LaunchAgent que sobe o app ao entrar na sua conta.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 VendorsSection()
             }
             .padding(20)
@@ -804,6 +814,57 @@ struct SettingsView: View {
         }
         .frame(width: 460)
         .frame(minHeight: 300, idealHeight: 560, maxHeight: .infinity)
+    }
+}
+
+// ─── Launch at login (macOS LaunchAgent) ─────────────────────────────────
+//
+// The app is an unbundled single binary, so the modern SMAppService.mainApp
+// API (which needs a bundle id) doesn't apply. A per-user LaunchAgent is the
+// portable way to start an unbundled executable at login — the same mechanism
+// install-agent.sh sets up, now toggleable from Preferences.
+let LAUNCH_AGENT_LABEL = "com.akitaonrails.ai-usagebar-menubar"
+
+func launchAgentPlistPath() -> String {
+    "\(NSHomeDirectory())/Library/LaunchAgents/\(LAUNCH_AGENT_LABEL).plist"
+}
+
+/// Absolute path of the running executable, for the LaunchAgent to relaunch.
+func selfExecutablePath() -> String {
+    if let p = Bundle.main.executablePath, !p.isEmpty { return p }
+    let arg0 = CommandLine.arguments.first ?? "ai-usagebar-menubar"
+    if arg0.hasPrefix("/") { return arg0 }
+    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent(arg0).standardized.path
+}
+
+/// Install (or remove) the login LaunchAgent by managing its plist file.
+/// Building the plist via PropertyListSerialization sidesteps the XML-escaping
+/// the shell installer has to do by hand.
+///
+/// Deliberately no `launchctl load`/`unload`: the app is already running when
+/// this is toggled, so `RunAtLoad` on load would spawn a *second* copy, and
+/// `unload` on disable would SIGTERM this very process (quitting the app the
+/// user is still using) if it happened to be the launchd-managed one. launchd
+/// loads every agent in ~/Library/LaunchAgents at the next login, so writing
+/// (or removing) the file is all that's needed for a start-at-login toggle.
+func setLaunchAtLogin(_ enabled: Bool) {
+    let path = launchAgentPlistPath()
+    if enabled {
+        let dir = (path as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let plist: [String: Any] = [
+            "Label": LAUNCH_AGENT_LABEL,
+            "ProgramArguments": [selfExecutablePath()],
+            "RunAtLoad": true,
+            "ProcessType": "Interactive",
+        ]
+        if let data = try? PropertyListSerialization.data(
+            fromPropertyList: plist, format: .xml, options: 0) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    } else {
+        try? FileManager.default.removeItem(atPath: path)
     }
 }
 

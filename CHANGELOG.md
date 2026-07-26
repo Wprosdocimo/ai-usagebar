@@ -9,6 +9,17 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- **"Iniciar no login" (start at login) toggle** in the macOS menu-bar app's
+  Preferences. Flipping it on installs a per-user LaunchAgent
+  (`~/Library/LaunchAgents/com.akitaonrails.ai-usagebar-menubar.plist`) pointing
+  at the running binary, so the app comes up automatically at each login; off
+  removes it. This is the GUI equivalent of `macos/install-agent.sh` — no
+  `launchctl` needed. macOS only: the app is a menu-bar agent that doesn't exist
+  on Linux (where the GNOME Shell extension autostarts with the session, and the
+  Waybar widget starts with the bar) or Windows.
+
 ### Fixed
 
 - **A failed terminal resize no longer exits the TUI.** A transient
