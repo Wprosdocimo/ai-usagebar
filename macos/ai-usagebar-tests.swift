@@ -259,6 +259,22 @@ func testParserBalances() {
 }
 
 // ─── Run ─────────────────────────────────────────────────────────────────
+func testVendorCycle() {
+    print("vendor swap cycle (⌥⌘\\)")
+    let ids = ["anthropic", "cursor", "zai"]
+    assertEqual(nextVendorId(current: "anthropic", in: ids) ?? "?", "cursor", "forward from first")
+    assertEqual(nextVendorId(current: "zai", in: ids) ?? "?", "anthropic", "forward wraps to first")
+    assertEqual(
+        nextVendorId(current: "cursor", in: ids, forward: false) ?? "?", "anthropic", "backward")
+    assertEqual(
+        nextVendorId(current: "anthropic", in: ids, forward: false) ?? "?", "zai",
+        "backward wraps to last")
+    assertEqual(
+        nextVendorId(current: "gone", in: ids) ?? "?", "anthropic",
+        "an absent current starts at the first")
+    assertEqual(nextVendorId(current: "x", in: []) == nil, true, "empty list yields nil")
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -266,6 +282,7 @@ struct TestRunner {
         testTomlParsing()
         testDefaultEnabled()
         testParserBalances()
+        testVendorCycle()
         if failures > 0 {
             print("\n\(failures) test(s) FAILED")
             exit(1)

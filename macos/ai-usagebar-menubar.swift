@@ -17,6 +17,7 @@
 
 import Cocoa
 import SwiftUI
+import Carbon.HIToolbox  // RegisterEventHotKey for the global vendor-swap shortcut
 
 // ─── Settings (persisted in UserDefaults; edit in Preferences) ───────────
 let DEF = UserDefaults.standard
@@ -741,6 +742,7 @@ struct SettingsView: View {
     @AppStorage("showBars") private var showBars = true
     @AppStorage("showMeta") private var showMeta = true
     @AppStorage("barStyle") private var barStyle = "block"
+    @AppStorage("swapShortcutEnabled") private var swapShortcutEnabled = true
     @AppStorage("colorLow") private var colorLow = "#98c379"
     @AppStorage("colorMid") private var colorMid = "#e5c07b"
     @AppStorage("colorHigh") private var colorHigh = "#d19a66"
@@ -777,6 +779,14 @@ struct SettingsView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                GroupBox("Atalho") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Trocar vendor com ⌥⌘\\ (atalho global)", isOn: $swapShortcutEnabled)
+                        Text("Alterna o vendor ativo a partir de qualquer app.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 GroupBox("Cores") {
                     VStack(alignment: .leading, spacing: 8) {
                         HexColorPicker(title: "Baixo (<50%)", hex: $colorLow)
@@ -808,8 +818,43 @@ struct SettingsView: View {
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────
+// ─── Global vendor-swap shortcut (⌥⌘\) ───────────────────────────────────
+//
+// A menu-bar app has no focused window, so a system-wide shortcut needs a
+// Carbon hot key (RegisterEventHotKey), which fires regardless of focus and —
+// unlike an NSEvent global monitor — needs no Accessibility permission. The
+// Carbon handler is a C callback that can't capture Swift state, so it just
+// posts a notification the delegate observes.
+
+let swapHotKeyNotification = Notification.Name("aiusagebar.swapHotKey")
+
+/// Default shortcut: `\` (kVK_ANSI_Backslash) with Command+Option. `[ui]` on
+/// Linux has no equivalent; this is macOS-only.
+let SWAP_HOTKEY_KEYCODE = UInt32(kVK_ANSI_Backslash)
+let SWAP_HOTKEY_MODIFIERS = UInt32(cmdKey | optionKey)
+
+private func swapHotKeyCallback(
+    _ next: EventHandlerCallRef?, _ event: EventRef?, _ userData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    NotificationCenter.default.post(name: swapHotKeyNotification, object: nil)
+    return noErr
+}
+
+/// The next id in the cycle, wrapping. `current` absent from `ids` (e.g. the
+/// selected vendor was disabled) starts at the first (or last, backward).
+/// Pure + testable — the hot-key handler is not.
+func nextVendorId(current: String, in ids: [String], forward: Bool = true) -> String? {
+    guard !ids.isEmpty else { return nil }
+    let n = ids.count
+    let i = ids.firstIndex(of: current) ?? (forward ? -1 : 0)
+    let j = forward ? (i + 1) % n : (i - 1 + n) % n
+    return ids[j]
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
+    var swapHotKeyRef: EventHotKeyRef?
+    var swapHotKeyHandlerInstalled = false
     var timer: Timer?
     var prefsWindow: NSWindow?
     var appearanceObservation: NSKeyValueObservation?
@@ -834,6 +879,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let vendorSubmenuItem = NSMenuItem(title: "Trocar vendor", action: nil, keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        DEF.register(defaults: ["swapShortcutEnabled": true])
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "5h …"
         buildMenu()
@@ -844,6 +890,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(settingsChanged),
             name: UserDefaults.didChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSwapHotKey),
+            name: swapHotKeyNotification, object: nil)
+        installSwapHotKey()
+    }
+
+    /// (Re)register the global ⌥⌘\ hot key to match the `swapShortcutEnabled`
+    /// preference. Idempotent: always unregisters first.
+    func installSwapHotKey() {
+        removeSwapHotKey()
+        guard DEF.bool(forKey: "swapShortcutEnabled") else { return }
+        if !swapHotKeyHandlerInstalled {
+            var spec = EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            InstallEventHandler(GetApplicationEventTarget(), swapHotKeyCallback, 1, &spec, nil, nil)
+            swapHotKeyHandlerInstalled = true
+        }
+        let id = EventHotKeyID(signature: OSType(0x4149_4242), id: 1)  // 'AIBB'
+        RegisterEventHotKey(
+            SWAP_HOTKEY_KEYCODE, SWAP_HOTKEY_MODIFIERS, id, GetApplicationEventTarget(), 0,
+            &swapHotKeyRef)
+    }
+
+    func removeSwapHotKey() {
+        if let ref = swapHotKeyRef {
+            UnregisterEventHotKey(ref)
+            swapHotKeyRef = nil
+        }
+    }
+
+    /// Advance the active vendor to the next configured one, wrapping. Fired by
+    /// the global hot key; sets `vendor` in defaults, which drives the usual
+    /// re-render via `settingsChanged`.
+    @objc func handleSwapHotKey() {
+        let ids = VENDOR_AUTH
+            .filter { vendorEnabled($0) && ($0.id == VENDOR || vendorConfigured($0)) }
+            .map { $0.id }
+        if let next = nextVendorId(current: VENDOR, in: ids) {
+            DEF.set(next, forKey: "vendor")
+        }
     }
 
     func buildMenu() {
@@ -916,6 +1002,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Settings changed in Preferences: re-render instantly from cache, re-arm
     // the timer, and re-fetch (debounced) in case vendor/binary changed.
     @objc func settingsChanged() {
+        // The swap-shortcut toggle lives in defaults too; re-register only when
+        // its state and the live registration disagree (avoids churn on every
+        // vendor switch, which itself writes defaults).
+        if DEF.bool(forKey: "swapShortcutEnabled") != (swapHotKeyRef != nil) {
+            installSwapHotKey()
+        }
         if let s = lastSnapshot { renderPanel(s); renderMenu(s) }
         restartTimer()
         pendingRefresh?.cancel()
