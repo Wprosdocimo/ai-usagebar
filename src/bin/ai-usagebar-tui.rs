@@ -11,9 +11,12 @@
 
 use std::io;
 
+use std::time::Duration;
+
 use ai_usagebar::config::Config;
 use ai_usagebar::tui::app::{
-    App, REFRESH_INTERVAL, TabId, TabState, refresh_one, tabs_from_config,
+    ANTHROPIC_REFRESH_STAGGER, App, REFRESH_INTERVAL, TabId, TabState, refresh_one,
+    refresh_stagger, tabs_from_config,
 };
 use ai_usagebar::tui::view::draw;
 use ai_usagebar::vendor::HTTP_CLIENT_TIMEOUT;
@@ -291,7 +294,8 @@ where
                             // No single active tab on the Overview — refresh all.
                             spawn_all(app, client, config, &tx);
                         } else if let Some(tab) = app.active_tab_id().cloned() {
-                            spawn_one(app, tab, client, config, &tx);
+                            // A manual single-tab refresh isn't a burst — no stagger.
+                            spawn_one(app, tab, client, config, &tx, Duration::ZERO);
                         }
                     }
                     if matches!(k.code, KeyCode::Char('R')) {
@@ -348,8 +352,12 @@ fn spawn_all(
     config: &Config,
     tx: &mpsc::UnboundedSender<(u64, TabId, TabState)>,
 ) {
-    for tab in app.tabs_meta.clone() {
-        spawn_one(app, tab, client, config, tx);
+    let tabs = app.tabs_meta.clone();
+    // Space out the Anthropic tabs so several accounts don't burst the shared
+    // usage/token endpoint and trip its rate limit (429).
+    let delays = refresh_stagger(&tabs, ANTHROPIC_REFRESH_STAGGER);
+    for (tab, delay) in tabs.into_iter().zip(delays) {
+        spawn_one(app, tab, client, config, tx, delay);
     }
 }
 
@@ -359,6 +367,7 @@ fn spawn_one(
     client: &Client,
     config: &Config,
     tx: &mpsc::UnboundedSender<(u64, TabId, TabState)>,
+    delay: Duration,
 ) {
     let tx = tx.clone();
     let client = client.clone();
@@ -368,6 +377,9 @@ fn spawn_one(
         app.tabs[index] = TabState::Loading;
     }
     tokio::spawn(async move {
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         let state = refresh_one(&client, &cfg, &tab).await;
         let _ = tx.send((generation, tab, state));
     });

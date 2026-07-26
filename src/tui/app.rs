@@ -70,11 +70,19 @@ impl TabId {
 pub fn tabs_from_config(config: &Config) -> Vec<TabId> {
     let mut tabs = Vec::new();
     for vendor in config.enabled_vendors() {
-        tabs.push(TabId::vendor(vendor));
         if vendor == VendorId::Anthropic {
-            for acct in &config.anthropic.accounts {
-                tabs.push(TabId::account(acct.label.clone()));
+            let accounts = config.anthropic.all_accounts();
+            // The default (unnamed) Claude tab is suppressible once every
+            // account is named — but never when it would leave Anthropic with
+            // no tab at all.
+            if config.anthropic.show_default_account || accounts.is_empty() {
+                tabs.push(TabId::vendor(vendor));
             }
+            for acct in accounts {
+                tabs.push(TabId::account(acct.label));
+            }
+        } else {
+            tabs.push(TabId::vendor(vendor));
         }
     }
     tabs
@@ -498,6 +506,34 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
 /// automatic refreshes.
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Gap between successive Anthropic fetches at refresh time. Every Anthropic
+/// tab (the default account and each named/discovered account) hits the same
+/// `/api/oauth/usage` + token-refresh endpoints, which rate-limit a burst of
+/// simultaneous requests from one client — so with several accounts the TUI
+/// would fire them all at once and some would come back `429`. Spacing them
+/// out keeps every account refreshing politely.
+pub const ANTHROPIC_REFRESH_STAGGER: Duration = Duration::from_millis(800);
+
+/// Per-tab startup delay for one `spawn_all` pass. Only Anthropic tabs are
+/// staggered (they share the rate-limited endpoint and multiply with accounts);
+/// every other vendor hits its own endpoint and starts immediately. The first
+/// Anthropic tab also starts immediately; each subsequent one waits one more
+/// `step`. Pure and position-based so it is unit-testable.
+pub fn refresh_stagger(tabs: &[TabId], step: Duration) -> Vec<Duration> {
+    let mut anthropic_seen: u32 = 0;
+    tabs.iter()
+        .map(|tab| {
+            if tab.vendor == VendorId::Anthropic {
+                let delay = step * anthropic_seen;
+                anthropic_seen += 1;
+                delay
+            } else {
+                Duration::ZERO
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,6 +542,43 @@ mod tests {
     // Use `App::with_theme(.., Theme::default())` rather than `App::new`, which
     // would read the real Omarchy theme file + `$HOME`. The tab-selection logic
     // under test is theme-agnostic.
+    #[test]
+    fn refresh_stagger_spaces_out_anthropic_tabs_only() {
+        let step = Duration::from_millis(800);
+        let tabs = vec![
+            TabId::vendor(VendorId::Anthropic), // default account
+            TabId::account("work"),
+            TabId::account("personal"),
+            TabId::vendor(VendorId::Openai),
+            TabId::vendor(VendorId::Zai),
+        ];
+        let delays = refresh_stagger(&tabs, step);
+        assert_eq!(
+            delays,
+            vec![
+                Duration::ZERO, // 1st anthropic — immediate
+                step,           // 2nd anthropic
+                step * 2,       // 3rd anthropic
+                Duration::ZERO, // openai — own endpoint, immediate
+                Duration::ZERO, // zai — own endpoint, immediate
+            ]
+        );
+    }
+
+    #[test]
+    fn refresh_stagger_is_a_noop_without_anthropic_accounts() {
+        // A single Anthropic tab (or none) never waits.
+        let tabs = vec![
+            TabId::vendor(VendorId::Anthropic),
+            TabId::vendor(VendorId::Openrouter),
+        ];
+        assert!(
+            refresh_stagger(&tabs, Duration::from_millis(800))
+                .iter()
+                .all(|d| d.is_zero())
+        );
+    }
+
     #[test]
     fn select_primary_moves_to_enabled_vendor() {
         let mut app = App::with_theme(
@@ -593,6 +666,30 @@ mod tests {
     }
 
     #[test]
+    fn show_default_account_false_hides_the_unnamed_claude_tab() {
+        // With named accounts and show_default_account=false, only the named
+        // tabs appear — no redundant default "Claude" tab.
+        let mut config = config_with_accounts(&["work", "personal"]);
+        config.anthropic.show_default_account = false;
+        assert_eq!(
+            tabs_from_config(&config),
+            vec![TabId::account("work"), TabId::account("personal")]
+        );
+
+        // But with no named accounts it is kept, so Anthropic never loses its
+        // only tab.
+        let mut empty = Config::default();
+        empty.openai.enabled = false;
+        empty.zai.enabled = false;
+        empty.openrouter.enabled = false;
+        empty.anthropic.show_default_account = false;
+        assert_eq!(
+            tabs_from_config(&empty),
+            vec![TabId::vendor(VendorId::Anthropic)]
+        );
+    }
+
+    #[test]
     fn tabs_expand_anthropic_accounts_after_default() {
         // Default Claude tab first, then each account in config order.
         let tabs = tabs_from_config(&config_with_accounts(&["work", "personal"]));
@@ -614,6 +711,33 @@ mod tests {
         let vendors: Vec<VendorId> = tabs.iter().map(|t| t.vendor).collect();
         assert_eq!(vendors, config.enabled_vendors());
         assert!(tabs.iter().all(|t| t.account.is_none()));
+    }
+
+    #[test]
+    fn tabs_include_accounts_auto_discovered_from_accounts_dir() {
+        // A CLAUDE_CONFIG_DIR-style directory becomes account tabs with no
+        // explicit [[anthropic.accounts]] entry. Hermetic: real TempDir.
+        let td = tempfile::tempdir().unwrap();
+        for label in ["work", "personal"] {
+            let dir = td.path().join(label);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(".credentials.json"), "{}").unwrap();
+        }
+        let mut config = Config::default();
+        config.openai.enabled = false;
+        config.zai.enabled = false;
+        config.openrouter.enabled = false;
+        config.anthropic.accounts_dir = Some(td.path().to_path_buf());
+
+        let tabs = tabs_from_config(&config);
+        assert_eq!(
+            tabs,
+            vec![
+                TabId::vendor(VendorId::Anthropic),
+                TabId::account("personal"), // sorted by label
+                TabId::account("work"),
+            ]
+        );
     }
 
     #[test]

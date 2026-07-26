@@ -436,6 +436,39 @@ credentials_path = "~/.config/ai-usagebar/accounts/personal.json"
   tab per account (after the default Claude tab), so the config above wires up
   the widget and the TUI at once.
 
+#### Auto-discovered accounts (`accounts_dir`)
+
+Rather than list every account by hand, point `[anthropic] accounts_dir` at a
+directory and ai-usagebar discovers each account under it automatically — using
+**Claude Code's own [`CLAUDE_CONFIG_DIR`](https://docs.claude.com/en/docs/claude-code/settings)
+layout**: each immediate subdirectory that contains a `.credentials.json`
+becomes an account labeled by the subdirectory name. Drop one in (or log a new
+account in) and its tab / `--account <label>` appears with no config edit.
+
+```toml
+[anthropic]
+accounts_dir = "~/.config/ai-usagebar/accounts"
+```
+
+Populate it once per account by running the official `claude` CLI with a
+per-account config dir — this is the general, tool-agnostic way to keep several
+Claude Code logins side by side:
+
+```bash
+CLAUDE_CONFIG_DIR=~/.config/ai-usagebar/accounts/personal claude   # sign in as personal
+CLAUDE_CONFIG_DIR=~/.config/ai-usagebar/accounts/work     claude   # sign in as work
+```
+
+Each login writes that dir's own `.credentials.json`; ai-usagebar then reads and
+**refreshes each independently** (writing the refreshed token back to that dir),
+so all your accounts stay live at once. Discovered accounts are merged with any
+explicit `[[anthropic.accounts]]` entries — an explicit entry wins on a label
+clash — and a missing or unreadable `accounts_dir` is simply ignored. Because
+discovery keys only on the standard Claude Code layout, *any* tool or script
+that manages multiple Claude Code logins (not just one specific account
+switcher) works with it; a rotating account manager just needs to drop or
+refresh each login under this directory.
+
 ## Hyprland: float the TUI window
 
 By default Hyprland tiles the TUI. To make `ai-usagebar-tui` open as a centered floating window, the same way Omarchy floats its own settings TUIs (Wi-Fi/`impala`, audio/`wiremix`, Bluetooth/`bluetui`), add this to `~/.config/hypr/hyprland.conf` or any sourced `.conf`, such as `looknfeel.conf`:
