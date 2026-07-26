@@ -133,6 +133,19 @@ pub struct AnthropicConfig {
     /// with `--account <label>` (issue #14). Empty by default, so existing
     /// single-account configs are byte-for-byte unchanged.
     pub accounts: Vec<AnthropicAccount>,
+    /// Directory to auto-discover extra accounts from, in Claude Code's own
+    /// `CLAUDE_CONFIG_DIR` layout: each immediate subdirectory holding a
+    /// `.credentials.json` becomes an account labeled by the subdirectory name,
+    /// so `CLAUDE_CONFIG_DIR=<accounts_dir>/<label> claude` makes `<label>`
+    /// appear with no config edit. Merged with `accounts` (explicit wins on a
+    /// label clash); each is refreshed independently.
+    pub accounts_dir: Option<PathBuf>,
+    /// Whether the default (unnamed) Claude account gets its own tab. Defaults
+    /// to `true` for back-compat. Set `false` when every account is managed
+    /// explicitly (via `accounts`/`accounts_dir`) so the ambient
+    /// Keychain/`~/.claude` login doesn't add a redundant "Claude" tab. Ignored
+    /// when there are no named accounts, so Anthropic never loses its only tab.
+    pub show_default_account: bool,
 }
 
 impl Default for AnthropicConfig {
@@ -141,6 +154,8 @@ impl Default for AnthropicConfig {
             enabled: true,
             credentials_path: None,
             accounts: Vec::new(),
+            accounts_dir: None,
+            show_default_account: true,
         }
     }
 }
@@ -166,20 +181,37 @@ pub struct AnthropicAccount {
 }
 
 impl AnthropicConfig {
-    /// Find a configured extra account by label, or error listing the known
-    /// labels so a typo fails loudly instead of silently hitting the default.
-    pub fn account(&self, label: &str) -> Result<&AnthropicAccount> {
+    /// Every extra account: the explicit `[[anthropic.accounts]]` entries plus
+    /// any auto-discovered under [`accounts_dir`](AnthropicConfig::accounts_dir).
+    /// Explicit entries take precedence on a label clash. This is what tabs and
+    /// `--account` enumerate, so a discovered account behaves exactly like a
+    /// hand-written one (own cache subdir, independent refresh).
+    pub fn all_accounts(&self) -> Vec<AnthropicAccount> {
+        let mut out = self.accounts.clone();
+        if let Some(dir) = &self.accounts_dir {
+            for acct in discover_accounts(dir) {
+                if !out.iter().any(|a| a.label == acct.label) {
+                    out.push(acct);
+                }
+            }
+        }
+        out
+    }
+
+    /// Find an extra account by label (explicit or discovered), or error listing
+    /// the known labels so a typo fails loudly instead of silently hitting the
+    /// default. Returns an owned account because discovered entries are
+    /// synthesized, not stored.
+    pub fn account(&self, label: &str) -> Result<AnthropicAccount> {
         validate_account_label(label)?;
-        self.accounts
-            .iter()
-            .find(|a| a.label == label)
-            .ok_or_else(|| {
-                let known: Vec<&str> = self.accounts.iter().map(|a| a.label.as_str()).collect();
-                AppError::Credentials(format!(
-                    "anthropic account {label:?} not found in [[anthropic.accounts]]; \
-                     known labels: {known:?}"
-                ))
-            })
+        let all = self.all_accounts();
+        all.iter().find(|a| a.label == label).cloned().ok_or_else(|| {
+            let known: Vec<&str> = all.iter().map(|a| a.label.as_str()).collect();
+            AppError::Credentials(format!(
+                "anthropic account {label:?} not found in [[anthropic.accounts]] or accounts_dir; \
+                 known labels: {known:?}"
+            ))
+        })
     }
 
     /// Resolve a named account to the credentials target + isolated cache it
@@ -191,7 +223,7 @@ impl AnthropicConfig {
     pub fn account_target(&self, label: &str) -> Result<(CredsTarget, Cache)> {
         let account = self.account(label)?;
         Ok((
-            CredsTarget::Explicit(account.credentials_path.clone()),
+            CredsTarget::Explicit(account.credentials_path),
             Cache::for_vendor_account("anthropic", label)?,
         ))
     }
@@ -215,6 +247,40 @@ fn validate_account_label(label: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Discover accounts under `accounts_dir` in the `CLAUDE_CONFIG_DIR` layout:
+/// each immediate subdirectory holding a `.credentials.json` becomes an account
+/// labeled by the subdirectory name. Best-effort: an unreadable directory, a
+/// subdir without the credentials file, or an unusable label is skipped
+/// silently rather than failing the whole config — discovery is convenience,
+/// while an explicit `[[anthropic.accounts]]` entry stays authoritative. Sorted
+/// by label so the tab order is stable across runs.
+fn discover_accounts(accounts_dir: &std::path::Path) -> Vec<AnthropicAccount> {
+    let Ok(entries) = std::fs::read_dir(accounts_dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<AnthropicAccount> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let creds = path.join(".credentials.json");
+            if !creds.is_file() {
+                return None;
+            }
+            let label = path.file_name()?.to_str()?.to_string();
+            validate_account_label(&label).ok()?;
+            Some(AnthropicAccount {
+                label,
+                credentials_path: creds,
+            })
+        })
+        .collect();
+    found.sort_by(|a, b| a.label.cmp(&b.label));
+    found
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -512,6 +578,7 @@ impl Config {
     fn expand_paths(&mut self) {
         expand_tilde_opt(&mut self.context.projects_path);
         expand_tilde_opt(&mut self.anthropic.credentials_path);
+        expand_tilde_opt(&mut self.anthropic.accounts_dir);
         expand_tilde_opt(&mut self.openai.codex_auth_path);
         for account in &mut self.anthropic.accounts {
             account.credentials_path = expand_tilde(&account.credentials_path);
@@ -1221,6 +1288,91 @@ enabled = false
         // No [[anthropic.accounts]] → the single default account, empty list,
         // nothing to migrate (issue #14, back-compat rule 1).
         assert!(Config::default().anthropic.accounts.is_empty());
+        assert!(Config::default().anthropic.accounts_dir.is_none());
+    }
+
+    // --- accounts_dir: CLAUDE_CONFIG_DIR-style auto-discovery ----------------
+    // All hermetic: discovery reads a TempDir, never the user's real config.
+
+    /// Create `<root>/<label>/.credentials.json` (contents irrelevant here —
+    /// discovery keys on the file existing, the fetch path parses it).
+    fn seed_account_dir(root: &std::path::Path, label: &str) {
+        let dir = root.join(label);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".credentials.json"), "{}").unwrap();
+    }
+
+    #[test]
+    fn discovers_credential_dirs_in_claude_config_dir_layout() {
+        let td = tempfile::tempdir().unwrap();
+        seed_account_dir(td.path(), "work");
+        seed_account_dir(td.path(), "personal");
+        // A subdir with no .credentials.json is ignored.
+        std::fs::create_dir_all(td.path().join("empty")).unwrap();
+        // A loose file (not a dir) is ignored.
+        std::fs::write(td.path().join("stray.json"), "{}").unwrap();
+
+        let cfg = AnthropicConfig {
+            accounts_dir: Some(td.path().to_path_buf()),
+            ..Default::default()
+        };
+        let all = cfg.all_accounts();
+        let labels: Vec<&str> = all.iter().map(|a| a.label.as_str()).collect();
+        // Sorted, and only the two real credential dirs.
+        assert_eq!(labels, vec!["personal", "work"]);
+        assert_eq!(
+            all[1].credentials_path,
+            td.path().join("work").join(".credentials.json")
+        );
+    }
+
+    #[test]
+    fn explicit_account_wins_over_a_discovered_one_with_the_same_label() {
+        let td = tempfile::tempdir().unwrap();
+        seed_account_dir(td.path(), "work");
+        let cfg = AnthropicConfig {
+            accounts: vec![AnthropicAccount {
+                label: "work".into(),
+                credentials_path: "/explicit/work.json".into(),
+            }],
+            accounts_dir: Some(td.path().to_path_buf()),
+            ..Default::default()
+        };
+        let all = cfg.all_accounts();
+        assert_eq!(all.len(), 1, "no duplicate label");
+        assert_eq!(
+            all[0].credentials_path,
+            std::path::Path::new("/explicit/work.json"),
+            "explicit entry wins"
+        );
+        // A discovered account is still reachable through `account()`.
+        seed_account_dir(td.path(), "other");
+        assert_eq!(cfg.account("other").unwrap().label, "other");
+    }
+
+    #[test]
+    fn missing_accounts_dir_is_silently_empty_not_an_error() {
+        let cfg = AnthropicConfig {
+            accounts_dir: Some("/nonexistent/ai-usagebar-accounts".into()),
+            ..Default::default()
+        };
+        assert!(cfg.all_accounts().is_empty());
+    }
+
+    #[test]
+    fn accounts_dir_is_tilde_expanded_on_load() {
+        let f = write_toml(
+            r#"
+            [anthropic]
+            accounts_dir = "~/.config/ai-usagebar/accounts"
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        let home = crate::cache::home_dir().unwrap();
+        assert_eq!(
+            c.anthropic.accounts_dir,
+            Some(home.join(".config/ai-usagebar/accounts"))
+        );
     }
 
     /// The shipped example, which `make install` puts in

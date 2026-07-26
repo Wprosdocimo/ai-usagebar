@@ -34,6 +34,21 @@ enabled = true
 # Path to the Claude CLI OAuth credentials. Leave commented out to use
 # the default ~/.claude/.credentials.json.
 # credentials_path = "/home/you/.claude/.credentials.json"
+# Auto-discover extra accounts from a directory, in Claude Code's own
+# CLAUDE_CONFIG_DIR layout: each subdir holding a .credentials.json becomes an
+# account labeled by the subdir name (shown as a TUI tab and selectable with
+# --account <label>), refreshed independently. Populate it with, e.g.:
+#   CLAUDE_CONFIG_DIR=~/.config/ai-usagebar/accounts/work claude   # sign in
+# Merged with the explicit [[anthropic.accounts]] entries below (explicit wins).
+# accounts_dir = "~/.config/ai-usagebar/accounts"
+# Hide the default (unnamed) Claude tab when you manage every account explicitly
+# above — otherwise you get an extra tab for the ambient ~/.claude / Keychain
+# login. Default true; ignored when there are no named accounts.
+# show_default_account = false
+# Or list accounts explicitly:
+# [[anthropic.accounts]]
+# label = "work"
+# credentials_path = "~/.config/ai-usagebar/accounts/work/.credentials.json"
 
 # Anthropic (API) — unlike the balance vendors above (which show your REMAINING
 # credit), Anthropic does not expose the prepaid credit balance over any API

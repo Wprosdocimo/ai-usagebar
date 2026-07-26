@@ -9,6 +9,30 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-discovered Anthropic accounts (`[anthropic] accounts_dir`).** Point it
+  at a directory and ai-usagebar discovers each account under it automatically,
+  using Claude Code's own `CLAUDE_CONFIG_DIR` layout: every immediate
+  subdirectory holding a `.credentials.json` becomes an account labeled by the
+  subdirectory name — a TUI tab and `--account <label>`, refreshed
+  independently — with no per-account config entry. Populate it by running the
+  `claude` CLI with a per-account `CLAUDE_CONFIG_DIR`, the general way to keep
+  several Claude Code logins side by side. Discovered accounts merge with
+  explicit `[[anthropic.accounts]]` (explicit wins on a label clash); a missing
+  or unreadable directory is ignored. Because it keys only on the standard
+  Claude Code layout, any tool that manages multiple logins works with it, not
+  one specific account switcher.
+  - **`[anthropic] show_default_account`** (default `true`): set `false` to hide
+    the default (unnamed) Claude tab when every account is managed explicitly,
+    so you don't get a redundant tab for the ambient Keychain/`~/.claude` login.
+    Ignored when there are no named accounts.
+  - **Staggered multi-account refreshes.** The TUI previously refreshed every
+    tab at once; with several Anthropic accounts that burst the shared
+    `/api/oauth/usage` + token endpoints and tripped their rate limit (`429`).
+    Anthropic tabs now refresh spaced out (~0.8s apart) so each account fetches
+    politely; other vendors still start immediately.
+
 ### Fixed
 
 - **A failed terminal resize no longer exits the TUI.** A transient
