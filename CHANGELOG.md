@@ -11,12 +11,16 @@ Each release is also published at
 
 ### Added
 
-- **Overview tab in the TUI.** A virtual first tab summarizing every vendor at
-  once — one compact row each (name + plan + key metric cells, colored by
-  severity) — so all your limits are visible on one screen. `Tab`/`h`/`l` wrap
-  through it at both ends, and it is the default landing view unless `[ui]
-  primary` opens on a specific vendor. `[ui] overview_vendors = [...]` picks and
-  orders which vendors it lists (default: all enabled).
+- **Overview across the TUI and the macOS menu bar.** A single view summarizing
+  every vendor at once — one compact row each (key metric, colored by severity)
+  — so all your limits are visible without switching tabs. In the **TUI** it is
+  a virtual first tab that `Tab`/`h`/`l` wrap through at both ends and the
+  default landing view (unless `[ui] primary` opens on a specific vendor);
+  `[ui] overview_vendors = [...]` picks and orders which vendors it lists. In the
+  **macOS menu-bar app** it is a target in the vendor submenu and in the global
+  **⌥⌘\\** swap ring (which now cycles all providers *and* the overview); its
+  dropdown lists every configured vendor and the bar shows the single most-
+  exhausted quota.
 
 - **Cursor vendor.** Shows this billing cycle's two included-usage pools —
   **Cursor Models** (Auto + Composer) and **Other Models** (named / API) — as

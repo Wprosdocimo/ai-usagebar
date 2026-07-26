@@ -293,6 +293,10 @@ func testVendorCycle() {
         nextVendorId(current: "gone", in: ids) ?? "?", "anthropic",
         "an absent current starts at the first")
     assertEqual(nextVendorId(current: "x", in: []) == nil, true, "empty list yields nil")
+    // The ring ends on the synthetic "overview" target, then wraps to the first.
+    let ring = ["anthropic", "cursor", "overview"]
+    assertEqual(nextVendorId(current: "cursor", in: ring) ?? "?", "overview", "last vendor → overview")
+    assertEqual(nextVendorId(current: "overview", in: ring) ?? "?", "anthropic", "overview wraps to first")
 }
 
 @main
