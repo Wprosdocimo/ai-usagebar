@@ -75,6 +75,14 @@ Each release is also published at
     `/api/oauth/usage` + token endpoints and tripped their rate limit (`429`).
     Anthropic tabs now refresh spaced out (~0.8s apart) so each account fetches
     politely; other vendors still start immediately.
+- **"Iniciar no login" (start at login) toggle** in the macOS menu-bar app's
+  Preferences. Flipping it on installs a per-user LaunchAgent
+  (`~/Library/LaunchAgents/com.akitaonrails.ai-usagebar-menubar.plist`) pointing
+  at the running binary, so the app comes up automatically at each login; off
+  removes it. This is the GUI equivalent of `macos/install-agent.sh` — no
+  `launchctl` needed. macOS only: the app is a menu-bar agent that doesn't exist
+  on Linux (where the GNOME Shell extension autostarts with the session, and the
+  Waybar widget starts with the bar) or Windows.
 
 ### Fixed
 

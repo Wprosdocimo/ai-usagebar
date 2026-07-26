@@ -53,11 +53,17 @@ switch vendors quickly, and Preferences.
 
 ### 6. Start automatically at login
 
+The easiest way is the **Preferências… → Sistema → "Iniciar no login"** toggle in
+the app itself — it installs (or removes) the LaunchAgent for you, no Terminal
+needed. It takes effect at your next login.
+
+Or do it from the shell:
+
 ```bash
 ./install-agent.sh
 ```
 
-This installs a LaunchAgent at
+Either way installs a LaunchAgent at
 `~/Library/LaunchAgents/com.akitaonrails.ai-usagebar-menubar.plist` with
 `RunAtLoad`, so the app starts on every login. It is not kept alive after you
 choose **Sair/Quit**.
