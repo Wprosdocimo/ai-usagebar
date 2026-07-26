@@ -86,7 +86,7 @@ let FORMAT = "{plan};;{session_pct};;{session_reset};;{weekly_pct};;{weekly_rese
              "{scoped_model};;{scoped_pct};;{scoped_reset};;" +
              "{session_elapsed};;{weekly_elapsed};;{scoped_elapsed};;{vendor_short};;{or_balance};;" +
              "{ds_balance};;{kilo_balance};;{nv_balance};;{km_balance};;{grok_balance};;" +
-             "{aapi_headline};;{aapi_pct};;{aapi_spent};;{aapi_limit}"
+             "{aapi_headline};;{aapi_pct};;{aapi_spent};;{aapi_limit};;{cursor_total_pct}"
 
 let FORMAT_WITH_SENTINEL = FORMAT + ";;__aiub_end__"
 
@@ -354,6 +354,9 @@ struct Snapshot {
     var weeklyTag: String = "7d"
     var sessionLabel: String = "Session"
     var weeklyLabel: String = "Weekly"
+    /// Cursor's combined "included total usage" headline (`totalPercentUsed`),
+    /// the single number its dashboard shows across both pools. nil for others.
+    var cursorTotalPct: Int? = nil
 }
 
 func stripMarkup(_ s: String) -> String {
@@ -465,7 +468,8 @@ func parse(_ text: String, vendor: String) -> Snapshot? {
                     sessionTag: isCursor ? "auto" : "5h",
                     weeklyTag: isCursor ? "premium" : "7d",
                     sessionLabel: isCursor ? "Cursor Models" : "Session",
-                    weeklyLabel: isCursor ? "Other Models" : "Weekly")
+                    weeklyLabel: isCursor ? "Other Models" : "Weekly",
+                    cursorTotalPct: isCursor ? n(27) : nil)
 }
 
 // ─── Preferences UI (SwiftUI) ────────────────────────────────────────────
@@ -603,13 +607,21 @@ func vendorEnabled(_ v: VendorAuth) -> Bool {
     return defaultEnabled(v.id)
 }
 
+// Cached: the check spawns a `security` subprocess, and it is consulted from the
+// menu-rebuild path (main thread). Signed-in state doesn't change within a run,
+// so compute it at most once — a restart picks up a fresh login.
+var keychainClaudeCache: Bool?
 func keychainHasClaude() -> Bool {
+    if let cached = keychainClaudeCache { return cached }
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
     p.arguments = ["find-generic-password", "-s", "Claude Code-credentials"]
     p.standardOutput = FileHandle.nullDevice
     p.standardError = FileHandle.nullDevice
-    do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 } catch { return false }
+    let result: Bool
+    do { try p.run(); p.waitUntilExit(); result = p.terminationStatus == 0 } catch { result = false }
+    keychainClaudeCache = result
+    return result
 }
 
 func vendorConfigured(_ v: VendorAuth) -> Bool {
@@ -904,6 +916,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var prefsWindow: NSWindow?
     var appearanceObservation: NSKeyValueObservation?
+    /// Last resolved light/dark name, so the appearance observer ignores the
+    /// layout-driven KVO fires that don't actually change the theme.
+    var lastAppearanceName: NSAppearance.Name?
+    /// Tracks the active vendor so `settingsChanged` can tell a vendor swap (show
+    /// Loading) apart from an unrelated preference change (repaint from cache).
+    var lastVendor = ""
     var lastSnapshot: Snapshot?
     var pendingRefresh: DispatchWorkItem?
     /// Bumped on every refresh attempt. A result whose generation is no longer
@@ -924,7 +942,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var overviewRows: [NSMenuItem] = []
     /// Last overview fetch, so a settings/appearance change re-renders it without
     /// flashing the stale single-vendor snapshot.
-    var lastOverview: [(name: String, snap: Snapshot?)]?
+    var lastOverview: [(name: String, id: String, snap: Snapshot?)]?
     // Rebuilt on every render so only configured vendors show, and the active
     // one is checked. Kept as a field so the menu owns it for its lifetime.
     let vendorSubmenu = NSMenu()
@@ -937,6 +955,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
         rebuildVendorSubmenu()
         observeAppearanceChanges()
+        lastVendor = VENDOR  // so the first settingsChanged isn't mistaken for a swap
         refresh()
         restartTimer()
         NotificationCenter.default.addObserver(
@@ -952,7 +971,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// preference. Idempotent: always unregisters first.
     func installSwapHotKey() {
         removeSwapHotKey()
-        guard DEF.bool(forKey: "swapShortcutEnabled") else { return }
+        let enabled = DEF.bool(forKey: "swapShortcutEnabled")
+        // Mirror the swap shortcut as a hint on the "Trocar vendor" item. A native
+        // keyEquivalent is suppressed by the submenu's disclosure arrow, so paint
+        // the hint into the title instead (right-aligned, dimmed). Cleared when off.
+        if enabled {
+            // Inline, dimmed hint right after the label. A right-aligned column
+            // (like the other items' ⌘R) isn't possible here: the submenu arrow
+            // takes the trailing slot, and a fixed tab stop would over-widen the
+            // menu whenever the wide overview rows are hidden.
+            let font = NSFont.menuFont(ofSize: 0)
+            let s = NSMutableAttributedString(
+                string: "Trocar vendor  ", attributes: [.font: font])
+            s.append(NSAttributedString(string: "⌥⌘\\", attributes: [
+                .font: font, .foregroundColor: NSColor.tertiaryLabelColor,
+            ]))
+            vendorSubmenuItem.attributedTitle = s
+        } else {
+            vendorSubmenuItem.attributedTitle = NSAttributedString(string: "Trocar vendor")
+        }
+        guard enabled else { return }
         if !swapHotKeyHandlerInstalled {
             var spec = EventTypeSpec(
                 eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -1075,7 +1113,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if DEF.bool(forKey: "swapShortcutEnabled") != (swapHotKeyRef != nil) {
             installSwapHotKey()
         }
-        if VENDOR == "overview" {
+        // A vendor swap re-fetches, which takes a moment; keeping the previous
+        // vendor's view up reads as a freeze. Show a Loading placeholder at once.
+        let vendorChanged = VENDOR != lastVendor
+        lastVendor = VENDOR
+        if vendorChanged {
+            showLoading()
+        } else if VENDOR == "overview" {
             if let ov = lastOverview { renderOverview(ov) }
         } else if let s = lastSnapshot {
             renderPanel(s); renderMenu(s)
@@ -1087,6 +1131,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
     }
 
+    /// Instant feedback for a vendor swap: replace the whole view with a Loading
+    /// placeholder naming the target, until its data arrives.
+    func showLoading() {
+        lastSnapshot = nil
+        lastOverview = nil
+        let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
+        let name = VENDOR == "overview"
+            ? "Visão geral"
+            : (VENDOR_AUTH.first { $0.id == VENDOR }?.name ?? VENDOR)
+        statusItem.button?.attributedTitle = run("\(name) …", menuBarTextColor(appearance))
+        headerItem.attributedTitle = run("\(name) · carregando…", .labelColor,
+                                         NSFont.boldSystemFont(ofSize: 13))
+        for (_, it) in rows { it.isHidden = true }
+        for it in overviewRows { it.isHidden = true }
+        rebuildVendorSubmenu()
+    }
+
     func restartTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: INTERVAL, repeats: true) { [weak self] _ in
@@ -1096,14 +1157,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func observeAppearanceChanges() {
         guard let button = statusItem.button else { return }
+        lastAppearanceName = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
         appearanceObservation = button.observe(\NSStatusBarButton.effectiveAppearance,
-                                               options: [.new]) { [weak self] _, _ in
-            DispatchQueue.main.async { self?.rerenderAppearance() }
+                                               options: [.new]) { [weak self] btn, _ in
+            // The KVO fires on every layout pass, not only on a real light↔dark
+            // flip — and rendering (which relays out the button) would retrigger
+            // it, spinning the main thread. Act only when the theme truly changes.
+            let name = btn.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+            DispatchQueue.main.async {
+                guard let self, self.lastAppearanceName != name else { return }
+                self.lastAppearanceName = name
+                self.rerenderAppearance()
+            }
         }
     }
 
     func rerenderAppearance() {
-        if VENDOR == "overview", let ov = lastOverview { renderOverview(ov); return }
+        // Appearance only changes colors; the configured-vendor set is unchanged,
+        // so repaint without rebuilding the (subprocess-touching) submenu.
+        if VENDOR == "overview", let ov = lastOverview { renderOverview(ov, rebuildSubmenu: false); return }
         guard let snapshot = lastSnapshot else { return }
         renderPanel(snapshot)
     }
@@ -1196,7 +1268,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func refreshOverview(bin: String, generation: Int) {
         let vendors = VENDOR_AUTH.filter { vendorEnabled($0) && vendorConfigured($0) }
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            var results: [(name: String, snap: Snapshot?)] = []
+            var results: [(name: String, id: String, snap: Snapshot?)] = []
             for v in vendors {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: bin)
@@ -1221,7 +1293,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                    let text = obj["text"] as? String {
                     snap = parse(text, vendor: v.id)
                 }
-                results.append((name: v.name, snap: snap))
+                results.append((name: v.name, id: v.id, snap: snap))
             }
             DispatchQueue.main.async {
                 self?.finishRefresh(generation) { me in
@@ -1232,36 +1304,106 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The single most-relevant number for a vendor in the overview: the worse of
-    /// its two windows, or its $ budget when it has no time windows.
+    /// The single most-relevant number for a vendor in the overview.
+    /// Cursor: the combined "included total usage" headline (both pools as one).
+    /// Everyone else: the most-exhausted of its windows — for Anthropic that is
+    /// the biggest of 5h, weekly, and the scoped model bar (Fable). Falls back to
+    /// the $ budget when a vendor has no time windows.
     func overviewHeadline(_ s: Snapshot) -> (pct: Int, value: String, reset: String?, elapsed: Int?) {
-        if let a = s.session, let b = s.weekly {
-            return a.pct >= b.pct
-                ? (a.pct, "\(a.pct)%", a.reset, a.elapsed)
-                : (b.pct, "\(b.pct)%", b.reset, b.elapsed)
+        if let t = s.cursorTotalPct {
+            return (t, "\(t)%", s.weekly?.reset ?? s.session?.reset, nil)
         }
-        if let a = s.session ?? s.weekly { return (a.pct, "\(a.pct)%", a.reset, a.elapsed) }
+        let windows = [s.session, s.weekly, s.sonnet].compactMap { $0 }
+        if let w = windows.max(by: { $0.pct < $1.pct }) {
+            return (w.pct, "\(w.pct)%", w.reset, w.elapsed)
+        }
         if let e = s.extra { return (e.pct, "\(e.spent) / \(e.limit)", nil, nil) }
         return (0, "—", nil, nil)
     }
 
-    func renderOverview(_ items: [(name: String, snap: Snapshot?)]) {
+    /// First word of a vendor name, clipped to `maxLen` — a compact bar label.
+    func ovLabel(_ name: String, _ maxLen: Int) -> String {
+        let first = String(name.split(separator: " ").first ?? Substring(name))
+        return first.count <= maxLen ? first : String(first.prefix(maxLen))
+    }
+
+    /// Status-bar summary for overview mode: every vendor at once. Mini bar per
+    /// vendor when few; worst-first numbers (capped, with `+K` overflow) when
+    /// many. Tunable via `[ui] overview_menubar_bars_max` (bar↔number threshold,
+    /// default 2) and `overview_menubar_max` (how many numbers fit, default 4).
+    func overviewBarTitle(_ items: [(name: String, id: String, snap: Snapshot?)],
+                          _ appearance: NSAppearance) -> NSAttributedString {
+        let secondary = menuBarTextColor(appearance, secondary: true)
+        let heads: [(name: String, pct: Int, elapsed: Int?, value: String)] = items.compactMap {
+            guard let s = $0.snap else { return nil }
+            if let cb = s.creditBalance { return ($0.name, -1, nil, "cr \(cb)") }
+            let h = overviewHeadline(s)
+            return ($0.name, h.pct, h.elapsed, "\(h.pct)%")
+        }
+        guard !heads.isEmpty else { return run("ovr", secondary) }
+
+        let barsMax = Int(configValueTOML("ui", "overview_menubar_bars_max") ?? "") ?? 2
+        let t = NSMutableAttributedString()
+        if heads.count <= barsMax {
+            for (i, e) in heads.enumerated() {
+                if i > 0 { t.append(run("   ", secondary)) }
+                t.append(run("\(ovLabel(e.name, 6)) ", secondary))
+                if e.pct >= 0 {
+                    t.append(run("\(e.pct)% ", colorForPct(e.pct)))
+                    t.append(progressAttr(pct: e.pct, width: BAR_WIDTH, elapsed: e.elapsed,
+                                          appearance: appearance))
+                } else {
+                    t.append(run(e.value, .labelColor))  // credit balance
+                }
+            }
+        } else {
+            let maxN = Int(configValueTOML("ui", "overview_menubar_max") ?? "") ?? 4
+            let sorted = heads.sorted { $0.pct > $1.pct }
+            for (i, e) in sorted.prefix(maxN).enumerated() {
+                if i > 0 { t.append(run("  ", secondary)) }
+                t.append(run("\(ovLabel(e.name, 3)) ", secondary))
+                t.append(run(e.value, e.pct >= 0 ? colorForPct(e.pct) : .labelColor))
+            }
+            if sorted.count > maxN { t.append(run("  +\(sorted.count - maxN)", secondary)) }
+        }
+        return t
+    }
+
+    func renderOverview(_ items: [(name: String, id: String, snap: Snapshot?)],
+                        rebuildSubmenu: Bool = true) {
         lastSnapshot = nil
         lastOverview = items
         let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
         headerItem.attributedTitle = run("Visão geral", .labelColor, NSFont.boldSystemFont(ofSize: 13))
         for key in ["session", "weekly", "sonnet", "extra"] { rows[key]?.isHidden = true }
 
-        var worstPct = -1
-        var worstName = ""
+        // Rows render in a monospaced font, so fixed character widths line the
+        // columns up. Pre-compute the widest headline pct and reset so both can be
+        // right-aligned — the reset then ends flush at the line's right edge.
+        let nameW = 14
+        var pctW = 0, resetW = 0
+        for item in items.prefix(overviewRows.count) {
+            guard let s = item.snap, s.creditBalance == nil else { continue }
+            let h = overviewHeadline(s)
+            pctW = max(pctW, h.value.count)
+            if let r = h.reset, !r.isEmpty { resetW = max(resetW, r.count) }
+        }
+        func rpad(_ s: String, _ w: Int) -> String {
+            String(repeating: " ", count: max(0, w - s.count)) + s
+        }
+
         for (i, item) in items.enumerated() where i < overviewRows.count {
             let it = overviewRows[i]
             it.isHidden = false
+            // Click a row to jump straight to that vendor's detail view.
+            it.representedObject = item.id
+            it.target = self
+            it.action = #selector(switchVendor(_:))
             let a = NSMutableAttributedString()
-            let label = item.name.count < 16
-                ? item.name.padding(toLength: 16, withPad: " ", startingAt: 0)
-                : item.name
-            a.append(run(label, .labelColor))
+            let fitted = item.name.count > nameW
+                ? String(item.name.prefix(nameW - 1)) + "…"
+                : item.name.padding(toLength: nameW, withPad: " ", startingAt: 0)
+            a.append(run(fitted + " ", .labelColor))
             if let s = item.snap {
                 if let cb = s.creditBalance {
                     a.append(run("cr \(cb)", .labelColor))
@@ -1269,9 +1411,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     let h = overviewHeadline(s)
                     a.append(progressAttr(pct: h.pct, width: MENU_BAR_W, elapsed: h.elapsed,
                                           menu: true, appearance: appearance))
-                    a.append(run("  \(h.value)", colorForPct(h.pct)))
-                    if let r = h.reset, !r.isEmpty { a.append(run("   ↺ \(r)", .secondaryLabelColor)) }
-                    if h.pct > worstPct { worstPct = h.pct; worstName = item.name }
+                    a.append(run("  \(rpad(h.value, pctW))", colorForPct(h.pct)))
+                    if let r = h.reset, !r.isEmpty {
+                        a.append(run("   ↺ \(rpad(r, resetW))", .secondaryLabelColor))
+                    }
                 }
             } else {
                 a.append(run("—", .secondaryLabelColor))
@@ -1280,18 +1423,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         for i in items.count..<overviewRows.count { overviewRows[i].isHidden = true }
 
-        // Menu-bar title: the single most-exhausted quota — the one glanceable
-        // fact a tiny bar can carry. The dropdown holds the full list.
-        let secondary = menuBarTextColor(appearance, secondary: true)
-        if worstPct >= 0 {
-            let t = NSMutableAttributedString()
-            t.append(run("\(worstPct)% ", colorForPct(worstPct)))
-            t.append(run(String(worstName.split(separator: " ").first ?? Substring(worstName)), secondary))
-            statusItem.button?.attributedTitle = t
-        } else {
-            statusItem.button?.attributedTitle = run("ovr", secondary)
-        }
-        rebuildVendorSubmenu()
+        // Menu-bar title: every vendor at once (mini bars when few, numbers when
+        // many). The dropdown always holds the full per-vendor list.
+        statusItem.button?.attributedTitle = overviewBarTitle(items, appearance)
+        if rebuildSubmenu { rebuildVendorSubmenu() }
     }
 
     func consume(_ output: String) {

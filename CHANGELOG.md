@@ -19,8 +19,18 @@ Each release is also published at
   `[ui] overview_vendors = [...]` picks and orders which vendors it lists. In the
   **macOS menu-bar app** it is a target in the vendor submenu and in the global
   **⌥⌘\\** swap ring (which now cycles all providers *and* the overview); its
-  dropdown lists every configured vendor and the bar shows the single most-
-  exhausted quota.
+  dropdown lists every configured vendor — each row **clickable** to jump to that
+  vendor — and the bar shows every vendor at once (a mini bar each when few, or
+  worst-first numbers past `[ui] overview_menubar_bars_max`, capped at
+  `overview_menubar_max`). Each vendor's headline is the metric that matters:
+  **Cursor** shows its combined *included total usage*; **Anthropic** the biggest
+  of 5h / weekly / the scoped-model (Fable) window.
+
+- **Instant "Loading…" feedback on a vendor swap** (menu bar). Switching vendor —
+  by ⌥⌘\\, the submenu, or an overview row — immediately replaces the view with a
+  placeholder naming the target, instead of leaving the previous vendor's data up
+  (which read as a freeze). The **⌥⌘\\ shortcut is also hinted** on the *Trocar
+  vendor* menu item.
 
 - **Cursor vendor.** Shows this billing cycle's two included-usage pools —
   **Cursor Models** (Auto + Composer) and **Other Models** (named / API) — as
@@ -46,6 +56,14 @@ Each release is also published at
   0% if the display messages don't parse.
 
 ### Fixed
+
+- **Menu-bar app no longer freezes in Overview mode.** The appearance observer
+  fired on every layout pass (not just real light↔dark flips), and in Overview
+  each fire rebuilt the vendor submenu — which relaid out the button, re-firing
+  the observer: a main-thread loop that also spawned a keychain subprocess each
+  iteration, so the menu stopped responding to clicks. The observer now reacts
+  only to actual theme changes, appearance repaints skip the submenu rebuild, and
+  the keychain check is cached.
 
 - **A failed terminal resize no longer exits the TUI.** A transient
   `terminal.resize` error (e.g. an ioctl failure) now just skips that resize

@@ -279,6 +279,25 @@ func testParserBalances() {
 }
 
 // ─── Run ─────────────────────────────────────────────────────────────────
+func testOverviewHeadline() {
+    print("overview headline (cursor combined, anthropic biggest-of-three)")
+    let app = AppDelegate()  // overviewHeadline reads only the snapshot
+    // Anthropic-style: biggest of 5h / weekly / scoped model (Fable), not the first.
+    let anthropic = Snapshot(
+        plan: "Max", hasUsageWindows: true, creditBalance: nil,
+        session: Window(pct: 30, reset: "3h", elapsed: nil),
+        weekly: Window(pct: 55, reset: "5d", elapsed: nil),
+        sonnet: Window(pct: 80, reset: "5d", elapsed: nil), sonnetLabel: "Fable", extra: nil)
+    assertEqual(app.overviewHeadline(anthropic).pct, 80, "anthropic = biggest of 5h/weekly/Fable")
+    // Cursor: the combined total, not the worse of the two pools.
+    let cursor = Snapshot(
+        plan: "Cursor Ultra", hasUsageWindows: true, creditBalance: nil,
+        session: Window(pct: 98, reset: "12d", elapsed: nil),
+        weekly: Window(pct: 100, reset: "12d", elapsed: nil),
+        sonnet: nil, sonnetLabel: "", extra: nil, cursorTotalPct: 62)
+    assertEqual(app.overviewHeadline(cursor).pct, 62, "cursor = combined total (not max pool)")
+}
+
 func testVendorCycle() {
     print("vendor swap cycle (⌥⌘\\)")
     let ids = ["anthropic", "cursor", "zai"]
@@ -306,6 +325,7 @@ struct TestRunner {
         testTomlParsing()
         testDefaultEnabled()
         testParserBalances()
+        testOverviewHeadline()
         testVendorCycle()
         if failures > 0 {
             print("\n\(failures) test(s) FAILED")
