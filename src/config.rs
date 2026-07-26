@@ -58,6 +58,10 @@ pub struct Config {
 pub struct UiConfig {
     /// `None` → fall back to anthropic for backward compatibility.
     pub primary: Option<VendorId>,
+    /// Which vendors the Overview shows (the TUI's first tab and the macOS
+    /// menu-bar's top section), in this order. `None` → every enabled vendor,
+    /// in the canonical order.
+    pub overview_vendors: Option<Vec<VendorId>>,
 }
 
 /// Where the context view docks in the dashboard body. `v` cycles it while the

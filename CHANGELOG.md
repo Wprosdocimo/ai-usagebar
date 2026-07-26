@@ -11,6 +11,13 @@ Each release is also published at
 
 ### Added
 
+- **Overview tab in the TUI.** A virtual first tab summarizing every vendor at
+  once — one compact row each (name + plan + key metric cells, colored by
+  severity) — so all your limits are visible on one screen. `Tab`/`h`/`l` wrap
+  through it at both ends, and it is the default landing view unless `[ui]
+  primary` opens on a specific vendor. `[ui] overview_vendors = [...]` picks and
+  orders which vendors it lists (default: all enabled).
+
 - **Cursor vendor.** Shows this billing cycle's two included-usage pools —
   **Cursor Models** (Auto + Composer) and **Other Models** (named / API) — as
   percentages, from `GET cursor.com/api/usage-summary`, the same undocumented

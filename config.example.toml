@@ -9,7 +9,12 @@
 # Which vendor the widget shows when `--vendor` is omitted, AND which tab
 # is selected when the TUI opens. Comment out to default to Anthropic.
 # Valid: anthropic | openai | zai | openrouter | deepseek | kimi
+# When unset, the TUI opens on the Overview (all vendors at once); set this to
+# open directly on a vendor's tab instead.
 # primary = "anthropic"
+# Which vendors the Overview lists (the TUI's first tab / the macOS menu-bar's
+# top section), in this order. Omit for every enabled vendor.
+# overview_vendors = ["anthropic", "cursor", "openai"]
 
 # Optional, TUI-only monitor for local Claude Code session context. When
 # enabled, press `c` in ai-usagebar-tui. The scanner reads only bounded tails

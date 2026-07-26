@@ -64,6 +64,7 @@ async fn run() -> io::Result<()> {
 
     let mut app = App::new_with_primary(tabs, config.ui.primary);
     app.context_enabled = config.context.enabled;
+    app.overview_vendors = config.ui.overview_vendors.clone();
 
     // RAII: restoring the terminal must survive an error or a panic in the
     // loop below. Doing it inline left the user in raw mode on the alternate
@@ -285,10 +286,13 @@ where
                         return Ok(());
                     }
                     // Refresh-on-key handling.
-                    if matches!(k.code, KeyCode::Char('r'))
-                        && let Some(tab) = app.active_tab_id().cloned()
-                    {
-                        spawn_one(app, tab, client, config, &tx);
+                    if matches!(k.code, KeyCode::Char('r')) {
+                        if app.overview {
+                            // No single active tab on the Overview — refresh all.
+                            spawn_all(app, client, config, &tx);
+                        } else if let Some(tab) = app.active_tab_id().cloned() {
+                            spawn_one(app, tab, client, config, &tx);
+                        }
                     }
                     if matches!(k.code, KeyCode::Char('R')) {
                         spawn_all(app, client, config, &tx);

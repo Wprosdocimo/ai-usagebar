@@ -2,6 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui_bubbletea_components::{Help, KeyBinding, ListItem, SelectList};
@@ -11,7 +12,7 @@ use crate::tui::app::App;
 use crate::tui::app::TabId;
 use crate::tui::app::TabState;
 use crate::tui::panels;
-use crate::tui::style::bubble_theme;
+use crate::tui::style::{bubble_theme, severity_color};
 use crate::vendor::VendorId;
 
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 86;
@@ -128,10 +129,13 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let active = app
-        .active_tab_id()
-        .map(tab_label)
-        .unwrap_or_else(|| "no vendor".to_string());
+    let active = if app.overview {
+        "Overview".to_string()
+    } else {
+        app.active_tab_id()
+            .map(tab_label)
+            .unwrap_or_else(|| "no vendor".to_string())
+    };
     let line = Line::from(vec![
         theme.accent("  Usage dashboard"),
         theme.muted(" · "),
@@ -188,16 +192,13 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let items = app
-        .tabs_meta
-        .iter()
-        .enumerate()
-        .map(|(index, tab)| {
-            ListItem::new(tab_label(tab)).description(tab_status(app.tabs.get(index)))
-        })
-        .collect::<Vec<_>>();
+    // The Overview is the virtual first entry, before the per-vendor tabs.
+    let mut items = vec![ListItem::new("Overview").description("all vendors")];
+    items.extend(app.tabs_meta.iter().enumerate().map(|(index, tab)| {
+        ListItem::new(tab_label(tab)).description(tab_status(app.tabs.get(index)))
+    }));
     let mut list = SelectList::new(items).theme(theme);
-    list.select(Some(app.active));
+    list.select(Some(if app.overview { 0 } else { app.active + 1 }));
     f.render_widget(&list, inner);
 }
 
@@ -210,11 +211,11 @@ fn draw_top_nav(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     let mut spans = vec![theme.muted(" ")];
-    for (index, tab) in app.tabs_meta.iter().enumerate() {
-        if index > 0 {
+    // Overview entry first, then each vendor tab.
+    let mut push_entry = |spans: &mut Vec<Span>, first: bool, selected: bool, label: String| {
+        if !first {
             spans.push(theme.muted("  "));
         }
-        let selected = index == app.active;
         let marker = if selected {
             theme.symbols.selected
         } else {
@@ -224,26 +225,97 @@ fn draw_top_nav(f: &mut Frame, app: &App, area: Rect) {
         let label_style = if selected { theme.selected } else { theme.text };
         spans.push(Span::styled(marker, marker_style));
         spans.push(theme.span(" "));
-        spans.push(Span::styled(compact_tab_label(tab), label_style));
+        spans.push(Span::styled(label, label_style));
+    };
+    push_entry(&mut spans, true, app.overview, "Overview".to_string());
+    for (index, tab) in app.tabs_meta.iter().enumerate() {
+        let selected = !app.overview && index == app.active;
+        push_entry(&mut spans, false, selected, compact_tab_label(tab));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), inner);
 }
 
 fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     let theme = bubble_theme(&app.theme);
-    let title = app
-        .active_tab_id()
-        .map(|tab| format!(" {} ", tab_label(tab)))
-        .unwrap_or_else(|| " details ".to_string());
+    let title = if app.overview {
+        " Overview ".to_string()
+    } else {
+        app.active_tab_id()
+            .map(|tab| format!(" {} ", tab_label(tab)))
+            .unwrap_or_else(|| " details ".to_string())
+    };
     let block = theme.titled_block(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
+
+    if app.overview {
+        draw_overview(f, app, inner);
+        return;
+    }
 
     let Some(tab) = app.tabs.get(app.active) else {
         return;
     };
     let sections = panels::sections_for(tab, chrono::Utc::now(), 5);
     panels::render(f, inner, &app.theme, &sections);
+}
+
+/// Render the Overview: one compact row per configured vendor — its name, a
+/// plan/tier sub-label, and its key metric cells colored by severity.
+fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
+    let theme = bubble_theme(&app.theme);
+    let idxs = app.overview_tabs();
+    if idxs.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(theme.muted("  No vendors to summarize."))),
+            area,
+        );
+        return;
+    }
+    // Left-align the metric columns by padding the vendor-name column to the
+    // widest name (bounded so one long account label can't blow out the layout).
+    let name_w = idxs
+        .iter()
+        .map(|&i| tab_label(&app.tabs_meta[i]).chars().count())
+        .max()
+        .unwrap_or(6)
+        .clamp(6, 22);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for &i in &idxs {
+        let name = tab_label(&app.tabs_meta[i]);
+        let pad = name_w.saturating_sub(name.chars().count());
+        let mut spans = vec![
+            Span::styled(name, theme.text),
+            theme.span(" ".repeat(pad + 2)),
+        ];
+        match app.tabs.get(i) {
+            Some(TabState::Ready(r)) => {
+                let (plan, cells) = panels::compact_cells(&r.snapshot);
+                if !plan.is_empty() {
+                    spans.push(theme.muted(format!("{plan}  ")));
+                }
+                for (j, (text, sev)) in cells.iter().enumerate() {
+                    if j > 0 {
+                        spans.push(theme.span("  "));
+                    }
+                    let color = severity_color(&app.theme, &theme, *sev);
+                    spans.push(Span::styled(text.clone(), Style::default().fg(color)));
+                }
+                if r.stale {
+                    spans.push(theme.muted("  ⏸"));
+                }
+            }
+            Some(TabState::Error(_)) => spans.push(Span::styled(
+                "error",
+                Style::default().fg(theme.palette.error),
+            )),
+            Some(TabState::Loading) | None => spans.push(theme.muted("fetching…")),
+        }
+        lines.push(Line::from(spans));
+        lines.push(Line::from(""));
+    }
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn tab_status(tab: Option<&TabState>) -> &'static str {

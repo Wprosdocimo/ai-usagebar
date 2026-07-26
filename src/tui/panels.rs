@@ -51,6 +51,90 @@ pub enum Section {
     Spacer,
 }
 
+/// Compact one-line projection of a vendor snapshot for the Overview: a short
+/// plan/tier sub-label (may be empty) plus a few key metric cells — a percent
+/// or a balance — each carrying a severity for coloring. Same numbers as
+/// [`sections_for`], flattened for a dense multi-vendor list. The vendor's name
+/// is supplied by the caller, so it is not repeated here.
+pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSeverity)>) {
+    let pct = |label: &str, p: i32| (format!("{label} {p}%"), severity_for(p));
+    let money = |v: f64| (format!("${v:.2}"), PaceSeverity::Low);
+    let ccy = |v: f64, c: &str| {
+        let s = match c {
+            "USD" => format!("${v:.2}"),
+            "CNY" => format!("¥{v:.2}"),
+            _ => format!("{v:.2} {c}"),
+        };
+        (s, PaceSeverity::Low)
+    };
+    match snapshot {
+        VendorSnapshot::Anthropic(s) => {
+            let mut cells = vec![
+                pct("S", s.session.utilization_pct),
+                pct("W", s.weekly.utilization_pct),
+            ];
+            if let Some(sonnet) = &s.sonnet {
+                cells.push(pct("Son", sonnet.utilization_pct));
+            }
+            (s.plan.clone(), cells)
+        }
+        VendorSnapshot::AnthropicApi(s) => {
+            let cell = match s.pct() {
+                Some(p) => pct("spend", p),
+                None => (format!("${:.2}/mo", s.spent), PaceSeverity::Low),
+            };
+            (String::new(), vec![cell])
+        }
+        VendorSnapshot::Openai(s) => {
+            let mut cells = Vec::new();
+            if let Some(w) = &s.session {
+                cells.push(pct("5h", w.utilization_pct));
+            }
+            if let Some(w) = &s.weekly {
+                cells.push(pct("7d", w.utilization_pct));
+            }
+            if cells.is_empty() {
+                cells.push(("—".into(), PaceSeverity::Low));
+            }
+            (s.plan.clone(), cells)
+        }
+        VendorSnapshot::Zai(s) => {
+            let mut cells = Vec::new();
+            if let Some(w) = &s.session {
+                cells.push(pct("S", w.utilization_pct));
+            }
+            if let Some(w) = &s.weekly {
+                cells.push(pct("W", w.utilization_pct));
+            }
+            if cells.is_empty() {
+                cells.push(("—".into(), PaceSeverity::Low));
+            }
+            (s.plan.clone(), cells)
+        }
+        VendorSnapshot::Openrouter(s) => (String::new(), vec![money(s.balance())]),
+        VendorSnapshot::Deepseek(s) => (String::new(), vec![ccy(s.balance, &s.currency)]),
+        VendorSnapshot::Kimi(s) => (
+            s.plan.clone().unwrap_or_default(),
+            vec![pct("wk", s.weekly_pct()), pct("5h", s.window_pct())],
+        ),
+        VendorSnapshot::Kilo(s) => (String::new(), vec![money(s.balance)]),
+        VendorSnapshot::Novita(s) => (String::new(), vec![money(s.available)]),
+        VendorSnapshot::Moonshot(s) => (String::new(), vec![ccy(s.available, &s.currency)]),
+        VendorSnapshot::Grok(s) => (String::new(), vec![money(s.balance)]),
+        VendorSnapshot::Antigravity(s) => (
+            s.plan.clone(),
+            vec![
+                pct("S", s.session.utilization_pct),
+                pct("W", s.weekly.utilization_pct),
+            ],
+        ),
+        VendorSnapshot::Cursor(s) => (
+            s.plan.clone(),
+            vec![pct("auto", s.auto_pct), pct("premium", s.api_pct)],
+        ),
+    }
+}
+
 /// Build the section list for the currently-active vendor's snapshot.
 pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> Vec<Section> {
     match tab {
@@ -1182,6 +1266,24 @@ mod tests {
             on_demand_enabled: false,
             reset_at: Some(now() + chrono::Duration::days(9)),
         }
+    }
+
+    #[test]
+    fn compact_cells_flatten_key_metrics_for_the_overview() {
+        // Percent vendor (Cursor): plan + two colored pool cells.
+        let (plan, cells) = compact_cells(&VendorSnapshot::Cursor(cursor_snap()));
+        assert_eq!(plan, "Ultra");
+        assert_eq!(cells[0].0, "auto 98%");
+        assert_eq!(cells[1].0, "premium 100%");
+        assert_eq!(cells[1].1, PaceSeverity::Critical); // 100% is critical
+
+        // Balance vendor (Kilo): no plan, a single money cell, calm severity.
+        let (plan, cells) = compact_cells(&VendorSnapshot::Kilo(crate::usage::KiloSnapshot {
+            label: "Kilo".into(),
+            balance: 8.42,
+        }));
+        assert!(plan.is_empty());
+        assert_eq!(cells, vec![("$8.42".to_string(), PaceSeverity::Low)]);
     }
 
     #[test]

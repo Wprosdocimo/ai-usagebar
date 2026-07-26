@@ -89,6 +89,11 @@ pub struct App {
     /// Background fetches carry this with their tab identity so results from a
     /// previous Settings reload cannot land in a new tab at the old index.
     pub tab_generation: u64,
+    /// When `true`, the Overview pane is selected (the virtual first tab that
+    /// summarizes every vendor at once) instead of a per-vendor detail tab.
+    pub overview: bool,
+    /// Which vendors the Overview lists (`[ui] overview_vendors`); `None` = all.
+    pub overview_vendors: Option<Vec<VendorId>>,
     pub theme: Theme,
     pub quit: bool,
     /// When `Some`, the Settings overlay is open and consuming key events.
@@ -122,6 +127,8 @@ impl App {
             active: 0,
             tabs: vec![TabState::Loading; n],
             tab_generation: 0,
+            overview: false,
+            overview_vendors: None,
             theme,
             quit: false,
             settings: None,
@@ -136,7 +143,13 @@ impl App {
     /// isn't present (e.g. it was disabled).
     pub fn new_with_primary(tabs_meta: Vec<TabId>, primary: Option<VendorId>) -> Self {
         let mut app = Self::new(tabs_meta);
-        app.select_primary(primary);
+        // Default landing is the Overview (show everything at once). An explicit
+        // `[ui] primary` opts into opening on that vendor's tab instead.
+        if primary.is_some() {
+            app.select_primary(primary);
+        } else {
+            app.overview = true;
+        }
         app
     }
 
@@ -182,18 +195,53 @@ impl App {
             && let Some(idx) = self.tabs_meta.iter().position(|t| t.vendor == p)
         {
             self.active = idx;
+            self.overview = false;
         }
     }
 
+    /// The selectable ring is `[Overview, tab0, tab1, …]`. `next_tab`/`prev_tab`
+    /// walk it, wrapping through the Overview at the ends.
     pub fn next_tab(&mut self) {
-        if !self.tabs_meta.is_empty() {
-            self.active = (self.active + 1) % self.tabs_meta.len();
+        if self.overview {
+            if !self.tabs_meta.is_empty() {
+                self.overview = false;
+                self.active = 0;
+            }
+        } else if self.active + 1 < self.tabs_meta.len() {
+            self.active += 1;
+        } else {
+            self.overview = true;
         }
     }
 
     pub fn prev_tab(&mut self) {
-        if !self.tabs_meta.is_empty() {
-            self.active = (self.active + self.tabs_meta.len() - 1) % self.tabs_meta.len();
+        if self.overview {
+            if !self.tabs_meta.is_empty() {
+                self.overview = false;
+                self.active = self.tabs_meta.len() - 1;
+            }
+        } else if self.active > 0 {
+            self.active -= 1;
+        } else {
+            self.overview = true;
+        }
+    }
+
+    /// Tabs the Overview should list: `overview_vendors` filtered against the
+    /// live tab set (preserving the config order), or all tabs when unset.
+    pub fn overview_tabs(&self) -> Vec<usize> {
+        match &self.overview_vendors {
+            None => (0..self.tabs_meta.len()).collect(),
+            Some(wanted) => wanted
+                .iter()
+                .flat_map(|v| {
+                    self.tabs_meta
+                        .iter()
+                        .enumerate()
+                        .filter(move |(_, t)| t.vendor == *v)
+                        .map(|(i, _)| i)
+                })
+                .collect(),
         }
     }
 }
@@ -476,6 +524,55 @@ mod tests {
         let mut app = App::with_theme(vec![TabId::vendor(VendorId::Anthropic)], Theme::default());
         app.select_primary(Some(VendorId::Openai));
         assert_eq!(app.active_vendor(), Some(VendorId::Anthropic));
+    }
+
+    #[test]
+    fn nav_ring_wraps_through_the_overview_at_both_ends() {
+        let mut app = App::with_theme(
+            vec![
+                TabId::vendor(VendorId::Anthropic),
+                TabId::vendor(VendorId::Openai),
+            ],
+            Theme::default(),
+        );
+        app.overview = true;
+
+        app.next_tab(); // Overview -> first vendor
+        assert!(!app.overview);
+        assert_eq!(app.active, 0);
+        app.next_tab();
+        assert_eq!(app.active, 1);
+        app.next_tab(); // last vendor -> Overview
+        assert!(app.overview);
+
+        app.prev_tab(); // Overview -> last vendor
+        assert!(!app.overview);
+        assert_eq!(app.active, 1);
+        app.prev_tab();
+        assert_eq!(app.active, 0);
+        app.prev_tab(); // first vendor -> Overview
+        assert!(app.overview);
+    }
+
+    #[test]
+    fn overview_tabs_defaults_to_all_and_honors_the_config_filter() {
+        let mut app = App::with_theme(
+            vec![
+                TabId::vendor(VendorId::Anthropic),
+                TabId::vendor(VendorId::Openai),
+                TabId::vendor(VendorId::Zai),
+            ],
+            Theme::default(),
+        );
+        assert_eq!(app.overview_tabs(), vec![0, 1, 2]);
+
+        // Subset in the given order.
+        app.overview_vendors = Some(vec![VendorId::Zai, VendorId::Anthropic]);
+        assert_eq!(app.overview_tabs(), vec![2, 0]);
+
+        // A listed-but-absent vendor is simply skipped.
+        app.overview_vendors = Some(vec![VendorId::Grok, VendorId::Openai]);
+        assert_eq!(app.overview_tabs(), vec![1]);
     }
 
     fn config_with_accounts(labels: &[&str]) -> Config {
