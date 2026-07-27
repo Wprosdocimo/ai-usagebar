@@ -12,7 +12,7 @@ use crate::tui::app::App;
 use crate::tui::app::TabId;
 use crate::tui::app::TabState;
 use crate::tui::panels;
-use crate::tui::style::{bubble_theme, severity_color};
+use crate::tui::style::{bubble_theme, color, severity_color};
 use crate::vendor::VendorId;
 
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 86;
@@ -212,7 +212,7 @@ fn draw_top_nav(f: &mut Frame, app: &App, area: Rect) {
 
     let mut spans = vec![theme.muted(" ")];
     // Overview entry first, then each vendor tab.
-    let mut push_entry = |spans: &mut Vec<Span>, first: bool, selected: bool, label: String| {
+    let push_entry = |spans: &mut Vec<Span>, first: bool, selected: bool, label: String| {
         if !first {
             spans.push(theme.muted("  "));
         }
@@ -262,6 +262,9 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
 
 /// Render the Overview: one compact row per configured vendor — its name, a
 /// plan/tier sub-label, and its key metric cells colored by severity.
+/// Width of the per-row mini bar in the Overview (cells).
+const OVERVIEW_BAR_W: usize = 12;
+
 fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     let theme = bubble_theme(&app.theme);
     let idxs = app.overview_tabs();
@@ -291,6 +294,24 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         ];
         match app.tabs.get(i) {
             Some(TabState::Ready(r)) => {
+                // Mini bar for the vendor's headline metric, mirroring the
+                // menu-bar overview; balance-only vendors have none.
+                if let Some(p) = panels::headline_pct(&r.snapshot) {
+                    let filled = (p.clamp(0, 100) as usize * OVERVIEW_BAR_W).div_ceil(100);
+                    let sev_color =
+                        severity_color(&app.theme, &theme, crate::pango::severity_for(p));
+                    spans.push(Span::styled(
+                        "█".repeat(filled),
+                        Style::default().fg(sev_color),
+                    ));
+                    let empty =
+                        color(&app.theme.bar_empty).unwrap_or(theme.palette.selected_background);
+                    spans.push(Span::styled(
+                        "░".repeat(OVERVIEW_BAR_W - filled),
+                        Style::default().fg(empty),
+                    ));
+                    spans.push(theme.span("  "));
+                }
                 let (plan, cells) = panels::compact_cells(&r.snapshot);
                 if !plan.is_empty() {
                     spans.push(theme.muted(format!("{plan}  ")));
