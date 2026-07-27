@@ -139,6 +139,20 @@ func markerElapsed(reset: String, elapsed: Int?) -> Int? {
     return elapsed
 }
 
+/// Squeeze a countdown ("4d 1h", "2h 05m", "now") down to its leading unit for
+/// the overview status-bar title, where every character fights for space:
+/// "4d 1h" → "4d", "2h 05m" → "2h", "0h 05m" → "5m". Missing/em-dash → nil.
+func shortReset(_ r: String) -> String? {
+    guard !r.isEmpty, r != "—" else { return nil }
+    let parts = r.split(separator: " ")
+    guard let first = parts.first else { return nil }
+    if first == "0h", parts.count > 1 {
+        let m = parts[1].drop(while: { $0 == "0" })
+        return m == "m" ? "0m" : String(m)
+    }
+    return String(first)
+}
+
 let barFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
 
 func run(_ s: String, _ color: NSColor, _ font: NSFont = barFont) -> NSAttributedString {
@@ -1572,12 +1586,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func overviewBarTitle(_ items: [(name: String, id: String, snap: Snapshot?)],
                           _ appearance: NSAppearance) -> NSAttributedString {
         let secondary = menuBarTextColor(appearance, secondary: true)
-        let heads: [(name: String, pct: Int, elapsed: Int?, value: String)] = items.compactMap {
-            guard let s = $0.snap else { return nil }
-            if let cb = s.creditBalance { return ($0.name, -1, nil, "cr \(cb)") }
-            let h = overviewHeadline(s)
-            return ($0.name, h.pct, h.elapsed, "\(h.pct)%")
-        }
+        let heads: [(name: String, pct: Int, elapsed: Int?, value: String, reset: String?)] =
+            items.compactMap {
+                guard let s = $0.snap else { return nil }
+                if let cb = s.creditBalance { return ($0.name, -1, nil, "cr \(cb)", nil) }
+                let h = overviewHeadline(s)
+                return ($0.name, h.pct, h.elapsed, "\(h.pct)%", h.reset.flatMap(shortReset))
+            }
         guard !heads.isEmpty else { return run("ovr", secondary) }
 
         let barsMax = Int(configValueTOML("ui", "overview_menubar_bars_max") ?? "") ?? 4
@@ -1591,6 +1606,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     t.append(run("\(e.pct)% ", colorForPct(e.pct)))
                     t.append(progressAttr(pct: e.pct, width: BAR_WIDTH, elapsed: e.elapsed,
                                           appearance: appearance))
+                    if let r = e.reset { t.append(run(" \(r)", secondary)) }
                 } else {
                     t.append(run(e.value, .labelColor))  // credit balance
                 }
@@ -1605,6 +1621,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 if i > 0 { t.append(run("  ", secondary)) }
                 t.append(run("\(ovLabel(e.name, 3)) ", secondary))
                 t.append(run(e.value, e.pct >= 0 ? colorForPct(e.pct) : .labelColor))
+                if let r = e.reset { t.append(run(" \(r)", secondary)) }
             }
             if heads.count > maxN { t.append(run("  +\(heads.count - maxN)", secondary)) }
         }
