@@ -9,7 +9,147 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- **Claude multi-account in the macOS menu bar.** Every named Anthropic account
+  — explicit `[[anthropic.accounts]]` entries and `[anthropic] accounts_dir`
+  discoveries, the same config the binary and TUI already read — now appears as
+  its own entry ("Claude · work") in the *Trocar vendor* submenu, the **⌥⌘\\**
+  swap ring, the Preferences vendor selector, and the **Overview** (its own
+  dropdown row and status-bar segment, labeled by account). Fetches run as
+  `--vendor anthropic --account <label>`, so each account keeps its own cache
+  and refresh, and the dropdown header shows which account is active
+  ("Claude Max 20x · work"). `[anthropic] show_default_account = false` hides
+  the default (unnamed) Claude entry, mirroring the TUI.
+
+- **Overview across the TUI and the macOS menu bar.** A single view summarizing
+  every vendor at once — one compact row each (key metric, colored by severity)
+  — so all your limits are visible without switching tabs. In the **TUI** it is
+  a virtual first tab that `Tab`/`h`/`l` wrap through at both ends and the
+  default landing view (unless `[ui] primary` opens on a specific vendor);
+  `[ui] overview_vendors = [...]` picks and orders which vendors it lists on
+  both surfaces. In the **macOS menu-bar app** it is a target in the vendor
+  submenu and in the global
+  **⌥⌘\\** swap ring (which now cycles all providers *and* the overview); its
+  dropdown lists every configured vendor — each row **clickable** to jump to that
+  vendor — and the bar shows every vendor at once (a mini bar each when few, or
+  compact %-text past `[ui] overview_menubar_bars_max` (default 4), capped at
+  `overview_menubar_max`, in stable provider-grouped entry order). A
+  **Compactar** item right under the usage rows forces the compact %-text
+  mode even under the threshold; while compact it reads **Expandir** and turns
+  it back off. It also has a **global ⌥⌘E shortcut** (hinted on the item,
+  toggleable in Preferências → Atalho next to the ⌥⌘\\ swap toggle; overview
+  mode only). Each vendor's headline is the metric that matters:
+  **Cursor** shows its combined *included total usage*; **Anthropic** the biggest
+  of 5h / weekly / the scoped-model (Fable) window. The menu-bar title now also
+  shows each vendor's **time to reset**, squeezed to its leading unit ("4d",
+  "2h", "5m") to fit both bar and %-text modes — same countdown the dropdown
+  and the per-vendor detail view already show, just shortened for the bar.
+
+- **Instant "Loading…" feedback on a vendor swap** (menu bar). Switching vendor —
+  by ⌥⌘\\, the submenu, or an overview row — immediately replaces the view with a
+  placeholder naming the target, instead of leaving the previous vendor's data up
+  (which read as a freeze). The **⌥⌘\\ shortcut is also hinted** on the *Trocar
+  vendor* menu item.
+
+- **Cursor vendor.** Shows this billing cycle's two included-usage pools —
+  **Cursor Models** (Auto + Composer) and **Other Models** (named / API) — as
+  percentages, from `GET cursor.com/api/usage-summary`, the same undocumented
+  endpoint the Cursor dashboard's own frontend calls. Also surfaces the plan
+  (`membershipType`), the billing-cycle reset, whether on-demand spend is on,
+  and unlimited plans. No API key: the session token is read **read-only** from
+  the local `state.vscdb` SQLite database the Cursor IDE already wrote after you
+  signed in there (the JWT's `sub` claim yields the user id; combined with the
+  raw token it forms the `WorkosCursorSessionToken` cookie the endpoint
+  expects). Opt-in (`[cursor] enabled = true`) and wired into the Waybar widget,
+  `--vendor cursor`, the TUI panel (a bar per pool), scroll-cycling, **the macOS
+  menu bar app** (its two pools relabel the session/weekly bars as "Cursor
+  Models" / "Other Models"), and the config-example/README docs. Adds a
+  `rusqlite` (bundled) dependency. Not wired into the GNOME extension yet.
+  **Team accounts** (`membershipType` with no `individualUsage.plan`) are now
+  parsed too, via the auto/named "You've used N% of your included … usage"
+  display-message strings the payload also carries — the only percentage
+  source Cursor exposes for those accounts, per an independent
+  reverse-engineering of the same endpoint. Unverified against a live team
+  account (labeled `"<Plan> (team)"` in the UI so it's visibly a best-effort
+  path); falls back to the existing schema error rather than a fabricated
+  0% if the display messages don't parse.
+- **Auto-discovered Anthropic accounts (`[anthropic] accounts_dir`).** Point it
+  at a directory and ai-usagebar discovers each account under it automatically,
+  using Claude Code's own `CLAUDE_CONFIG_DIR` layout: every immediate
+  subdirectory becomes an account labeled by the subdirectory name — a TUI tab
+  and `--account <label>`, refreshed independently — with no per-account config
+  entry. This directory-based discovery also sees macOS logins whose credentials
+  live only in a config-dir-scoped Keychain item. Populate it by running the
+  `claude` CLI with a per-account `CLAUDE_CONFIG_DIR`, the general way to keep
+  several Claude Code logins side by side. Discovered accounts merge with
+  explicit `[[anthropic.accounts]]` (explicit wins on a label clash); a missing
+  or unreadable directory is ignored. Because it keys only on the standard
+  Claude Code layout, any tool that manages multiple logins works with it, not
+  one specific account switcher.
+  - **`[anthropic] show_default_account`** (default `true`): set `false` to hide
+    the default (unnamed) Claude tab when every account is managed explicitly,
+    so you don't get a redundant tab for the ambient Keychain/`~/.claude` login.
+    Ignored when there are no named accounts.
+  - **Staggered multi-account refreshes.** The TUI previously refreshed every
+    tab at once; with several Anthropic accounts that burst the shared
+    `/api/oauth/usage` + token endpoints and tripped their rate limit (`429`).
+    Anthropic tabs now refresh spaced out (~0.8s apart) so each account fetches
+    politely; other vendors still start immediately.
+- **"Iniciar no login" (start at login) toggle** in the macOS menu-bar app's
+  Preferences. Flipping it on installs a per-user LaunchAgent
+  (`~/Library/LaunchAgents/com.akitaonrails.ai-usagebar-menubar.plist`) pointing
+  at the running binary, so the app comes up automatically at each login; off
+  removes it. This is the GUI equivalent of `macos/install-agent.sh` — no
+  `launchctl` needed. macOS only: the app is a menu-bar agent that doesn't exist
+  on Linux (where the GNOME Shell extension autostarts with the session, and the
+  Waybar widget starts with the bar) or Windows.
+
 ### Fixed
+
+- **Cursor caches are now bound to the signed-in account and billing cycle.**
+  A fresh cache from one Cursor login can no longer be shown after the IDE
+  switches accounts, and a stale snapshot is not served past its recorded
+  billing reset during an outage. Cached integers are range-checked before
+  narrowing, and the live payload must include a finite, representable
+  `totalPercentUsed` instead of silently turning schema drift into `0%`.
+
+- **macOS Overview, shortcuts, and login startup now reflect their real
+  configuration/state.** Overview honors `[ui] overview_vendors` (including all
+  named Claude accounts selected by `anthropic`) and grows its dropdown row pool
+  as accounts are discovered. Carbon handler/hot-key registration errors are
+  checked; an unavailable shortcut turns its preference back off instead of
+  appearing enabled while doing nothing. “Iniciar no login” reads the actual
+  LaunchAgent file, writes it atomically, and surfaces filesystem errors rather
+  than drifting from a stale `UserDefaults` value.
+
+- **Named/`accounts_dir` Anthropic accounts now find macOS Keychain-backed
+  logins.** `CLAUDE_CONFIG_DIR=<accounts_dir>/<label> claude` was documented
+  to make `<label>` "just work", but on macOS Claude Code stores the login in
+  the Keychain (service `Claude Code-credentials-<hash>`, hashed from the
+  config dir's absolute path) and never writes `<label>/.credentials.json` —
+  so a named account could look logged in via `claude` yet ai-usagebar kept
+  reporting "no usable cache" / stale file errors. Named accounts now prefer
+  the Keychain item hashed from their own directory, falling back to the file
+  (the Linux layout). Keychain-first matters: a `.credentials.json` copied by
+  hand shares its refresh-token lineage with the original, and dies with a
+  401 as soon as the real holder rotates it — reading the file first kept
+  resurrecting those dead snapshots over the live login sitting in the
+  Keychain. Token refreshes write back to the same scoped item, so
+  ai-usagebar and Claude Code keep sharing one source of truth per account.
+  Account discovery itself now keys on each immediate directory, rather than
+  requiring the file that Keychain-only logins intentionally do not create.
+  A different account's item can never match (the hash is per-directory), so
+  this doesn't reopen the cross-account ambiguity the original file-only
+  rule (#15) was written to avoid.
+
+- **Menu-bar app no longer freezes in Overview mode.** The appearance observer
+  fired on every layout pass (not just real light↔dark flips), and in Overview
+  each fire rebuilt the vendor submenu — which relaid out the button, re-firing
+  the observer: a main-thread loop that also spawned a keychain subprocess each
+  iteration, so the menu stopped responding to clicks. The observer now reacts
+  only to actual theme changes, appearance repaints skip the submenu rebuild, and
+  the keychain check is cached.
 
 - **A failed terminal resize no longer exits the TUI.** A transient
   `terminal.resize` error (e.g. an ioctl failure) now just skips that resize

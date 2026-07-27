@@ -13,6 +13,7 @@ use crate::anthropic_api;
 use crate::antigravity;
 use crate::cache::{Cache, DEFAULT_TTL};
 use crate::config::Config;
+use crate::cursor;
 use crate::deepseek;
 use crate::error::{AppError, Result};
 use crate::grok;
@@ -149,6 +150,7 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
         Vendor::Moonshot => moonshot_output(cli, &config).await,
         Vendor::Grok => grok_output(cli, &config).await,
         Vendor::Antigravity => antigravity_output(cli, &config).await,
+        Vendor::Cursor => cursor_output(cli, &config).await,
     }
 }
 
@@ -175,6 +177,38 @@ async fn antigravity_output(cli: &Cli, _config: &Config) -> Result<WaybarOutput>
     let vendor_outcome: VendorOutcome = outcome.into();
     let opts = RenderOpts::from_cli(cli);
     Ok(antigravity::vendor::render(
+        &vendor_outcome,
+        &snap,
+        &theme,
+        &opts,
+        chrono::Utc::now(),
+    ))
+}
+
+/// Cursor authenticates via a session token the Cursor IDE already wrote to
+/// its local `state.vscdb` — no API key to resolve, but (unlike Antigravity)
+/// a real on-disk path that can be overridden, mirroring OpenAI's
+/// `codex_auth_path`.
+async fn cursor_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
+    let client = http_client()?;
+    let cache = vendor_cache(cli, "cursor")?;
+    let db_path = match config.cursor.db_path.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => cursor::db::default_db_path()?,
+    };
+    let endpoints = cursor::fetch::Endpoints::default();
+    let outcome =
+        match cursor::fetch_snapshot(&client, &db_path, &cache, &endpoints, DEFAULT_TTL).await {
+            Ok(o) => o,
+            Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
+            Err(e) => return Err(e),
+        };
+
+    let theme = theme_from_cli(cli);
+    let snap = outcome.snapshot.clone();
+    let vendor_outcome: VendorOutcome = outcome.into();
+    let opts = RenderOpts::from_cli(cli);
+    Ok(cursor::vendor::render(
         &vendor_outcome,
         &snap,
         &theme,
@@ -823,14 +857,18 @@ mod tests {
 
     #[test]
     fn named_account_uses_its_creds_and_label_subdir() {
-        // A named account's file is Explicit: a missing/broken path must fail
-        // loudly, never silently read another account's Keychain item (#15).
+        // A named account's file is read strictly first; the Keychain fallback
+        // (if the file is missing/unusable) is scoped to its own directory, so
+        // it can never silently read a *different* account's item (#15).
         let config = config_with_account("work", "/creds/work.json");
         let cli = cli_with(Some("work"), None, Some("/tmp/cache"));
         let (creds, cache) = anthropic_target(&cli, &config).unwrap();
         assert_eq!(
             creds,
-            CredsTarget::Explicit(PathBuf::from("/creds/work.json"))
+            CredsTarget::Named {
+                path: PathBuf::from("/creds/work.json"),
+                config_dir: PathBuf::from("/creds"),
+            }
         );
         assert_eq!(
             cache.dir(),

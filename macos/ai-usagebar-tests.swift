@@ -160,6 +160,36 @@ func testTomlParsing() {
               "enabled does not leak across sections")
     assertEqual(tomlValueInText(scoped, section: "deepseek", key: "api_key"), "ds-key",
                 "api_key read from the right section")
+
+    let overview = """
+    [ui]
+    overview_vendors = ["cursor", 'anthropic', "openai"] # ordered subset
+    """
+    assertEqual(tomlStringArrayInText(overview, section: "ui", key: "overview_vendors")?
+                    .joined(separator: ","),
+                "cursor,anthropic,openai", "quoted string array")
+    let multilineOverview = """
+    [ui]
+    overview_vendors = [
+        "anthropic", # every named account
+        "cursor",
+    ]
+    """
+    assertEqual(tomlStringArrayInText(multilineOverview, section: "ui",
+                                      key: "overview_vendors")?.joined(separator: ","),
+                "anthropic,cursor", "multiline string array with comments")
+    let emptyOverview = """
+    [ui]
+    overview_vendors = []
+    """
+    assertEqual(tomlStringArrayInText(emptyOverview, section: "ui", key: "overview_vendors")?
+                    .isEmpty, true, "empty string array")
+    let malformedOverview = """
+    [ui]
+    overview_vendors = ["cursor", 42]
+    """
+    assertNil(tomlStringArrayInText(malformedOverview, section: "ui", key: "overview_vendors"),
+              "malformed string array rejected")
 }
 
 // ─── Rust enabled defaults (src/config.rs) ───────────────────────────────
@@ -168,7 +198,7 @@ func testDefaultEnabled() {
     for id in ["anthropic", "openai", "zai", "openrouter"] {
         assertEqual(defaultEnabled(id), true, "\(id) defaults enabled")
     }
-    for id in ["deepseek", "kimi", "kilo", "novita", "moonshot", "grok", "anthropic_api"] {
+    for id in ["deepseek", "kimi", "kilo", "novita", "moonshot", "grok", "anthropic_api", "cursor"] {
         assertEqual(defaultEnabled(id), false, "\(id) defaults disabled (opt-in)")
     }
 }
@@ -256,9 +286,207 @@ func testParserBalances() {
     assertEqual(cld?.hasUsageWindows, true, "anthropic shows windows")
     assertNil(cld?.creditBalance, "anthropic has no balance")
     assertEqual(cld?.session?.pct, 42, "anthropic session pct")
+
+    // Cursor: two included-usage pools carried on the session/weekly aliases
+    // (session = Cursor Models, weekly = Other Models), both real, no balance.
+    // The bars are relabeled away from the "Session"/"Weekly" time-window names.
+    let cur = snapshot(FORMAT, vendor: "cursor",
+                       fields: fields(through: 16, set: [
+                          0: "Cursor Ultra", 1: "98", 2: "8d", 3: "100", 4: "8d", 16: "cur"
+                       ]))
+    assertEqual(cur?.hasUsageWindows, true, "cursor shows windows")
+    assertNil(cur?.creditBalance, "cursor has no balance")
+    assertEqual(cur?.session?.pct, 98, "cursor Cursor Models pct")
+    assertEqual(cur?.weekly?.pct, 100, "cursor Other Models pct")
+    assertEqual(cur?.sessionLabel, "Cursor Models", "cursor relabels the session bar")
+    assertEqual(cur?.weeklyLabel, "Other Models", "cursor relabels the weekly bar")
+    assertEqual(cur?.sessionTag, "auto", "cursor session tag")
+    assertEqual(cur?.weeklyTag, "premium", "cursor weekly tag")
+
+    // A non-Cursor vendor keeps the default time-window labels.
+    assertEqual(cld?.sessionLabel, "Session", "anthropic keeps the Session label")
+    assertEqual(cld?.weeklyTag, "7d", "anthropic keeps the 7d tag")
 }
 
 // ─── Run ─────────────────────────────────────────────────────────────────
+func testOverviewHeadline() {
+    print("overview headline (cursor combined, anthropic biggest-of-three)")
+    let app = AppDelegate()  // overviewHeadline reads only the snapshot
+    // Anthropic-style: biggest of 5h / weekly / scoped model (Fable), not the first.
+    let anthropic = Snapshot(
+        plan: "Max", hasUsageWindows: true, creditBalance: nil,
+        session: Window(pct: 30, reset: "3h", elapsed: nil),
+        weekly: Window(pct: 55, reset: "5d", elapsed: nil),
+        sonnet: Window(pct: 80, reset: "5d", elapsed: nil), sonnetLabel: "Fable", extra: nil)
+    assertEqual(app.overviewHeadline(anthropic).pct, 80, "anthropic = biggest of 5h/weekly/Fable")
+    // Cursor: the combined total, not the worse of the two pools.
+    let cursor = Snapshot(
+        plan: "Cursor Ultra", hasUsageWindows: true, creditBalance: nil,
+        session: Window(pct: 98, reset: "12d", elapsed: nil),
+        weekly: Window(pct: 100, reset: "12d", elapsed: nil),
+        sonnet: nil, sonnetLabel: "", extra: nil, cursorTotalPct: 62)
+    assertEqual(app.overviewHeadline(cursor).pct, 62, "cursor = combined total (not max pool)")
+}
+
+func testVendorCycle() {
+    print("vendor swap cycle (⌥⌘\\)")
+    let ids = ["anthropic", "cursor", "zai"]
+    assertEqual(nextVendorId(current: "anthropic", in: ids) ?? "?", "cursor", "forward from first")
+    assertEqual(nextVendorId(current: "zai", in: ids) ?? "?", "anthropic", "forward wraps to first")
+    assertEqual(
+        nextVendorId(current: "cursor", in: ids, forward: false) ?? "?", "anthropic", "backward")
+    assertEqual(
+        nextVendorId(current: "anthropic", in: ids, forward: false) ?? "?", "zai",
+        "backward wraps to last")
+    assertEqual(
+        nextVendorId(current: "gone", in: ids) ?? "?", "anthropic",
+        "an absent current starts at the first")
+    assertEqual(nextVendorId(current: "x", in: []) == nil, true, "empty list yields nil")
+    // The ring ends on the synthetic "overview" target, then wraps to the first.
+    let ring = ["anthropic", "cursor", "overview"]
+    assertEqual(nextVendorId(current: "cursor", in: ring) ?? "?", "overview", "last vendor → overview")
+    assertEqual(nextVendorId(current: "overview", in: ring) ?? "?", "anthropic", "overview wraps to first")
+}
+
+func testClaudeAccounts() {
+    // [[anthropic.accounts]] label extraction, in file order, ignoring other
+    // sections/keys and both quote styles.
+    let toml = """
+    [ui]
+    primary = "cursor"
+
+    [anthropic]
+    enabled = true
+    show_default_account = false
+
+    [[anthropic.accounts]]
+    label = "struct"
+    credentials_path = "~/x/struct/.credentials.json"
+
+    [[anthropic.accounts]]
+    label = 'gmail'
+    credentials_path = "~/x/gmail/.credentials.json"
+
+    [cursor]
+    enabled = true
+    """
+    assertEqual(anthropicAccountLabels(inTOML: toml).joined(separator: ","),
+                "struct,gmail", "labels in file order")
+    assertEqual(anthropicAccountLabels(inTOML: "[anthropic]\nenabled = true").isEmpty, true,
+                "no account blocks → no labels")
+    // A `label` key outside an accounts block must not count.
+    assertEqual(anthropicAccountLabels(inTOML: "[ui]\nlabel = \"nope\"").isEmpty, true,
+                "label outside [[anthropic.accounts]] ignored")
+
+    // Explicit wins over discovered on a clash; discovered appended sorted.
+    assertEqual(mergedAccountLabels(explicit: ["b"], discovered: ["a", "b", "c"])
+                    .joined(separator: ","),
+                "b,a,c", "explicit first, clash dropped")
+
+    // show_default_account semantics mirror Rust: ignored without accounts.
+    assertEqual(showDefaultClaudeAccount(configValue: "false", hasAccounts: false), true,
+                "no accounts → default always shown")
+    assertEqual(showDefaultClaudeAccount(configValue: "false", hasAccounts: true), false,
+                "false hides the default")
+    assertEqual(showDefaultClaudeAccount(configValue: nil, hasAccounts: true), true,
+                "omitted → shown")
+
+    // accounts_dir discovery: every subdir is an account (Keychain-backed
+    // logins need not have a .credentials.json), sorted.
+    let fm = FileManager.default
+    let dir = NSTemporaryDirectory() + "aiusagebar-tests-\(ProcessInfo.processInfo.processIdentifier)"
+    defer { try? fm.removeItem(atPath: dir) }
+    for sub in ["zeta", "alpha", "nofile"] {
+        try? fm.createDirectory(atPath: "\(dir)/\(sub)", withIntermediateDirectories: true)
+    }
+    fm.createFile(atPath: "\(dir)/zeta/.credentials.json", contents: Data("{}".utf8))
+    fm.createFile(atPath: "\(dir)/alpha/.credentials.json", contents: Data("{}".utf8))
+    fm.createFile(atPath: "\(dir)/stray.json", contents: Data("{}".utf8))
+    assertEqual(discoverAccountLabels(inDir: dir).joined(separator: ","),
+                "alpha,nofile,zeta", "account subdirs, sorted")
+    assertEqual(discoverAccountLabels(inDir: dir + "/missing").isEmpty, true,
+                "missing dir → empty")
+
+    // Pseudo-id mapping round-trip.
+    assertEqual(accountLabel(of: "anthropic@gmail") ?? "?", "gmail", "label extracted")
+    assertEqual(accountLabel(of: "anthropic") == nil, true, "base id has no label")
+    assertEqual(baseVendorId("anthropic@gmail"), "anthropic", "account → base vendor")
+    assertEqual(baseVendorId("cursor"), "cursor", "base id unchanged")
+    assertEqual(vendorArgs(for: "anthropic@gmail").joined(separator: " "),
+                "--vendor anthropic --account gmail", "account fetch args")
+    assertEqual(vendorArgs(for: "zai").joined(separator: " "), "--vendor zai", "vendor fetch args")
+    assertEqual(entryDisplayName("anthropic@gmail"), "Claude · gmail", "account display name")
+    assertEqual(entryDisplayName("overview"), "Visão geral", "overview display name")
+
+    let overviewEntries = [
+        MenuEntry(id: "anthropic@struct", name: "Claude · struct"),
+        MenuEntry(id: "anthropic@gmail", name: "Claude · gmail"),
+        MenuEntry(id: "openai", name: "OpenAI"),
+        MenuEntry(id: "cursor", name: "Cursor"),
+    ]
+    assertEqual(filterOverviewEntries(overviewEntries, requested: ["cursor", "anthropic"])
+                    .map { $0.id }.joined(separator: ","),
+                "cursor,anthropic@struct,anthropic@gmail",
+                "overview config order includes every requested account")
+    assertEqual(filterOverviewEntries(overviewEntries, requested: ["missing", "openai"])
+                    .map { $0.id }.joined(separator: ","),
+                "openai", "overview skips unavailable vendors")
+    assertEqual(filterOverviewEntries(overviewEntries, requested: nil)
+                    .map { $0.id }.joined(separator: ","),
+                "anthropic@struct,anthropic@gmail,openai,cursor",
+                "omitted overview list keeps all entries")
+
+    // The swap ring cycles across accounts like any other entry.
+    let ring = ["anthropic@struct", "anthropic@gmail", "cursor", "overview"]
+    assertEqual(nextVendorId(current: "anthropic@struct", in: ring) ?? "?",
+                "anthropic@gmail", "ring steps between accounts")
+    assertEqual(nextVendorId(current: "overview", in: ring) ?? "?",
+                "anthropic@struct", "ring wraps to the first account")
+}
+
+func testCompactToggle() {
+    // Under the threshold → bars, unless Compactar forces the text mode.
+    assertEqual(overviewUsesBars(count: 3, barsMax: 4, compact: false), true,
+                "≤ barsMax without compact → bars")
+    assertEqual(overviewUsesBars(count: 3, barsMax: 4, compact: true), false,
+                "Compactar forces %-text even under the threshold")
+    assertEqual(overviewUsesBars(count: 5, barsMax: 4, compact: false), false,
+                "past the threshold → %-text regardless")
+    assertEqual(overviewUsesBars(count: 4, barsMax: 4, compact: false), true,
+                "boundary: exactly barsMax still draws bars")
+}
+
+func testShortReset() {
+    assertEqual(shortReset("4d 1h"), "4d", "days+hours → leading days")
+    assertEqual(shortReset("2h 05m"), "2h", "hours+minutes → leading hours")
+    assertEqual(shortReset("0h 05m"), "5m", "under an hour → minutes, no leading zero")
+    assertEqual(shortReset("0h 00m"), "0m", "zero minutes stays 0m")
+    assertEqual(shortReset("now"), "now", "already reset")
+    assertEqual(shortReset("—"), nil, "em-dash → nil")
+    assertEqual(shortReset(""), nil, "empty → nil")
+}
+
+func testSystemIntegrations() {
+    print("launch agent + hot-key status")
+    do {
+        let executable = "/Applications/Test & Tools/ai-usagebar-menubar"
+        let data = try launchAgentPlist(executable: executable)
+        let object = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+        let plist = object as? [String: Any]
+        assertEqual(plist?["Label"] as? String, LAUNCH_AGENT_LABEL,
+                    "launch agent label")
+        assertEqual((plist?["ProgramArguments"] as? [String])?.first, executable,
+                    "launch agent executable is preserved")
+        assertEqual(plist?["RunAtLoad"] as? Bool, true, "launch agent runs at login")
+    } catch {
+        print("  ✗ launch agent plist: \(error)")
+        failures += 1
+    }
+    assertEqual(hotKeyRegistrationSucceeded(noErr), true, "noErr is registration success")
+    assertEqual(hotKeyRegistrationSucceeded(OSStatus(-1)), false,
+                "nonzero OSStatus is registration failure")
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -266,6 +494,12 @@ struct TestRunner {
         testTomlParsing()
         testDefaultEnabled()
         testParserBalances()
+        testOverviewHeadline()
+        testVendorCycle()
+        testClaudeAccounts()
+        testCompactToggle()
+        testShortReset()
+        testSystemIntegrations()
         if failures > 0 {
             print("\n\(failures) test(s) FAILED")
             exit(1)

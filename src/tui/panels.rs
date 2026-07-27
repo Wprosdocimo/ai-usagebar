@@ -51,6 +51,133 @@ pub enum Section {
     Spacer,
 }
 
+/// Compact one-line projection of a vendor snapshot for the Overview: a short
+/// plan/tier sub-label (may be empty) plus a few key metric cells — a percent
+/// or a balance — each carrying a severity for coloring. Same numbers as
+/// [`sections_for`], flattened for a dense multi-vendor list. The vendor's name
+/// is supplied by the caller, so it is not repeated here.
+pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSeverity)>) {
+    let pct = |label: &str, p: i32| (format!("{label} {p}%"), severity_for(p));
+    let money = |v: f64| (format!("${v:.2}"), PaceSeverity::Low);
+    let ccy = |v: f64, c: &str| {
+        let s = match c {
+            "USD" => format!("${v:.2}"),
+            "CNY" => format!("¥{v:.2}"),
+            _ => format!("{v:.2} {c}"),
+        };
+        (s, PaceSeverity::Low)
+    };
+    match snapshot {
+        VendorSnapshot::Anthropic(s) => {
+            let mut cells = vec![
+                pct("S", s.session.utilization_pct),
+                pct("W", s.weekly.utilization_pct),
+            ];
+            if let Some(sonnet) = &s.sonnet {
+                cells.push(pct("Son", sonnet.utilization_pct));
+            }
+            (s.plan.clone(), cells)
+        }
+        VendorSnapshot::AnthropicApi(s) => {
+            let cell = match s.pct() {
+                Some(p) => pct("spend", p),
+                None => (format!("${:.2}/mo", s.spent), PaceSeverity::Low),
+            };
+            (String::new(), vec![cell])
+        }
+        VendorSnapshot::Openai(s) => {
+            let mut cells = Vec::new();
+            if let Some(w) = &s.session {
+                cells.push(pct("5h", w.utilization_pct));
+            }
+            if let Some(w) = &s.weekly {
+                cells.push(pct("7d", w.utilization_pct));
+            }
+            if cells.is_empty() {
+                cells.push(("—".into(), PaceSeverity::Low));
+            }
+            (s.plan.clone(), cells)
+        }
+        VendorSnapshot::Zai(s) => {
+            let mut cells = Vec::new();
+            if let Some(w) = &s.session {
+                cells.push(pct("S", w.utilization_pct));
+            }
+            if let Some(w) = &s.weekly {
+                cells.push(pct("W", w.utilization_pct));
+            }
+            if cells.is_empty() {
+                cells.push(("—".into(), PaceSeverity::Low));
+            }
+            (s.plan.clone(), cells)
+        }
+        VendorSnapshot::Openrouter(s) => (String::new(), vec![money(s.balance())]),
+        VendorSnapshot::Deepseek(s) => (String::new(), vec![ccy(s.balance, &s.currency)]),
+        VendorSnapshot::Kimi(s) => (
+            s.plan.clone().unwrap_or_default(),
+            vec![pct("wk", s.weekly_pct()), pct("5h", s.window_pct())],
+        ),
+        VendorSnapshot::Kilo(s) => (String::new(), vec![money(s.balance)]),
+        VendorSnapshot::Novita(s) => (String::new(), vec![money(s.available)]),
+        VendorSnapshot::Moonshot(s) => (String::new(), vec![ccy(s.available, &s.currency)]),
+        VendorSnapshot::Grok(s) => (String::new(), vec![money(s.balance)]),
+        VendorSnapshot::Antigravity(s) => (
+            s.plan.clone(),
+            vec![
+                pct("S", s.session.utilization_pct),
+                pct("W", s.weekly.utilization_pct),
+            ],
+        ),
+        VendorSnapshot::Cursor(s) => (
+            s.plan.clone(),
+            vec![pct("auto", s.auto_pct), pct("premium", s.api_pct)],
+        ),
+    }
+}
+
+/// The single most-relevant percentage for a vendor in the Overview — what its
+/// per-row mini bar shows. Mirrors the macOS menu bar's headline: Cursor is the
+/// combined included-total, quota vendors the most-exhausted window; balance
+/// vendors have no meaningful percentage (`None` → no bar).
+pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
+    match snapshot {
+        VendorSnapshot::Anthropic(s) => [
+            Some(s.session.utilization_pct),
+            Some(s.weekly.utilization_pct),
+            s.sonnet.as_ref().map(|w| w.utilization_pct),
+        ]
+        .into_iter()
+        .flatten()
+        .max(),
+        VendorSnapshot::AnthropicApi(s) => s.pct(),
+        VendorSnapshot::Openai(s) => [
+            s.session.as_ref().map(|w| w.utilization_pct),
+            s.weekly.as_ref().map(|w| w.utilization_pct),
+        ]
+        .into_iter()
+        .flatten()
+        .max(),
+        VendorSnapshot::Zai(s) => [
+            s.session.as_ref().map(|w| w.utilization_pct),
+            s.weekly.as_ref().map(|w| w.utilization_pct),
+        ]
+        .into_iter()
+        .flatten()
+        .max(),
+        VendorSnapshot::Kimi(s) => Some(s.weekly_pct().max(s.window_pct())),
+        VendorSnapshot::Antigravity(s) => {
+            Some(s.session.utilization_pct.max(s.weekly.utilization_pct))
+        }
+        VendorSnapshot::Cursor(s) => (!s.unlimited).then_some(s.total_pct),
+        VendorSnapshot::Openrouter(_)
+        | VendorSnapshot::Deepseek(_)
+        | VendorSnapshot::Kilo(_)
+        | VendorSnapshot::Novita(_)
+        | VendorSnapshot::Moonshot(_)
+        | VendorSnapshot::Grok(_) => None,
+    }
+}
+
 /// Build the section list for the currently-active vendor's snapshot.
 pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> Vec<Section> {
     match tab {
@@ -89,6 +216,7 @@ pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> 
                 VendorSnapshot::Moonshot(s) => moonshot_sections(s),
                 VendorSnapshot::Grok(s) => grok_sections(s),
                 VendorSnapshot::Antigravity(s) => antigravity_sections(s, now),
+                VendorSnapshot::Cursor(s) => cursor_sections(s, now),
             };
             // Inject the (already-absolute) fetched-at instant into the title
             // row, right-aligned. Pre-snapshotted in app::refresh_one so it
@@ -366,6 +494,47 @@ fn antigravity_sections(s: &crate::usage::AntigravitySnapshot, now: DateTime<Utc
             push_window(&mut v, GROUP_THIRD_PARTY, w, now, 5, false);
         }
     }
+    v
+}
+
+fn cursor_sections(s: &crate::usage::CursorSnapshot, now: DateTime<Utc>) -> Vec<Section> {
+    let mut v = vec![Section::Title {
+        left: format!("Cursor {}", s.plan),
+        right: None,
+    }];
+    if s.unlimited {
+        v.push(Section::Spacer);
+        v.push(Section::Text {
+            label: "Plan".into(),
+            value: "Unlimited — pools don't cap".into(),
+        });
+    } else {
+        // Two included-usage pools, mirroring the dashboard's two bars.
+        v.push(Section::Spacer);
+        v.push(Section::Metric {
+            label: "Cursor Models".into(),
+            pct: s.auto_pct.clamp(0, 100) as u16,
+            severity: severity_for(s.auto_pct),
+            value_label: format!("{}%", s.auto_pct),
+            footnote: "Auto + Composer".into(),
+        });
+        v.push(Section::Spacer);
+        v.push(Section::Metric {
+            label: "Other Models".into(),
+            pct: s.api_pct.clamp(0, 100) as u16,
+            severity: severity_for(s.api_pct),
+            value_label: format!("{}%", s.api_pct),
+            footnote: format!(
+                "Named / API models · on-demand {}",
+                if s.on_demand_enabled { "on" } else { "off" }
+            ),
+        });
+    }
+    v.push(Section::Spacer);
+    v.push(Section::Text {
+        label: "Resets".into(),
+        value: countdown::format(s.reset_at, now),
+    });
     v
 }
 
@@ -1128,6 +1297,97 @@ mod tests {
             .filter(|s| matches!(s, Section::Metric { .. }))
             .count();
         assert_eq!(metric_count, 1);
+    }
+
+    fn cursor_snap() -> crate::usage::CursorSnapshot {
+        crate::usage::CursorSnapshot {
+            plan: "Ultra".into(),
+            auto_pct: 98,
+            api_pct: 100,
+            total_pct: 99,
+            unlimited: false,
+            on_demand_enabled: false,
+            reset_at: Some(now() + chrono::Duration::days(9)),
+        }
+    }
+
+    #[test]
+    fn compact_cells_flatten_key_metrics_for_the_overview() {
+        // Percent vendor (Cursor): plan + two colored pool cells.
+        let (plan, cells) = compact_cells(&VendorSnapshot::Cursor(cursor_snap()));
+        assert_eq!(plan, "Ultra");
+        assert_eq!(cells[0].0, "auto 98%");
+        assert_eq!(cells[1].0, "premium 100%");
+        assert_eq!(cells[1].1, PaceSeverity::Critical); // 100% is critical
+
+        // Balance vendor (Kilo): no plan, a single money cell, calm severity.
+        let (plan, cells) = compact_cells(&VendorSnapshot::Kilo(crate::usage::KiloSnapshot {
+            label: "Kilo".into(),
+            balance: 8.42,
+        }));
+        assert!(plan.is_empty());
+        assert_eq!(cells, vec![("$8.42".to_string(), PaceSeverity::Low)]);
+    }
+
+    #[test]
+    fn headline_pct_is_the_worst_window_or_combined_total() {
+        // Cursor: the combined total, not the worse pool (mirrors the menu bar).
+        assert_eq!(
+            headline_pct(&VendorSnapshot::Cursor(cursor_snap())),
+            Some(99)
+        );
+
+        // Balance-only vendors have no meaningful percentage → no bar.
+        let kilo = VendorSnapshot::Kilo(crate::usage::KiloSnapshot {
+            label: "Kilo".into(),
+            balance: 8.42,
+        });
+        assert_eq!(headline_pct(&kilo), None);
+    }
+
+    #[test]
+    fn cursor_sections_show_both_pools_and_reset() {
+        let sections = sections_for(&ready(VendorSnapshot::Cursor(cursor_snap())), now(), 5);
+        let metrics: Vec<_> = sections
+            .iter()
+            .filter_map(|s| match s {
+                Section::Metric {
+                    label, value_label, ..
+                } => Some((label.clone(), value_label.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(metrics.len(), 2, "two pools");
+        assert!(
+            metrics
+                .iter()
+                .any(|(l, v)| l == "Cursor Models" && v == "98%")
+        );
+        assert!(
+            metrics
+                .iter()
+                .any(|(l, v)| l == "Other Models" && v == "100%")
+        );
+        assert!(sections.iter().any(|s| matches!(
+            s,
+            Section::Text { label, value } if label == "Resets" && value.contains("9d")
+        )));
+    }
+
+    #[test]
+    fn cursor_unlimited_plan_shows_no_pool_bars() {
+        let mut snap = cursor_snap();
+        snap.unlimited = true;
+        let sections = sections_for(&ready(VendorSnapshot::Cursor(snap)), now(), 5);
+        let metric_count = sections
+            .iter()
+            .filter(|s| matches!(s, Section::Metric { .. }))
+            .count();
+        assert_eq!(metric_count, 0);
+        assert!(sections.iter().any(|s| matches!(
+            s,
+            Section::Text { value, .. } if value.contains("Unlimited")
+        )));
     }
 
     #[test]

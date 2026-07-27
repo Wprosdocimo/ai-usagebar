@@ -17,6 +17,7 @@
 
 import Cocoa
 import SwiftUI
+import Carbon.HIToolbox  // RegisterEventHotKey for the global vendor-swap shortcut
 
 // ─── Settings (persisted in UserDefaults; edit in Preferences) ───────────
 let DEF = UserDefaults.standard
@@ -85,7 +86,7 @@ let FORMAT = "{plan};;{session_pct};;{session_reset};;{weekly_pct};;{weekly_rese
              "{scoped_model};;{scoped_pct};;{scoped_reset};;" +
              "{session_elapsed};;{weekly_elapsed};;{scoped_elapsed};;{vendor_short};;{or_balance};;" +
              "{ds_balance};;{kilo_balance};;{nv_balance};;{km_balance};;{grok_balance};;" +
-             "{aapi_headline};;{aapi_pct};;{aapi_spent};;{aapi_limit}"
+             "{aapi_headline};;{aapi_pct};;{aapi_spent};;{aapi_limit};;{cursor_total_pct}"
 
 let FORMAT_WITH_SENTINEL = FORMAT + ";;__aiub_end__"
 
@@ -136,6 +137,20 @@ func ringTrackColor(_ appearance: NSAppearance) -> NSColor {
 func markerElapsed(reset: String, elapsed: Int?) -> Int? {
     guard !reset.isEmpty, reset != "—" else { return nil }
     return elapsed
+}
+
+/// Squeeze a countdown ("4d 1h", "2h 05m", "now") down to its leading unit for
+/// the overview status-bar title, where every character fights for space:
+/// "4d 1h" → "4d", "2h 05m" → "2h", "0h 05m" → "5m". Missing/em-dash → nil.
+func shortReset(_ r: String) -> String? {
+    guard !r.isEmpty, r != "—" else { return nil }
+    let parts = r.split(separator: " ")
+    guard let first = parts.first else { return nil }
+    if first == "0h", parts.count > 1 {
+        let m = parts[1].drop(while: { $0 == "0" })
+        return m == "m" ? "0m" : String(m)
+    }
+    return String(first)
 }
 
 let barFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -344,6 +359,18 @@ struct Snapshot {
     /// Label for that bar: the scoped model name ("Fable") or "Sonnet only".
     let sonnetLabel: String
     let extra: (pct: Int, spent: String, limit: String)?
+    /// Overridable labels for the session/weekly bars. Default to the
+    /// time-window names; a vendor whose two windows aren't time-based (Cursor:
+    /// "Cursor Models" / "Other Models") sets its own. Tags are the 2-char
+    /// prefixes shown on the compact status bar. Defaulted so every other
+    /// vendor's construction is unchanged.
+    var sessionTag: String = "5h"
+    var weeklyTag: String = "7d"
+    var sessionLabel: String = "Session"
+    var weeklyLabel: String = "Weekly"
+    /// Cursor's combined "included total usage" headline (`totalPercentUsed`),
+    /// the single number its dashboard shows across both pools. nil for others.
+    var cursorTotalPct: Int? = nil
 }
 
 func stripMarkup(_ s: String) -> String {
@@ -439,6 +466,11 @@ func parse(_ text: String, vendor: String) -> Snapshot? {
     // With a limit configured the spend-vs-limit bar replaces the headline, so
     // avoid showing both the "cr" balance and the extra ($) row at once.
     let displayBalance = aapiExtra == nil ? balance : nil
+    // Cursor carries its two included-usage pools on the session/weekly
+    // aliases (session = Cursor Models, weekly = Other Models — both real, not
+    // time windows), so relabel those bars rather than call them "Session"/
+    // "Weekly". Every other vendor keeps the default time-window labels.
+    let isCursor = vendor == "cursor"
     return Snapshot(plan: t(0),
                     hasUsageWindows: !balanceOnly,
                     creditBalance: displayBalance,
@@ -446,7 +478,12 @@ func parse(_ text: String, vendor: String) -> Snapshot? {
                     weekly: quotaWindow(3, 4, 14),
                     sonnet: sonnet,
                     sonnetLabel: sonnetLabel,
-                    extra: aapiExtra ?? extra)
+                    extra: aapiExtra ?? extra,
+                    sessionTag: isCursor ? "auto" : "5h",
+                    weeklyTag: isCursor ? "premium" : "7d",
+                    sessionLabel: isCursor ? "Cursor Models" : "Session",
+                    weeklyLabel: isCursor ? "Other Models" : "Weekly",
+                    cursorTotalPct: isCursor ? n(27) : nil)
 }
 
 // ─── Preferences UI (SwiftUI) ────────────────────────────────────────────
@@ -489,6 +526,11 @@ let VENDOR_AUTH: [VendorAuth] = [
     VendorAuth(id: "moonshot", name: "Moonshot", kind: "apikey", cli: "", login: "", pkg: "", env: "MOONSHOT_API_KEY"),
     VendorAuth(id: "grok", name: "Grok (xAI)", kind: "apikey", cli: "", login: "", pkg: "", env: "XAI_MANAGEMENT_KEY"),
     VendorAuth(id: "anthropic_api", name: "Anthropic (API)", kind: "apikey", cli: "", login: "", pkg: "", env: "ANTHROPIC_ADMIN_KEY"),
+    // Cursor has no API key: the binary reads the session token the Cursor IDE
+    // wrote to its own state.vscdb. `kind: "local"` marks the "configured =
+    // signed in to the app" case (like Antigravity in the GNOME extension),
+    // with no login CLI or env var of its own.
+    VendorAuth(id: "cursor", name: "Cursor", kind: "local", cli: "", login: "", pkg: "", env: ""),
 ]
 
 // The config file the Rust binary would actually read. On macOS
@@ -553,14 +595,292 @@ func tomlValueInText(_ text: String, section: String, key: String) -> String? {
     return nil
 }
 
+/// Read a TOML array of quoted strings. This intentionally stays small (the
+/// native app is a single dependency-free Swift file), but accepts multiline
+/// arrays and rejects malformed values instead of silently widening Overview.
+func tomlStringArrayInText(_ text: String, section: String, key: String) -> [String]? {
+    func withoutComment(_ line: String) -> String {
+        var result = ""
+        var quote: Character?
+        var escaped = false
+        for ch in line {
+            if let active = quote {
+                result.append(ch)
+                if active == "\"", escaped {
+                    escaped = false
+                } else if active == "\"", ch == "\\" {
+                    escaped = true
+                } else if ch == active {
+                    quote = nil
+                }
+            } else if ch == "#" {
+                break
+            } else {
+                result.append(ch)
+                if ch == "\"" || ch == "'" { quote = ch }
+            }
+        }
+        return result
+    }
+
+    func hasClosingBracket(_ value: String) -> Bool {
+        var quote: Character?
+        var escaped = false
+        for ch in value {
+            if let active = quote {
+                if active == "\"", escaped {
+                    escaped = false
+                } else if active == "\"", ch == "\\" {
+                    escaped = true
+                } else if ch == active {
+                    quote = nil
+                }
+            } else if ch == "\"" || ch == "'" {
+                quote = ch
+            } else if ch == "]" {
+                return true
+            }
+        }
+        return false
+    }
+
+    var inSection = false
+    var rawValue: String?
+    for rawLine in text.components(separatedBy: .newlines) {
+        let line = withoutComment(rawLine).trimmingCharacters(in: .whitespaces)
+        if let current = rawValue {
+            let joined = current + " " + line
+            rawValue = joined
+            if hasClosingBracket(joined) { break }
+            continue
+        }
+        if line.hasPrefix("[") {
+            inSection = line == "[\(section)]"
+            continue
+        }
+        guard inSection, !line.isEmpty else { continue }
+        let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              parts[0].trimmingCharacters(in: .whitespaces) == key else { continue }
+        let value = parts[1].trimmingCharacters(in: .whitespaces)
+        guard value.hasPrefix("[") else { return nil }
+        rawValue = value
+        if hasClosingBracket(value) { break }
+    }
+
+    guard let raw = rawValue, hasClosingBracket(raw) else { return nil }
+    let chars = Array(raw)
+    guard chars.first == "[" else { return nil }
+    var result: [String] = []
+    var i = 1
+
+    func skipSpace() {
+        while i < chars.count && chars[i].isWhitespace { i += 1 }
+    }
+
+    while true {
+        skipSpace()
+        guard i < chars.count else { return nil }
+        if chars[i] == "]" {
+            i += 1
+            skipSpace()
+            return i == chars.count ? result : nil
+        }
+        let quote = chars[i]
+        guard quote == "\"" || quote == "'" else { return nil }
+        i += 1
+        var value = ""
+        var closed = false
+        while i < chars.count {
+            let ch = chars[i]
+            i += 1
+            if ch == quote {
+                closed = true
+                break
+            }
+            if quote == "\"", ch == "\\", i < chars.count {
+                value.append(chars[i])
+                i += 1
+            } else {
+                value.append(ch)
+            }
+        }
+        guard closed else { return nil }
+        result.append(value)
+        skipSpace()
+        guard i < chars.count else { return nil }
+        if chars[i] == "," {
+            i += 1
+            continue
+        }
+        guard chars[i] == "]" else { return nil }
+    }
+}
+
 func configValueTOML(_ section: String, _ key: String) -> String? {
     let path = configPathTOML()
     guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
     return tomlValueInText(text, section: section, key: key)
 }
 
+func configuredOverviewVendorIds() -> [String]? {
+    let path = configPathTOML()
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+    return tomlStringArrayInText(text, section: "ui", key: "overview_vendors")
+}
+
 func apiKeyEnvironment(_ v: VendorAuth) -> String {
     configValueTOML(v.id, "api_key_env") ?? v.env
+}
+
+// ── Anthropic multi-account ────────────────────────────────────────────────
+// Mirrors the Rust side (`src/config.rs`): explicit `[[anthropic.accounts]]`
+// entries plus subdirectories of `[anthropic] accounts_dir`, explicit labels
+// winning on a clash. Each account is a
+// selectable entry with the pseudo-id `anthropic@<label>`, fetched by the
+// binary as `--vendor anthropic --account <label>` — the binary resolves the
+// account's credentials itself (file or its own Keychain item), so the app
+// never needs to know where they live.
+
+/// `[[anthropic.accounts]]` labels, in file order. Pure text scan, like the
+/// rest of this app's TOML reading: a `[[anthropic.accounts]]` header opens a
+/// block, the first `label = "…"` inside it counts.
+func anthropicAccountLabels(inTOML text: String) -> [String] {
+    var labels: [String] = []
+    var inBlock = false
+    for rawLine in text.components(separatedBy: .newlines) {
+        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        if line.hasPrefix("[") {
+            inBlock = line == "[[anthropic.accounts]]"
+            continue
+        }
+        guard inBlock, line.hasPrefix("label") else { continue }
+        let parts = line.split(separator: "=", maxSplits: 1)
+        guard parts.count == 2,
+              parts[0].trimmingCharacters(in: .whitespaces) == "label" else { continue }
+        var value = parts[1].trimmingCharacters(in: .whitespaces)
+        if let quote = value.first, quote == "\"" || quote == "'" {
+            let content = value.dropFirst()
+            guard let end = content.firstIndex(of: quote) else { continue }
+            value = String(content[..<end])
+        }
+        if !value.isEmpty {
+            labels.append(value)
+            inBlock = false  // one label per block
+        }
+    }
+    return labels
+}
+
+/// Immediate subdirectories of `dir`, sorted — the same discovery rule as the
+/// Rust `accounts_dir` scan. Credentials may be file- or Keychain-backed.
+func discoverAccountLabels(inDir dir: String) -> [String] {
+    let fm = FileManager.default
+    guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
+    return names.filter { name in
+        var isDir: ObjCBool = false
+        let sub = "\(dir)/\(name)"
+        return fm.fileExists(atPath: sub, isDirectory: &isDir) && isDir.boolValue
+    }.sorted()
+}
+
+/// Explicit labels first (file order), then discovered ones that don't clash.
+func mergedAccountLabels(explicit: [String], discovered: [String]) -> [String] {
+    explicit + discovered.filter { !explicit.contains($0) }
+}
+
+/// All configured Claude account labels, from the same config the binary reads.
+func claudeAccountLabels() -> [String] {
+    guard let text = try? String(contentsOfFile: configPathTOML(), encoding: .utf8) else {
+        return []
+    }
+    let explicit = anthropicAccountLabels(inTOML: text)
+    var discovered: [String] = []
+    if let dir = tomlValueInText(text, section: "anthropic", key: "accounts_dir"), !dir.isEmpty {
+        discovered = discoverAccountLabels(inDir: NSString(string: dir).expandingTildeInPath)
+    }
+    return mergedAccountLabels(explicit: explicit, discovered: discovered)
+}
+
+/// Rust semantics (`show_default_account`): `false` hides the default
+/// (unnamed) Claude entry, but is ignored when there are no named accounts,
+/// so Anthropic never loses its only entry.
+func showDefaultClaudeAccount(configValue: String?, hasAccounts: Bool) -> Bool {
+    guard hasAccounts else { return true }
+    return configValue != "false"
+}
+
+/// Pseudo-id mapping: `anthropic@<label>` selects a named account.
+let ACCOUNT_ID_PREFIX = "anthropic@"
+
+func accountLabel(of id: String) -> String? {
+    id.hasPrefix(ACCOUNT_ID_PREFIX) ? String(id.dropFirst(ACCOUNT_ID_PREFIX.count)) : nil
+}
+
+func baseVendorId(_ id: String) -> String {
+    accountLabel(of: id) != nil ? "anthropic" : id
+}
+
+/// The subprocess arguments that select `id` (base vendor or named account).
+func vendorArgs(for id: String) -> [String] {
+    if let label = accountLabel(of: id) {
+        return ["--vendor", "anthropic", "--account", label]
+    }
+    return ["--vendor", id]
+}
+
+/// One selectable entry: a base vendor or one Claude account.
+struct MenuEntry {
+    let id: String    // "cursor", "anthropic", or "anthropic@<label>"
+    let name: String  // display: "Cursor", "Claude · <label>"
+}
+
+/// Apply `[ui] overview_vendors` with the same semantics as the TUI: preserve
+/// config order, omit unavailable vendors, and include every named Claude
+/// account when `anthropic` is requested.
+func filterOverviewEntries(_ entries: [MenuEntry], requested: [String]?) -> [MenuEntry] {
+    guard let requested else { return entries }
+    var result: [MenuEntry] = []
+    var seen = Set<String>()
+    for vendor in requested {
+        for entry in entries where baseVendorId(entry.id) == vendor && !seen.contains(entry.id) {
+            result.append(entry)
+            seen.insert(entry.id)
+        }
+    }
+    return result
+}
+
+/// The selectable entries, in menu order: every enabled+configured vendor,
+/// with Anthropic expanded into its named accounts (the default entry kept
+/// only per `show_default_account`). `active` stays listed even when
+/// unconfigured — same rule the per-vendor list always had.
+func vendorEntries(active: String) -> [MenuEntry] {
+    var out: [MenuEntry] = []
+    for v in VENDOR_AUTH where vendorEnabled(v) {
+        if v.id == "anthropic" {
+            let labels = claudeAccountLabels()
+            let showDefault = showDefaultClaudeAccount(
+                configValue: configValueTOML("anthropic", "show_default_account"),
+                hasAccounts: !labels.isEmpty)
+            if showDefault && (v.id == active || vendorConfigured(v)) {
+                out.append(MenuEntry(id: v.id, name: v.name))
+            }
+            for label in labels {
+                out.append(MenuEntry(id: ACCOUNT_ID_PREFIX + label, name: "Claude · \(label)"))
+            }
+        } else if v.id == active || vendorConfigured(v) {
+            out.append(MenuEntry(id: v.id, name: v.name))
+        }
+    }
+    return out
+}
+
+/// Display name for any selectable id (base vendor, account, or overview).
+func entryDisplayName(_ id: String) -> String {
+    if id == "overview" { return "Visão geral" }
+    if let label = accountLabel(of: id) { return "Claude · \(label)" }
+    return VENDOR_AUTH.first { $0.id == id }?.name ?? id
 }
 
 /// Rust defaults (`src/config.rs`): the OAuth/api-key vendors that ship enabled,
@@ -569,7 +889,7 @@ func apiKeyEnvironment(_ v: VendorAuth) -> String {
 func defaultEnabled(_ id: String) -> Bool {
     switch id {
     case "anthropic", "openai", "zai", "openrouter": return true
-    case "deepseek", "kimi", "kilo", "novita", "moonshot", "grok", "anthropic_api": return false
+    case "deepseek", "kimi", "kilo", "novita", "moonshot", "grok", "anthropic_api", "cursor": return false
     default: return true
     }
 }
@@ -579,13 +899,21 @@ func vendorEnabled(_ v: VendorAuth) -> Bool {
     return defaultEnabled(v.id)
 }
 
+// Cached: the check spawns a `security` subprocess, and it is consulted from the
+// menu-rebuild path (main thread). Signed-in state doesn't change within a run,
+// so compute it at most once — a restart picks up a fresh login.
+var keychainClaudeCache: Bool?
 func keychainHasClaude() -> Bool {
+    if let cached = keychainClaudeCache { return cached }
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
     p.arguments = ["find-generic-password", "-s", "Claude Code-credentials"]
     p.standardOutput = FileHandle.nullDevice
     p.standardError = FileHandle.nullDevice
-    do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 } catch { return false }
+    let result: Bool
+    do { try p.run(); p.waitUntilExit(); result = p.terminationStatus == 0 } catch { result = false }
+    keychainClaudeCache = result
+    return result
 }
 
 func vendorConfigured(_ v: VendorAuth) -> Bool {
@@ -597,6 +925,13 @@ func vendorConfigured(_ v: VendorAuth) -> Bool {
     }
     if v.id == "openai" {
         return fm.fileExists(atPath: "\(home)/.codex/auth.json")
+    }
+    if v.id == "cursor" {
+        // Configured == signed in to the Cursor IDE, i.e. its state DB exists.
+        // Honor a [cursor] db_path override the same way the binary does.
+        let dbPath = configValueTOML("cursor", "db_path")
+            ?? "\(home)/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+        return fm.fileExists(atPath: dbPath)
     }
     if let e = ProcessInfo.processInfo.environment[apiKeyEnvironment(v)], !e.isEmpty { return true }
     return configHasApiKeyTOML(v.id)
@@ -659,6 +994,15 @@ func openTuiInTerminal() {
     runInTerminal("\"\(tui)\"\necho\nread -p \"Enter para fechar...\"")
 }
 
+// Launch a .app by name (e.g. "Cursor") via `open -a`, so a local-kind vendor's
+// button can bring the user to the app they need to sign into.
+func openApp(_ name: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    p.arguments = ["-a", name]
+    try? p.run()
+}
+
 struct VendorsSection: View {
     @State private var configured: [String: Bool] = [:]
     @State private var cliPresent: [String: Bool] = [:]
@@ -711,6 +1055,11 @@ struct VendorsSection: View {
             if cliPresent[v.id] == false { return "⚠ \(v.cli) não instalado" }
             return "⚠ Não logado — \(v.login)"
         }
+        // Local vendors (Cursor) have no key: "configured" means signed in to
+        // the app AND [cursor] enabled in config.
+        if v.kind == "local" {
+            return "⚠ Entre no app Cursor e ative [cursor] no config"
+        }
         return "⚠ Sem API key — \(apiKeyEnvironment(v))"
     }
 
@@ -720,11 +1069,13 @@ struct VendorsSection: View {
             if cliPresent[v.id] == false { return "Instalar + logar" }
             return "Logar"
         }
+        if v.kind == "local" { return "Abrir Cursor" }
         return "Configurar (TUI)"
     }
 
     private func action(_ v: VendorAuth) {
         if v.kind == "oauth" { runInTerminal(oauthScript(v)) }
+        else if v.kind == "local" { openApp(v.name) }
         else { openTuiInTerminal() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { refresh() }
     }
@@ -741,18 +1092,29 @@ struct SettingsView: View {
     @AppStorage("showBars") private var showBars = true
     @AppStorage("showMeta") private var showMeta = true
     @AppStorage("barStyle") private var barStyle = "block"
+    @AppStorage("swapShortcutEnabled") private var swapShortcutEnabled = true
+    @AppStorage("compactShortcutEnabled") private var compactShortcutEnabled = true
     @AppStorage("colorLow") private var colorLow = "#98c379"
     @AppStorage("colorMid") private var colorMid = "#e5c07b"
     @AppStorage("colorHigh") private var colorHigh = "#d19a66"
     @AppStorage("colorCritical") private var colorCritical = "#e06c75"
     @AppStorage("colorEmpty") private var colorEmpty = "#3e4451"
     @AppStorage("binaryPath") private var binaryPath = ""
+    @State private var launchAtLogin = launchAgentIsInstalled()
+    @State private var launchAtLoginError: String?
 
     // Only enabled vendors appear in the selector: Rust treats opt-in vendors
     // (deepseek/kimi/kilo/novita/moonshot/grok/anthropic_api) as disabled when
-    // their `[vendor].enabled` is omitted, and so must this picker.
+    // their `[vendor].enabled` is omitted, and so must this picker. Claude
+    // accounts appear as their `anthropic@<label>` pseudo-ids, same as the
+    // "Trocar vendor" submenu.
     private var vendors: [String] {
-        VENDOR_AUTH.filter { vendorEnabled($0) }.map { $0.id }
+        var ids = VENDOR_AUTH.filter { vendorEnabled($0) }.map { $0.id }
+        let labels = claudeAccountLabels()
+        if let at = ids.firstIndex(of: "anthropic") {
+            ids.insert(contentsOf: labels.map { ACCOUNT_ID_PREFIX + $0 }, at: at + 1)
+        }
+        return ids
     }
 
     var body: some View {
@@ -777,6 +1139,17 @@ struct SettingsView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                GroupBox("Atalho") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Trocar vendor com ⌥⌘\\ (atalho global)", isOn: $swapShortcutEnabled)
+                        Text("Alterna o vendor ativo a partir de qualquer app.")
+                            .font(.caption).foregroundColor(.secondary)
+                        Toggle("Compactar/Expandir com ⌥⌘E (atalho global)", isOn: $compactShortcutEnabled)
+                        Text("Alterna a Visão geral entre barras e modo compacto.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 GroupBox("Cores") {
                     VStack(alignment: .leading, spacing: 8) {
                         HexColorPicker(title: "Baixo (<50%)", hex: $colorLow)
@@ -797,6 +1170,29 @@ struct SettingsView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                GroupBox("Sistema") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Iniciar no login", isOn: Binding(
+                            get: { launchAtLogin },
+                            set: { enabled in
+                                do {
+                                    try setLaunchAtLogin(enabled)
+                                    launchAtLogin = launchAgentIsInstalled()
+                                    launchAtLoginError = nil
+                                } catch {
+                                    launchAtLogin = launchAgentIsInstalled()
+                                    launchAtLoginError = error.localizedDescription
+                                }
+                            }))
+                        Text("Instala um LaunchAgent que sobe o app ao entrar na sua conta.")
+                            .font(.caption).foregroundColor(.secondary)
+                        if let error = launchAtLoginError {
+                            Text("Não foi possível atualizar: \(error)")
+                                .font(.caption).foregroundColor(.red)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 VendorsSection()
             }
             .padding(20)
@@ -804,15 +1200,141 @@ struct SettingsView: View {
         }
         .frame(width: 460)
         .frame(minHeight: 300, idealHeight: 560, maxHeight: .infinity)
+        .onAppear { launchAtLogin = launchAgentIsInstalled() }
+    }
+}
+
+// ─── Launch at login (macOS LaunchAgent) ─────────────────────────────────
+//
+// The app is an unbundled single binary, so the modern SMAppService.mainApp
+// API (which needs a bundle id) doesn't apply. A per-user LaunchAgent is the
+// portable way to start an unbundled executable at login — the same mechanism
+// install-agent.sh sets up, now toggleable from Preferences.
+let LAUNCH_AGENT_LABEL = "com.akitaonrails.ai-usagebar-menubar"
+
+func launchAgentPlistPath() -> String {
+    "\(NSHomeDirectory())/Library/LaunchAgents/\(LAUNCH_AGENT_LABEL).plist"
+}
+
+func launchAgentIsInstalled() -> Bool {
+    FileManager.default.fileExists(atPath: launchAgentPlistPath())
+}
+
+/// Absolute path of the running executable, for the LaunchAgent to relaunch.
+func selfExecutablePath() -> String {
+    if let p = Bundle.main.executablePath, !p.isEmpty { return p }
+    let arg0 = CommandLine.arguments.first ?? "ai-usagebar-menubar"
+    if arg0.hasPrefix("/") { return arg0 }
+    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent(arg0).standardized.path
+}
+
+/// Install (or remove) the login LaunchAgent by managing its plist file.
+/// Building the plist via PropertyListSerialization sidesteps the XML-escaping
+/// the shell installer has to do by hand.
+///
+/// Deliberately no `launchctl load`/`unload`: the app is already running when
+/// this is toggled, so `RunAtLoad` on load would spawn a *second* copy, and
+/// `unload` on disable would SIGTERM this very process (quitting the app the
+/// user is still using) if it happened to be the launchd-managed one. launchd
+/// loads every agent in ~/Library/LaunchAgents at the next login, so writing
+/// (or removing) the file is all that's needed for a start-at-login toggle.
+func launchAgentPlist(executable: String) throws -> Data {
+    let plist: [String: Any] = [
+        "Label": LAUNCH_AGENT_LABEL,
+        "ProgramArguments": [executable],
+        "RunAtLoad": true,
+        "ProcessType": "Interactive",
+    ]
+    return try PropertyListSerialization.data(
+        fromPropertyList: plist, format: .xml, options: 0)
+}
+
+func setLaunchAtLogin(_ enabled: Bool) throws {
+    let path = launchAgentPlistPath()
+    if enabled {
+        let dir = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let data = try launchAgentPlist(executable: selfExecutablePath())
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+    } else if FileManager.default.fileExists(atPath: path) {
+        try FileManager.default.removeItem(atPath: path)
     }
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────
+// ─── Global vendor-swap shortcut (⌥⌘\) ───────────────────────────────────
+//
+// A menu-bar app has no focused window, so a system-wide shortcut needs a
+// Carbon hot key (RegisterEventHotKey), which fires regardless of focus and —
+// unlike an NSEvent global monitor — needs no Accessibility permission. The
+// Carbon handler is a C callback that can't capture Swift state, so it just
+// posts a notification the delegate observes.
+
+let swapHotKeyNotification = Notification.Name("aiusagebar.swapHotKey")
+let compactHotKeyNotification = Notification.Name("aiusagebar.compactHotKey")
+
+/// Default shortcuts: `\` (kVK_ANSI_Backslash) with Command+Option swaps the
+/// vendor; `E` with Command+Option toggles the overview's Compactar/Expandir.
+/// `[ui]` on Linux has no equivalent; this is macOS-only.
+let SWAP_HOTKEY_KEYCODE = UInt32(kVK_ANSI_Backslash)
+let COMPACT_HOTKEY_KEYCODE = UInt32(kVK_ANSI_E)
+let SWAP_HOTKEY_MODIFIERS = UInt32(cmdKey | optionKey)
+
+/// Registered hot-key ids, carried back to us in the event so one shared C
+/// callback can tell which shortcut fired.
+let SWAP_HOTKEY_ID = UInt32(1)
+let COMPACT_HOTKEY_ID = UInt32(2)
+
+private func swapHotKeyCallback(
+    _ next: EventHandlerCallRef?, _ event: EventRef?, _ userData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    var hk = EventHotKeyID()
+    GetEventParameter(event, EventParamName(kEventParamDirectObject),
+                      EventParamType(typeEventHotKeyID), nil,
+                      MemoryLayout<EventHotKeyID>.size, nil, &hk)
+    NotificationCenter.default.post(
+        name: hk.id == COMPACT_HOTKEY_ID ? compactHotKeyNotification : swapHotKeyNotification,
+        object: nil)
+    return noErr
+}
+
+/// Whether the overview status-bar title draws mini bars (vs. the compact
+/// %-text mode). "Compactar" forces the text mode even under the bars-count
+/// threshold. Pure + testable — the render path is not.
+func overviewUsesBars(count: Int, barsMax: Int, compact: Bool) -> Bool {
+    !compact && count <= barsMax
+}
+
+/// The next id in the cycle, wrapping. `current` absent from `ids` (e.g. the
+/// selected vendor was disabled) starts at the first (or last, backward).
+/// Pure + testable — the hot-key handler is not.
+func nextVendorId(current: String, in ids: [String], forward: Bool = true) -> String? {
+    guard !ids.isEmpty else { return nil }
+    let n = ids.count
+    let i = ids.firstIndex(of: current) ?? (forward ? -1 : 0)
+    let j = forward ? (i + 1) % n : (i - 1 + n) % n
+    return ids[j]
+}
+
+func hotKeyRegistrationSucceeded(_ status: OSStatus) -> Bool {
+    status == noErr
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
+    var swapHotKeyRef: EventHotKeyRef?
+    var compactHotKeyRef: EventHotKeyRef?
+    var swapHotKeyHandlerInstalled = false
     var timer: Timer?
     var prefsWindow: NSWindow?
     var appearanceObservation: NSKeyValueObservation?
+    /// Last resolved light/dark name, so the appearance observer ignores the
+    /// layout-driven KVO fires that don't actually change the theme.
+    var lastAppearanceName: NSAppearance.Name?
+    /// Tracks the active vendor so `settingsChanged` can tell a vendor swap (show
+    /// Loading) apart from an unrelated preference change (repaint from cache).
+    var lastVendor = ""
     var lastSnapshot: Snapshot?
     var pendingRefresh: DispatchWorkItem?
     /// Bumped on every refresh attempt. A result whose generation is no longer
@@ -828,22 +1350,216 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var refreshQueued = false
     let headerItem = NSMenuItem()
     var rows: [String: NSMenuItem] = [:]
+    // Overview mode fills these (one per vendor/account); hidden in
+    // single-vendor mode. The pool starts at the built-in vendor count and can
+    // grow if account discovery adds more rows.
+    var overviewRows: [NSMenuItem] = []
+    /// Last overview fetch, so a settings/appearance change re-renders it without
+    /// flashing the stale single-vendor snapshot.
+    var lastOverview: [(name: String, id: String, snap: Snapshot?)]?
     // Rebuilt on every render so only configured vendors show, and the active
     // one is checked. Kept as a field so the menu owns it for its lifetime.
     let vendorSubmenu = NSMenu()
     let vendorSubmenuItem = NSMenuItem(title: "Trocar vendor", action: nil, keyEquivalent: "")
+    /// Overview-only: forces the status-bar title into the compact %-text mode
+    /// ("Compactar"); while compact it reads "Expandir" and turns it back off.
+    let compactItem = NSMenuItem(title: "Compactar", action: nil, keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        DEF.register(defaults: ["swapShortcutEnabled": true, "compactShortcutEnabled": true])
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "5h …"
         buildMenu()
         rebuildVendorSubmenu()
         observeAppearanceChanges()
+        lastVendor = VENDOR  // so the first settingsChanged isn't mistaken for a swap
         refresh()
         restartTimer()
         NotificationCenter.default.addObserver(
             self, selector: #selector(settingsChanged),
             name: UserDefaults.didChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSwapHotKey),
+            name: swapHotKeyNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleCompactHotKey),
+            name: compactHotKeyNotification, object: nil)
+        installSwapHotKey()
+        installCompactHotKey()
+    }
+
+    /// (Re)register the global ⌥⌘\ hot key to match the `swapShortcutEnabled`
+    /// preference. Idempotent: always unregisters first.
+    func installSwapHotKey() {
+        guard removeSwapHotKey() else {
+            // The old registration is still live; reflect that instead of
+            // showing a disabled toggle that continues intercepting the key.
+            DEF.set(true, forKey: "swapShortcutEnabled")
+            return
+        }
+        let enabled = DEF.bool(forKey: "swapShortcutEnabled")
+        // Mirror the swap shortcut as a hint on the "Trocar vendor" item. A native
+        // keyEquivalent is suppressed by the submenu's disclosure arrow, so paint
+        // the hint into the title instead (right-aligned, dimmed). Cleared when off.
+        if enabled {
+            // Inline, dimmed hint right after the label. A right-aligned column
+            // (like the other items' ⌘R) isn't possible here: the submenu arrow
+            // takes the trailing slot, and a fixed tab stop would over-widen the
+            // menu whenever the wide overview rows are hidden.
+            let font = NSFont.menuFont(ofSize: 0)
+            let s = NSMutableAttributedString(
+                string: "Trocar vendor  ", attributes: [.font: font])
+            s.append(NSAttributedString(string: "⌥⌘\\", attributes: [
+                .font: font, .foregroundColor: NSColor.tertiaryLabelColor,
+            ]))
+            vendorSubmenuItem.attributedTitle = s
+        } else {
+            vendorSubmenuItem.attributedTitle = NSAttributedString(string: "Trocar vendor")
+        }
+        guard enabled else { return }
+        guard installHotKeyHandlerOnce() else {
+            disableFailedShortcut("swapShortcutEnabled", name: "⌥⌘\\")
+            vendorSubmenuItem.attributedTitle = NSAttributedString(string: "Trocar vendor")
+            return
+        }
+        let id = EventHotKeyID(signature: OSType(0x4149_4242), id: SWAP_HOTKEY_ID)  // 'AIBB'
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            SWAP_HOTKEY_KEYCODE, SWAP_HOTKEY_MODIFIERS, id, GetApplicationEventTarget(), 0,
+            &ref)
+        guard hotKeyRegistrationSucceeded(status), let ref else {
+            if let ref { UnregisterEventHotKey(ref) }
+            disableFailedShortcut("swapShortcutEnabled", name: "⌥⌘\\", status: status)
+            vendorSubmenuItem.attributedTitle = NSAttributedString(string: "Trocar vendor")
+            return
+        }
+        swapHotKeyRef = ref
+    }
+
+    /// (Re)register the global ⌥⌘E Compactar/Expandir hot key to match the
+    /// `compactShortcutEnabled` preference. Idempotent, mirroring
+    /// `installSwapHotKey` — including the painted-in hint (a native
+    /// keyEquivalent would fire a second time while the menu is open, double-
+    /// toggling on one press).
+    func installCompactHotKey() {
+        guard removeCompactHotKey() else {
+            DEF.set(true, forKey: "compactShortcutEnabled")
+            return
+        }
+        updateCompactItemTitle()
+        guard DEF.bool(forKey: "compactShortcutEnabled") else { return }
+        guard installHotKeyHandlerOnce() else {
+            disableFailedShortcut("compactShortcutEnabled", name: "⌥⌘E")
+            updateCompactItemTitle()
+            return
+        }
+        let id = EventHotKeyID(signature: OSType(0x4149_4242), id: COMPACT_HOTKEY_ID)
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            COMPACT_HOTKEY_KEYCODE, SWAP_HOTKEY_MODIFIERS, id, GetApplicationEventTarget(), 0,
+            &ref)
+        guard hotKeyRegistrationSucceeded(status), let ref else {
+            if let ref { UnregisterEventHotKey(ref) }
+            disableFailedShortcut("compactShortcutEnabled", name: "⌥⌘E", status: status)
+            updateCompactItemTitle()
+            return
+        }
+        compactHotKeyRef = ref
+    }
+
+    /// Compactar ↔ Expandir label plus the dimmed ⌥⌘E hint when the global
+    /// shortcut is on. Shared by the overview render and the hot-key installer.
+    func updateCompactItemTitle() {
+        let label = DEF.bool(forKey: "overviewCompact") ? "Expandir" : "Compactar"
+        guard DEF.bool(forKey: "compactShortcutEnabled") else {
+            compactItem.attributedTitle = NSAttributedString(string: label)
+            return
+        }
+        let font = NSFont.menuFont(ofSize: 0)
+        let s = NSMutableAttributedString(string: "\(label)  ", attributes: [.font: font])
+        s.append(NSAttributedString(string: "⌥⌘E", attributes: [
+            .font: font, .foregroundColor: NSColor.tertiaryLabelColor,
+        ]))
+        compactItem.attributedTitle = s
+    }
+
+    /// One Carbon handler serves every hot key; the event's EventHotKeyID
+    /// says which one fired.
+    private func installHotKeyHandlerOnce() -> Bool {
+        guard !swapHotKeyHandlerInstalled else { return true }
+        var spec = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let status = InstallEventHandler(
+            GetApplicationEventTarget(), swapHotKeyCallback, 1, &spec, nil, nil)
+        guard hotKeyRegistrationSucceeded(status) else {
+            NSLog("ai-usagebar: global hot-key handler registration failed (OSStatus %d)", status)
+            return false
+        }
+        swapHotKeyHandlerInstalled = true
+        return true
+    }
+
+    private func disableFailedShortcut(_ key: String, name: String,
+                                       status: OSStatus? = nil) {
+        if let status {
+            NSLog("ai-usagebar: global shortcut %@ registration failed (OSStatus %d)",
+                  name, status)
+        } else {
+            NSLog("ai-usagebar: global shortcut %@ registration failed", name)
+        }
+        // Keep the visible preference honest when another app already owns the
+        // shortcut or Carbon refuses the registration.
+        DEF.set(false, forKey: key)
+    }
+
+    @discardableResult
+    func removeSwapHotKey() -> Bool {
+        if let ref = swapHotKeyRef {
+            let status = UnregisterEventHotKey(ref)
+            guard hotKeyRegistrationSucceeded(status) else {
+                NSLog("ai-usagebar: could not unregister ⌥⌘\\ (OSStatus %d)", status)
+                return false
+            }
+            swapHotKeyRef = nil
+        }
+        return true
+    }
+
+    @discardableResult
+    private func removeCompactHotKey() -> Bool {
+        if let ref = compactHotKeyRef {
+            let status = UnregisterEventHotKey(ref)
+            guard hotKeyRegistrationSucceeded(status) else {
+                NSLog("ai-usagebar: could not unregister ⌥⌘E (OSStatus %d)", status)
+                return false
+            }
+            compactHotKeyRef = nil
+        }
+        return true
+    }
+
+    /// Advance the active vendor to the next configured one, wrapping. Fired by
+    /// the global hot key; sets `vendor` in defaults, which drives the usual
+    /// re-render via `settingsChanged`.
+    @objc func handleSwapHotKey() {
+        if let next = nextVendorId(current: VENDOR, in: swapCycleIds()) {
+            DEF.set(next, forKey: "vendor")
+        }
+    }
+
+    /// ⌥⌘E: toggle Compactar/Expandir. Overview-only — flipping a hidden
+    /// preference from another view would be invisible and confusing.
+    @objc func handleCompactHotKey() {
+        guard VENDOR == "overview" else { return }
+        toggleCompact()
+    }
+
+    /// The swap-shortcut ring: every configured entry (vendors *and* Claude
+    /// accounts) plus the synthetic "overview" target, so ⌥⌘\ cycles them all.
+    func swapCycleIds() -> [String] {
+        var ids = vendorEntries(active: VENDOR).map { $0.id }
+        ids.append("overview")
+        return ids
     }
 
     func buildMenu() {
@@ -851,11 +1567,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
 
         menu.addItem(headerItem)
+        // One hidden slot per built-in vendor for Overview mode. Named accounts
+        // can take the total higher; renderOverview grows the pool on demand.
+        for _ in 0..<VENDOR_AUTH.count {
+            let it = NSMenuItem()
+            it.isHidden = true
+            overviewRows.append(it)
+            menu.addItem(it)
+        }
         for key in ["session", "weekly", "sonnet", "extra"] {
             let it = NSMenuItem()
             rows[key] = it
             menu.addItem(it)
         }
+        // First item after the usage rows, Overview-only (hidden elsewhere).
+        compactItem.action = #selector(toggleCompact)
+        compactItem.target = self
+        compactItem.isHidden = true
+        menu.addItem(compactItem)
 
         menu.addItem(.separator())
         addAction(menu, "Atualizar agora", #selector(refreshAction), "r")
@@ -877,6 +1606,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func refreshAction() { refresh() }
     @objc func quit() { NSApp.terminate(nil) }
+
+    /// Flip the overview's compact mode; the UserDefaults observer re-renders,
+    /// which also relabels the item (Compactar ↔ Expandir).
+    @objc func toggleCompact() {
+        DEF.set(!DEF.bool(forKey: "overviewCompact"), forKey: "overviewCompact")
+    }
 
     @objc func openPrefs() {
         if prefsWindow == nil {
@@ -916,12 +1651,47 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Settings changed in Preferences: re-render instantly from cache, re-arm
     // the timer, and re-fetch (debounced) in case vendor/binary changed.
     @objc func settingsChanged() {
-        if let s = lastSnapshot { renderPanel(s); renderMenu(s) }
+        // The swap-shortcut toggle lives in defaults too; re-register only when
+        // its state and the live registration disagree (avoids churn on every
+        // vendor switch, which itself writes defaults).
+        if DEF.bool(forKey: "swapShortcutEnabled") != (swapHotKeyRef != nil) {
+            installSwapHotKey()
+        }
+        if DEF.bool(forKey: "compactShortcutEnabled") != (compactHotKeyRef != nil) {
+            installCompactHotKey()
+        }
+        // A vendor swap re-fetches, which takes a moment; keeping the previous
+        // vendor's view up reads as a freeze. Show a Loading placeholder at once.
+        let vendorChanged = VENDOR != lastVendor
+        lastVendor = VENDOR
+        if vendorChanged {
+            showLoading()
+        } else if VENDOR == "overview" {
+            if let ov = lastOverview { renderOverview(ov) }
+        } else if let s = lastSnapshot {
+            renderPanel(s); renderMenu(s)
+        }
         restartTimer()
         pendingRefresh?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.refresh() }
         pendingRefresh = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+    }
+
+    /// Instant feedback for a vendor swap: replace the whole view with a Loading
+    /// placeholder naming the target, until its data arrives.
+    func showLoading() {
+        lastSnapshot = nil
+        lastOverview = nil
+        let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
+        let name = entryDisplayName(VENDOR)
+        statusItem.button?.attributedTitle = run("\(name) …", menuBarTextColor(appearance))
+        headerItem.attributedTitle = run("\(name) · carregando…", .labelColor,
+                                         NSFont.boldSystemFont(ofSize: 13))
+        for (_, it) in rows { it.isHidden = true }
+        for it in overviewRows { it.isHidden = true }
+        compactItem.isHidden = true
+        rebuildVendorSubmenu()
     }
 
     func restartTimer() {
@@ -933,13 +1703,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func observeAppearanceChanges() {
         guard let button = statusItem.button else { return }
+        lastAppearanceName = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
         appearanceObservation = button.observe(\NSStatusBarButton.effectiveAppearance,
-                                               options: [.new]) { [weak self] _, _ in
-            DispatchQueue.main.async { self?.rerenderAppearance() }
+                                               options: [.new]) { [weak self] btn, _ in
+            // The KVO fires on every layout pass, not only on a real light↔dark
+            // flip — and rendering (which relays out the button) would retrigger
+            // it, spinning the main thread. Act only when the theme truly changes.
+            let name = btn.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+            DispatchQueue.main.async {
+                guard let self, self.lastAppearanceName != name else { return }
+                self.lastAppearanceName = name
+                self.rerenderAppearance()
+            }
         }
     }
 
     func rerenderAppearance() {
+        // Appearance only changes colors; the configured-vendor set is unchanged,
+        // so repaint without rebuilding the (subprocess-touching) submenu.
+        if VENDOR == "overview", let ov = lastOverview { renderOverview(ov, rebuildSubmenu: false); return }
         guard let snapshot = lastSnapshot else { return }
         renderPanel(snapshot)
     }
@@ -962,10 +1744,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // label a late result with whatever is selected by then.
         let vendor = VENDOR
 
+        if vendor == "overview" {
+            refreshOverview(bin: bin, generation: generation)
+            return
+        }
+
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: bin)
-            p.arguments = ["--vendor", vendor, "--format", FORMAT_WITH_SENTINEL]
+            p.arguments = vendorArgs(for: vendor) + ["--format", FORMAT_WITH_SENTINEL]
             let pipe = Pipe()
             p.standardOutput = pipe
             p.standardError = FileHandle.nullDevice
@@ -1020,6 +1807,204 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Overview mode: fetch every configured vendor and render one compact row
+    /// each. Sequential on purpose — reads are cache-first, and serializing
+    /// respects the per-vendor cache flock and avoids an OAuth-refresh 429 burst.
+    /// ponytail: parallelize only if it ever feels slow.
+    func refreshOverview(bin: String, generation: Int) {
+        // vendorEntries(active: "") keeps only configured entries — the
+        // active-vendor courtesy slot has no place in an all-vendors sweep.
+        let entries = filterOverviewEntries(vendorEntries(active: ""),
+                                            requested: configuredOverviewVendorIds())
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var results: [(name: String, id: String, snap: Snapshot?)] = []
+            for v in entries {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: bin)
+                p.arguments = vendorArgs(for: v.id) + ["--format", FORMAT_WITH_SENTINEL]
+                let pipe = Pipe()
+                p.standardOutput = pipe
+                p.standardError = FileHandle.nullDevice
+                let watchdog = DispatchWorkItem { if p.isRunning { p.terminate() } }
+                DispatchQueue.global(qos: .utility)
+                    .asyncAfter(deadline: .now() + REFRESH_TIMEOUT, execute: watchdog)
+                var out = ""
+                do {
+                    try p.run()
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    p.waitUntilExit()
+                    out = String(data: data, encoding: .utf8) ?? ""
+                } catch { out = "" }
+                watchdog.cancel()
+                var snap: Snapshot?
+                if let data = out.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let text = obj["text"] as? String {
+                    snap = parse(text, vendor: baseVendorId(v.id))
+                }
+                results.append((name: v.name, id: v.id, snap: snap))
+            }
+            DispatchQueue.main.async {
+                self?.finishRefresh(generation) { me in
+                    guard VENDOR == "overview" else { return }
+                    me.renderOverview(results)
+                }
+            }
+        }
+    }
+
+    /// The single most-relevant number for a vendor in the overview.
+    /// Cursor: the combined "included total usage" headline (both pools as one).
+    /// Everyone else: the most-exhausted of its windows — for Anthropic that is
+    /// the biggest of 5h, weekly, and the scoped model bar (Fable). Falls back to
+    /// the $ budget when a vendor has no time windows.
+    func overviewHeadline(_ s: Snapshot) -> (pct: Int, value: String, reset: String?, elapsed: Int?) {
+        if let t = s.cursorTotalPct {
+            return (t, "\(t)%", s.weekly?.reset ?? s.session?.reset, nil)
+        }
+        let windows = [s.session, s.weekly, s.sonnet].compactMap { $0 }
+        if let w = windows.max(by: { $0.pct < $1.pct }) {
+            return (w.pct, "\(w.pct)%", w.reset, w.elapsed)
+        }
+        if let e = s.extra { return (e.pct, "\(e.spent) / \(e.limit)", nil, nil) }
+        return (0, "—", nil, nil)
+    }
+
+    /// Compact bar label for a vendor name. Usually the first word; for a
+    /// Claude account ("Claude · gmail") the account label is the part that
+    /// distinguishes entries, so use it instead of the shared "Claude".
+    func ovLabel(_ name: String, _ maxLen: Int) -> String {
+        let base = name.range(of: " · ").map { String(name[$0.upperBound...]) }
+            ?? String(name.split(separator: " ").first ?? Substring(name))
+        return base.count <= maxLen ? base : String(base.prefix(maxLen))
+    }
+
+    /// Status-bar summary for overview mode: every vendor at once. Mini bar per
+    /// vendor when few; worst-first numbers (capped, with `+K` overflow) when
+    /// many. Tunable via `[ui] overview_menubar_bars_max` (bar↔number threshold,
+    /// default 4) and `overview_menubar_max` (how many numbers fit, default 4).
+    func overviewBarTitle(_ items: [(name: String, id: String, snap: Snapshot?)],
+                          _ appearance: NSAppearance) -> NSAttributedString {
+        let secondary = menuBarTextColor(appearance, secondary: true)
+        let heads: [(name: String, pct: Int, elapsed: Int?, value: String, reset: String?)] =
+            items.compactMap {
+                guard let s = $0.snap else { return nil }
+                if let cb = s.creditBalance { return ($0.name, -1, nil, "cr \(cb)", nil) }
+                let h = overviewHeadline(s)
+                return ($0.name, h.pct, h.elapsed, "\(h.pct)%", h.reset.flatMap(shortReset))
+            }
+        guard !heads.isEmpty else { return run("ovr", secondary) }
+
+        let barsMax = Int(configValueTOML("ui", "overview_menubar_bars_max") ?? "") ?? 4
+        let compact = DEF.bool(forKey: "overviewCompact")
+        let t = NSMutableAttributedString()
+        if overviewUsesBars(count: heads.count, barsMax: barsMax, compact: compact) {
+            for (i, e) in heads.enumerated() {
+                if i > 0 { t.append(run("   ", secondary)) }
+                t.append(run("\(ovLabel(e.name, 6)) ", secondary))
+                if e.pct >= 0 {
+                    t.append(run("\(e.pct)% ", colorForPct(e.pct)))
+                    t.append(progressAttr(pct: e.pct, width: BAR_WIDTH, elapsed: e.elapsed,
+                                          appearance: appearance))
+                    if let r = e.reset { t.append(run(" \(r)", secondary)) }
+                } else {
+                    t.append(run(e.value, .labelColor))  // credit balance
+                }
+            }
+        } else {
+            let maxN = Int(configValueTOML("ui", "overview_menubar_max") ?? "") ?? 4
+            // Entry order, not worst-first: entries are provider-grouped
+            // (standard Claude, then its accounts, then the other vendors), and
+            // stable positions beat a pct sort that reshuffles labels on every
+            // refresh.
+            for (i, e) in heads.prefix(maxN).enumerated() {
+                if i > 0 { t.append(run("  ", secondary)) }
+                t.append(run("\(ovLabel(e.name, 3)) ", secondary))
+                t.append(run(e.value, e.pct >= 0 ? colorForPct(e.pct) : .labelColor))
+                if let r = e.reset { t.append(run(" \(r)", secondary)) }
+            }
+            if heads.count > maxN { t.append(run("  +\(heads.count - maxN)", secondary)) }
+        }
+        return t
+    }
+
+    func renderOverview(_ items: [(name: String, id: String, snap: Snapshot?)],
+                        rebuildSubmenu: Bool = true) {
+        lastSnapshot = nil
+        lastOverview = items
+        let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
+        headerItem.attributedTitle = run("Visão geral", .labelColor, NSFont.boldSystemFont(ofSize: 13))
+        for key in ["session", "weekly", "sonnet", "extra"] { rows[key]?.isHidden = true }
+        ensureOverviewRowCapacity(items.count)
+
+        // Rows render in a monospaced font, so fixed character widths line the
+        // columns up. Pre-compute the widest headline pct and reset so both can be
+        // right-aligned — the reset then ends flush at the line's right edge.
+        let nameW = 14
+        var pctW = 0, resetW = 0
+        for item in items.prefix(overviewRows.count) {
+            guard let s = item.snap, s.creditBalance == nil else { continue }
+            let h = overviewHeadline(s)
+            pctW = max(pctW, h.value.count)
+            if let r = h.reset, !r.isEmpty { resetW = max(resetW, r.count) }
+        }
+        func rpad(_ s: String, _ w: Int) -> String {
+            String(repeating: " ", count: max(0, w - s.count)) + s
+        }
+
+        for (i, item) in items.enumerated() where i < overviewRows.count {
+            let it = overviewRows[i]
+            it.isHidden = false
+            // Click a row to jump straight to that vendor's detail view.
+            it.representedObject = item.id
+            it.target = self
+            it.action = #selector(switchVendor(_:))
+            let a = NSMutableAttributedString()
+            let fitted = item.name.count > nameW
+                ? String(item.name.prefix(nameW - 1)) + "…"
+                : item.name.padding(toLength: nameW, withPad: " ", startingAt: 0)
+            a.append(run(fitted + " ", .labelColor))
+            if let s = item.snap {
+                if let cb = s.creditBalance {
+                    a.append(run("cr \(cb)", .labelColor))
+                } else {
+                    let h = overviewHeadline(s)
+                    a.append(progressAttr(pct: h.pct, width: MENU_BAR_W, elapsed: h.elapsed,
+                                          menu: true, appearance: appearance))
+                    a.append(run("  \(rpad(h.value, pctW))", colorForPct(h.pct)))
+                    if let r = h.reset, !r.isEmpty {
+                        a.append(run("   ↺ \(rpad(r, resetW))", .secondaryLabelColor))
+                    }
+                }
+            } else {
+                a.append(run("—", .secondaryLabelColor))
+            }
+            it.attributedTitle = a
+        }
+        for i in items.count..<overviewRows.count { overviewRows[i].isHidden = true }
+
+        // Menu-bar title: every vendor at once (mini bars when few, numbers when
+        // many). The dropdown always holds the full per-vendor list.
+        statusItem.button?.attributedTitle = overviewBarTitle(items, appearance)
+        compactItem.isHidden = false
+        updateCompactItemTitle()
+        if rebuildSubmenu { rebuildVendorSubmenu() }
+    }
+
+    /// Add overview row slots before the single-vendor rows when newly
+    /// discovered Claude accounts outgrow the initial built-in-vendor pool.
+    private func ensureOverviewRowCapacity(_ count: Int) {
+        guard count > overviewRows.count,
+              let menu = statusItem.menu,
+              let firstDetail = rows["session"] else { return }
+        while overviewRows.count < count {
+            let item = NSMenuItem()
+            item.isHidden = true
+            menu.insertItem(item, at: menu.index(of: firstDetail))
+            overviewRows.append(item)
+        }
+    }
+
     func consume(_ output: String) {
         guard let data = output.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1027,7 +2012,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             setError("saída inválida")
             return
         }
-        guard let snap = parse(text, vendor: VENDOR) else {
+        guard let snap = parse(text, vendor: baseVendorId(VENDOR)) else {
             lastSnapshot = nil
             let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
             statusItem.button?.attributedTitle = run(stripMarkup(text), menuBarTextColor(appearance))  // Loading… / ⚠
@@ -1054,10 +2039,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             title.append(run("cr ", secondaryTextColor))
             title.append(run(creditBalance, primaryTextColor))
         } else if s.hasUsageWindows && SHOW_SESSION, let session = s.session {
-            seg("5h", session.pct, "\(session.pct)%", session.elapsed)
+            seg(s.sessionTag, session.pct, "\(session.pct)%", session.elapsed)
         }
         if s.creditBalance == nil && s.hasUsageWindows && SHOW_WEEKLY, let weekly = s.weekly {
-            seg("7d", weekly.pct, "\(weekly.pct)%", weekly.elapsed)
+            seg(s.weeklyTag, weekly.pct, "\(weekly.pct)%", weekly.elapsed)
         }
         if SHOW_EXTRA, let e = s.extra { seg("ex", e.pct, e.spent, nil) } // $ budget → no meta
         statusItem.button?.attributedTitle = title.length > 0 ? title : run("ai", secondaryTextColor)
@@ -1065,8 +2050,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func renderMenu(_ s: Snapshot) {
         let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
-        headerItem.attributedTitle = run(s.plan.isEmpty ? "AI Usage" : s.plan,
-                                         .labelColor, NSFont.boldSystemFont(ofSize: 13))
+        for it in overviewRows { it.isHidden = true }
+        compactItem.isHidden = true
+        // With several Claude accounts the plan alone ("Claude Max 20x") no
+        // longer says WHICH account this is — suffix the label.
+        let plan = s.plan.isEmpty ? "AI Usage" : s.plan
+        let header = accountLabel(of: VENDOR).map { "\(plan) · \($0)" } ?? plan
+        headerItem.attributedTitle = run(header, .labelColor, NSFont.boldSystemFont(ofSize: 13))
 
         func row(_ key: String, _ name: String, _ pct: Int, _ value: String, _ reset: String?, _ elapsed: Int?) {
             guard let item = rows[key] else { return }
@@ -1088,10 +2078,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             rows["sonnet"]?.isHidden = true
         } else {
             if s.hasUsageWindows, let session = s.session {
-                row("session", "Session", session.pct, "\(session.pct)%", session.reset, session.elapsed)
+                row("session", s.sessionLabel, session.pct, "\(session.pct)%", session.reset, session.elapsed)
             } else { rows["session"]?.isHidden = true }
             if s.hasUsageWindows, let weekly = s.weekly {
-                row("weekly", "Weekly", weekly.pct, "\(weekly.pct)%", weekly.reset, weekly.elapsed)
+                row("weekly", s.weeklyLabel, weekly.pct, "\(weekly.pct)%", weekly.reset, weekly.elapsed)
             } else { rows["weekly"]?.isHidden = true }
         }
         if let sn = s.sonnet { row("sonnet", s.sonnetLabel, sn.pct, "\(sn.pct)%", sn.reset, sn.elapsed) }
@@ -1107,21 +2097,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func rebuildVendorSubmenu() {
         vendorSubmenu.removeAllItems()
         let active = VENDOR
-        let configured = VENDOR_AUTH.filter { vendorEnabled($0) && ($0.id == active || vendorConfigured($0)) }
-        if configured.isEmpty {
+        let entries = vendorEntries(active: active)
+        if entries.isEmpty {
             let none = NSMenuItem(title: "Nenhum configurado", action: nil, keyEquivalent: "")
             none.isEnabled = false
             vendorSubmenu.addItem(none)
             vendorSubmenuItem.isHidden = false
             return
         }
-        for v in configured {
+        for v in entries {
             let it = NSMenuItem(title: v.name, action: #selector(switchVendor(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = v.id
             it.state = (v.id == active) ? .on : .off
             vendorSubmenu.addItem(it)
         }
+        // Synthetic overview target — same one the ⌥⌘\ ring ends on.
+        vendorSubmenu.addItem(.separator())
+        let ov = NSMenuItem(title: "Visão geral", action: #selector(switchVendor(_:)), keyEquivalent: "")
+        ov.target = self
+        ov.representedObject = "overview"
+        ov.state = (active == "overview") ? .on : .off
+        vendorSubmenu.addItem(ov)
         vendorSubmenuItem.isHidden = false
     }
 
@@ -1136,6 +2133,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
         headerItem.attributedTitle = run(msg, menuBarTextColor(appearance))
         for (_, it) in rows { it.isHidden = true }
+        for it in overviewRows { it.isHidden = true }
+        compactItem.isHidden = true
     }
 }
 
