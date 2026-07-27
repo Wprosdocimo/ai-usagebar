@@ -395,6 +395,18 @@ func testClaudeAccounts() {
                 "anthropic@struct", "ring wraps to the first account")
 }
 
+func testCompactToggle() {
+    // Under the threshold → bars, unless Compactar forces the text mode.
+    assertEqual(overviewUsesBars(count: 3, barsMax: 4, compact: false), true,
+                "≤ barsMax without compact → bars")
+    assertEqual(overviewUsesBars(count: 3, barsMax: 4, compact: true), false,
+                "Compactar forces %-text even under the threshold")
+    assertEqual(overviewUsesBars(count: 5, barsMax: 4, compact: false), false,
+                "past the threshold → %-text regardless")
+    assertEqual(overviewUsesBars(count: 4, barsMax: 4, compact: false), true,
+                "boundary: exactly barsMax still draws bars")
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -405,6 +417,7 @@ struct TestRunner {
         testOverviewHeadline()
         testVendorCycle()
         testClaudeAccounts()
+        testCompactToggle()
         if failures > 0 {
             print("\n\(failures) test(s) FAILED")
             exit(1)
