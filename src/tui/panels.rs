@@ -135,6 +135,49 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
     }
 }
 
+/// The single most-relevant percentage for a vendor in the Overview — what its
+/// per-row mini bar shows. Mirrors the macOS menu bar's headline: Cursor is the
+/// combined included-total, quota vendors the most-exhausted window; balance
+/// vendors have no meaningful percentage (`None` → no bar).
+pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
+    match snapshot {
+        VendorSnapshot::Anthropic(s) => [
+            Some(s.session.utilization_pct),
+            Some(s.weekly.utilization_pct),
+            s.sonnet.as_ref().map(|w| w.utilization_pct),
+        ]
+        .into_iter()
+        .flatten()
+        .max(),
+        VendorSnapshot::AnthropicApi(s) => s.pct(),
+        VendorSnapshot::Openai(s) => [
+            s.session.as_ref().map(|w| w.utilization_pct),
+            s.weekly.as_ref().map(|w| w.utilization_pct),
+        ]
+        .into_iter()
+        .flatten()
+        .max(),
+        VendorSnapshot::Zai(s) => [
+            s.session.as_ref().map(|w| w.utilization_pct),
+            s.weekly.as_ref().map(|w| w.utilization_pct),
+        ]
+        .into_iter()
+        .flatten()
+        .max(),
+        VendorSnapshot::Kimi(s) => Some(s.weekly_pct().max(s.window_pct())),
+        VendorSnapshot::Antigravity(s) => {
+            Some(s.session.utilization_pct.max(s.weekly.utilization_pct))
+        }
+        VendorSnapshot::Cursor(s) => (!s.unlimited).then_some(s.total_pct),
+        VendorSnapshot::Openrouter(_)
+        | VendorSnapshot::Deepseek(_)
+        | VendorSnapshot::Kilo(_)
+        | VendorSnapshot::Novita(_)
+        | VendorSnapshot::Moonshot(_)
+        | VendorSnapshot::Grok(_) => None,
+    }
+}
+
 /// Build the section list for the currently-active vendor's snapshot.
 pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> Vec<Section> {
     match tab {
@@ -1284,6 +1327,19 @@ mod tests {
         }));
         assert!(plan.is_empty());
         assert_eq!(cells, vec![("$8.42".to_string(), PaceSeverity::Low)]);
+    }
+
+    #[test]
+    fn headline_pct_is_the_worst_window_or_combined_total() {
+        // Cursor: the combined total, not the worse pool (mirrors the menu bar).
+        assert_eq!(headline_pct(&VendorSnapshot::Cursor(cursor_snap())), Some(99));
+
+        // Balance-only vendors have no meaningful percentage → no bar.
+        let kilo = VendorSnapshot::Kilo(crate::usage::KiloSnapshot {
+            label: "Kilo".into(),
+            balance: 8.42,
+        });
+        assert_eq!(headline_pct(&kilo), None);
     }
 
     #[test]

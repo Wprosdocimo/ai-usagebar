@@ -1473,7 +1473,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Status-bar summary for overview mode: every vendor at once. Mini bar per
     /// vendor when few; worst-first numbers (capped, with `+K` overflow) when
     /// many. Tunable via `[ui] overview_menubar_bars_max` (bar↔number threshold,
-    /// default 2) and `overview_menubar_max` (how many numbers fit, default 4).
+    /// default 4) and `overview_menubar_max` (how many numbers fit, default 4).
     func overviewBarTitle(_ items: [(name: String, id: String, snap: Snapshot?)],
                           _ appearance: NSAppearance) -> NSAttributedString {
         let secondary = menuBarTextColor(appearance, secondary: true)
@@ -1485,7 +1485,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard !heads.isEmpty else { return run("ovr", secondary) }
 
-        let barsMax = Int(configValueTOML("ui", "overview_menubar_bars_max") ?? "") ?? 2
+        let barsMax = Int(configValueTOML("ui", "overview_menubar_bars_max") ?? "") ?? 4
         let t = NSMutableAttributedString()
         if heads.count <= barsMax {
             for (i, e) in heads.enumerated() {
@@ -1501,13 +1501,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else {
             let maxN = Int(configValueTOML("ui", "overview_menubar_max") ?? "") ?? 4
-            let sorted = heads.sorted { $0.pct > $1.pct }
-            for (i, e) in sorted.prefix(maxN).enumerated() {
+            // Entry order, not worst-first: entries are provider-grouped
+            // (standard Claude, then its accounts, then the other vendors), and
+            // stable positions beat a pct sort that reshuffles labels on every
+            // refresh.
+            for (i, e) in heads.prefix(maxN).enumerated() {
                 if i > 0 { t.append(run("  ", secondary)) }
                 t.append(run("\(ovLabel(e.name, 3)) ", secondary))
                 t.append(run(e.value, e.pct >= 0 ? colorForPct(e.pct) : .labelColor))
             }
-            if sorted.count > maxN { t.append(run("  +\(sorted.count - maxN)", secondary)) }
+            if heads.count > maxN { t.append(run("  +\(heads.count - maxN)", secondary)) }
         }
         return t
     }
