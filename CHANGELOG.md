@@ -29,7 +29,10 @@ Each release is also published at
   toggleable in Preferências → Atalho next to the ⌥⌘\\ swap toggle; overview
   mode only). Each vendor's headline is the metric that matters:
   **Cursor** shows its combined *included total usage*; **Anthropic** the biggest
-  of 5h / weekly / the scoped-model (Fable) window.
+  of 5h / weekly / the scoped-model (Fable) window. The menu-bar title now also
+  shows each vendor's **time to reset**, squeezed to its leading unit ("4d",
+  "2h", "5m") to fit both bar and %-text modes — same countdown the dropdown
+  and the per-vendor detail view already show, just shortened for the bar.
 
 - **Instant "Loading…" feedback on a vendor swap** (menu bar). Switching vendor —
   by ⌥⌘\\, the submenu, or an overview row — immediately replaces the view with a
