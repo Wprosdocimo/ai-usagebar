@@ -268,13 +268,13 @@ fn read_named_with(
     config_dir: &Path,
     keychain_read: impl Fn(&Path) -> Result<Option<String>>,
 ) -> Result<(CredentialsFile, CredsSource)> {
-    if let Some(raw) = keychain_read(config_dir)? {
-        if let Ok(kc) = parse(&raw, "macOS Keychain (named account)") {
-            if !is_unusable(&kc.claude_ai_oauth) {
-                return Ok((kc, CredsSource::NamedKeychain(config_dir.to_path_buf())));
-            }
-        }
-        // Present but unparsable/unusable — no better than the file.
+    // A present-but-unparsable/unusable item is no better than the file, so
+    // the whole chain failing falls through to the strict file read.
+    if let Some(raw) = keychain_read(config_dir)?
+        && let Ok(kc) = parse(&raw, "macOS Keychain (named account)")
+        && !is_unusable(&kc.claude_ai_oauth)
+    {
+        return Ok((kc, CredsSource::NamedKeychain(config_dir.to_path_buf())));
     }
     Ok((read_from(path)?, CredsSource::File(path.to_path_buf())))
 }
