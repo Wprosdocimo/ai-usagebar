@@ -11,6 +11,17 @@ Each release is also published at
 
 ### Added
 
+- **`--add-custom-claude-account <label>`** registers a new custom Claude
+  (Anthropic) account without hand-editing config: it appends an
+  `[[anthropic.accounts]]` block to `config.toml` (creating the file if needed,
+  preserving comments and formatting via `toml_edit`), creates the account's
+  credentials directory under `accounts/<label>/`, and prints how to sign it in
+  — the macOS Keychain-capture flow, or a `CLAUDE_CONFIG_DIR=… claude` login on
+  Linux. It validates the label and refuses a duplicate before writing anything,
+  and it never touches the default (unnamed) Claude account. Paired with live
+  reload (below), the new account shows up in the menu bar / TUI as soon as its
+  credentials exist — no restart.
+
 - **Live `config.toml` reload — no more restart after editing it.** Both the
   **macOS menu-bar app** and the **TUI** now watch `config.toml` and pick up
   changes on the fly: enable a vendor, add an `[[anthropic.accounts]]` entry,

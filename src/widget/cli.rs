@@ -121,6 +121,15 @@ pub struct Cli {
     /// `--creds-path` (they both name a credentials file).
     #[arg(long, value_name = "LABEL", conflicts_with = "creds_path")]
     pub account: Option<String>,
+
+    /// Register a new custom Claude (Anthropic) account and exit: append an
+    /// `[[anthropic.accounts]]` entry to config.toml, create its credentials
+    /// directory, and print how to sign it in. Does not touch the default
+    /// (unnamed) Claude account. Once the credentials file exists the account
+    /// shows up live (the app watches config.toml).
+    #[arg(long, value_name = "LABEL",
+          conflicts_with_all = ["cycle_next", "cycle_prev", "watch", "pretty", "json"])]
+    pub add_custom_claude_account: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]

@@ -35,6 +35,11 @@ use crate::zai;
 /// Entry point — runs to completion and ALWAYS returns Ok with exit code 0
 /// in the caller. Mirrors claudebar's `die()` invariant.
 pub async fn run(cli: Cli) -> i32 {
+    // Admin short-circuit: register a new Claude account in config.toml and exit
+    // (prints human guidance, not a Waybar payload — this is run by hand).
+    if let Some(label) = cli.add_custom_claude_account.as_deref() {
+        return run_add_custom_claude_account(label);
+    }
     // Scroll-cycle short-circuit: don't render, just bump state + signal waybar.
     if cli.cycle_next || cli.cycle_prev {
         return run_cycle(&cli).await;
@@ -79,6 +84,112 @@ async fn run_cycle(cli: &Cli) -> i32 {
     // shell-safe value on Linux glibc is signal 47 (= SIGRTMIN(34)+13).
     crate::waybar::request_refresh();
     0
+}
+
+/// `--add-custom-claude-account <label>`: register a new named Claude account in
+/// config.toml and tell the user how to sign it in. Prints human guidance and
+/// exits non-zero on failure (it's a manual command, not a Waybar render).
+fn run_add_custom_claude_account(label: &str) -> i32 {
+    match add_custom_claude_account(label) {
+        Ok(msg) => {
+            print!("{msg}");
+            0
+        }
+        Err(e) => {
+            eprintln!("ai-usagebar: could not add Claude account {label:?}: {e}");
+            1
+        }
+    }
+}
+
+/// Append an `[[anthropic.accounts]]` block for `label` to config.toml (creating
+/// the file if absent), create the account's credentials directory, and return
+/// the next-step guidance to print. Validates the label and refuses a duplicate
+/// before writing anything. The account's credentials still have to be supplied
+/// separately (the printed command) — this only registers it.
+fn add_custom_claude_account(label: &str) -> Result<String> {
+    use std::fmt::Write as _;
+
+    let config_path = crate::config::resolved_path()
+        .or_else(crate::config::default_path)
+        .ok_or_else(|| {
+            AppError::Other("could not resolve a config.toml path (no home directory?)".into())
+        })?;
+
+    let cred_file = crate::config::default_account_credentials_path(&config_path, label);
+    let account_dir = cred_file
+        .parent()
+        .unwrap_or(config_path.as_path())
+        .to_path_buf();
+
+    // Tilde-render paths for the written config value and the printed commands.
+    let home = crate::cache::home_dir().ok();
+    let tilde = |p: &std::path::Path| {
+        home.as_deref()
+            .map(|h| crate::config::tildify(p, h))
+            .unwrap_or_else(|| p.display().to_string())
+    };
+    let cred_display = tilde(&cred_file);
+    let dir_display = tilde(&account_dir);
+
+    // Parse the existing config (or start fresh), then append — the append
+    // validates the label and rejects a duplicate before any file is touched.
+    let original = match std::fs::read_to_string(&config_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(AppError::io_at(&config_path, e)),
+    };
+    let mut doc: toml_edit::DocumentMut = if original.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        original.parse().map_err(|e: toml_edit::TomlError| {
+            AppError::Other(format!("config.toml not parseable: {e}"))
+        })?
+    };
+    crate::config::add_anthropic_account_to_doc(&mut doc, label, &cred_display)?;
+
+    std::fs::create_dir_all(&account_dir).map_err(|e| AppError::io_at(&account_dir, e))?;
+    crate::cache::atomic_write(&config_path, doc.to_string().as_bytes())?;
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "✓ Added Claude account {label:?} to {}",
+        config_path.display()
+    );
+    let _ = writeln!(out, "  credentials_path = {cred_display}");
+    let _ = writeln!(out);
+    if cfg!(target_os = "macos") {
+        // On macOS a `CLAUDE_CONFIG_DIR=… claude` login lands in a config-dir
+        // scoped *Keychain* item, not this file — so the reliable way to fill a
+        // file-backed account is to sign the default `claude` in as this
+        // identity and capture that Keychain item into the file.
+        let _ = writeln!(
+            out,
+            "Next: sign the `claude` CLI in as this account (one login at a time),\n\
+             then capture its credentials into the file above:"
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "  security find-generic-password -s 'Claude Code-credentials' -w \\\n\
+             \x20   > {cred_display} && chmod 600 {cred_display}"
+        );
+    } else {
+        // On Linux a per-account CLAUDE_CONFIG_DIR login writes the file directly.
+        let _ = writeln!(
+            out,
+            "Next: sign in for this account, writing its credentials to the file above:"
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(out, "  CLAUDE_CONFIG_DIR={dir_display} claude");
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "It appears automatically once its credentials exist — the app watches config.toml."
+    );
+    Ok(out)
 }
 
 /// `--watch` repaints in place, which only makes sense on a terminal. Piped or

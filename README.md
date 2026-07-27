@@ -400,7 +400,16 @@ credentials file and its own cache directory:
 
 Instead of repeating `--creds-path`/`--cache-dir` on every module, name your
 extra Anthropic accounts once in config and select them with `--account
-<label>`:
+<label>`. To add one without hand-editing the file, run:
+
+```bash
+ai-usagebar --add-custom-claude-account work
+```
+
+It appends the `[[anthropic.accounts]]` block below (preserving your comments and
+formatting), creates the account's credentials directory, and prints how to sign
+it in. It validates the label, refuses a duplicate, and never touches the default
+account. Or write the block yourself:
 
 ```toml
 [anthropic]
