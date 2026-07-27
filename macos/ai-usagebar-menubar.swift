@@ -1337,6 +1337,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var lastVendor = ""
     var lastSnapshot: Snapshot?
     var pendingRefresh: DispatchWorkItem?
+    /// Live watch on config.toml so external edits (a text editor, the TUI's
+    /// Settings overlay, `ai-usagebar --add-custom-claude-account`) hot-reload
+    /// the vendor list without restarting the app. The fd is closed by the
+    /// source's cancel handler; `pendingConfigReload` coalesces an editor's
+    /// burst of vnode events into a single reload.
+    var configWatchSource: DispatchSourceFileSystemObject?
+    var configWatchFD: CInt = -1
+    var pendingConfigReload: DispatchWorkItem?
     /// Bumped on every refresh attempt. A result whose generation is no longer
     /// current belongs to a superseded attempt — most often the previously
     /// selected vendor — and must not be rendered. Without this, the timer,
@@ -1386,6 +1394,78 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: compactHotKeyNotification, object: nil)
         installSwapHotKey()
         installCompactHotKey()
+        installConfigWatch()
+    }
+
+    /// Watch config.toml and hot-reload the vendor list when it changes on disk.
+    /// Editors usually save atomically (write a temp file, then rename it over
+    /// the target), which unlinks the inode our descriptor points at — so a
+    /// `.delete`/`.rename` event means "re-open the path to keep watching the
+    /// new file". A plain in-place write (`>>`, some editors) fires `.write` on
+    /// the same descriptor. Idempotent: always tears down the previous watch.
+    func installConfigWatch() {
+        removeConfigWatch()
+        let path = configPathTOML()
+        let fd = open(path, O_EVTONLY)
+        guard fd >= 0 else {
+            // No readable file yet (not created, or momentarily gone between an
+            // editor's unlink and rename). Retry shortly so a config created
+            // after launch — or a non-atomic save's brief gap — is still picked
+            // up. ponytail: a fixed 3s retry, not exponential backoff; this only
+            // spins in the rare window before the file exists.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                self?.installConfigWatch()
+            }
+            return
+        }
+        let src = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd, eventMask: [.write, .extend, .delete, .rename, .attrib],
+            queue: .main)
+        src.setEventHandler { [weak self] in
+            guard let self, let flags = self.configWatchSource?.data else { return }
+            self.scheduleConfigReload()
+            // The watched inode was replaced; re-arm on whatever is at the path
+            // now so future edits keep firing.
+            if flags.contains(.delete) || flags.contains(.rename) {
+                self.installConfigWatch()
+            }
+        }
+        src.setCancelHandler { close(fd) }
+        configWatchFD = fd
+        configWatchSource = src
+        src.resume()
+    }
+
+    func removeConfigWatch() {
+        configWatchSource?.cancel()  // the cancel handler closes the fd
+        configWatchSource = nil
+        configWatchFD = -1
+    }
+
+    /// Coalesce the burst of vnode events a save emits (write → rename → attrib)
+    /// into one reload a beat later, mirroring `settingsChanged`'s debounce.
+    func scheduleConfigReload() {
+        pendingConfigReload?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.configFileChanged() }
+        pendingConfigReload = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    /// A config.toml edit landed: rebuild the vendor submenu/ring, re-render the
+    /// current view from cache so an `[ui]` tweak shows at once, then debounce a
+    /// full refresh to fetch any newly-added vendor/account. Reads are all fresh
+    /// from disk (nothing caches config.toml), so no invalidation is needed.
+    @objc func configFileChanged() {
+        rebuildVendorSubmenu()
+        if VENDOR == "overview" {
+            if let ov = lastOverview { renderOverview(ov) }
+        } else if let s = lastSnapshot {
+            renderPanel(s); renderMenu(s)
+        }
+        pendingRefresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.refresh() }
+        pendingRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
     }
 
     /// (Re)register the global ⌥⌘\ hot key to match the `swapShortcutEnabled`

@@ -10,8 +10,7 @@
 //!   q / Esc / Ctrl-C   quit
 
 use std::io;
-
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use ai_usagebar::config::Config;
 use ai_usagebar::tui::app::{
@@ -109,6 +108,53 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// How often to check `config.toml`'s mtime for edits made outside the TUI
+/// (a text editor, `--add-custom-claude-account`, another tool).
+// ponytail: an mtime poll, not a notify(7)/FSEvents watcher — one stat() every
+// couple seconds beats pulling in a file-watching crate + its background thread
+// for a file that changes a handful of times a session. The macOS menu-bar app
+// watches natively (DispatchSource, free via Foundation); the TUI polls.
+const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// mtime of the resolved config file, or `None` when there is no config yet or
+/// it can't be stat'd. Re-resolves the path each call, so a config file created
+/// after the TUI started is still noticed.
+fn config_mtime() -> Option<SystemTime> {
+    let path = ai_usagebar::config::resolved_path()?;
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+/// Re-read `config.toml` into `config` and rebuild everything the TUI derives
+/// from it — the tab set (vendor + `[[anthropic.accounts]]` changes), the
+/// overview vendor list, the context toggle — then re-fetch every tab. Returns
+/// `false` and touches nothing if the file can't be parsed, so a half-written
+/// edit never wipes the session back to defaults; the next poll retries.
+///
+/// `reselect_primary` snaps back to the configured primary tab — wanted right
+/// after an explicit Settings save, but not on a background file-watch reload,
+/// where `set_tabs` already clamps the current tab and yanking the user away
+/// from where they were browsing would be rude.
+fn reload_config(
+    app: &mut App,
+    config: &mut Config,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<(u64, TabId, TabState)>,
+    reselect_primary: bool,
+) -> bool {
+    let Ok(reloaded) = Config::load() else {
+        return false;
+    };
+    *config = reloaded;
+    app.context_enabled = config.context.enabled;
+    app.overview_vendors = config.ui.overview_vendors.clone();
+    app.set_tabs(tabs_from_config(config));
+    if reselect_primary {
+        app.select_primary(config.ui.primary);
+    }
+    spawn_all(app, client, config, tx);
+    true
+}
+
 async fn event_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -161,6 +207,11 @@ where
     let mut tick = tokio::time::interval(REFRESH_INTERVAL);
     tick.tick().await; // consume the immediate tick.
 
+    // Watch config.toml for external edits and hot-reload without a restart.
+    let mut config_poll = tokio::time::interval(CONFIG_POLL_INTERVAL);
+    config_poll.tick().await; // consume the immediate tick.
+    let mut last_config_mtime = config_mtime();
+
     loop {
         terminal.draw(|f| draw(f, app))?;
 
@@ -180,6 +231,15 @@ where
             // Periodic auto-refresh of all tabs.
             _ = tick.tick() => {
                 spawn_all(app, client, config, &tx);
+            }
+            // Hot-reload config.toml when it changes on disk (external editor,
+            // `--add-custom-claude-account`, etc.), preserving the current tab.
+            _ = config_poll.tick() => {
+                let now = config_mtime();
+                if now != last_config_mtime {
+                    last_config_mtime = now;
+                    reload_config(app, config, client, &tx, false);
+                }
             }
             // Keyboard + resize, delivered by the single reader thread.
             maybe_input = input_rx.recv() => {
@@ -237,22 +297,16 @@ where
                             SAction::Close => app.settings = None,
                             SAction::SavedAndClose => {
                                 app.settings = None;
-                                // Re-load config so the new primary takes effect
-                                // on the next render, rebuild the tab set so
-                                // account/vendor changes made to config.toml
-                                // while the TUI was open appear without a
-                                // restart, and queue an immediate refresh of
-                                // every tab so newly-set API keys are picked up.
-                                // Keep the config we already have if the reload
-                                // fails — reverting to defaults would silently
-                                // drop the user's real settings mid-session.
-                                if let Ok(reloaded) = ai_usagebar::config::Config::load() {
-                                    *config = reloaded;
-                                }
-                                app.context_enabled = config.context.enabled;
-                                app.set_tabs(tabs_from_config(config));
-                                app.select_primary(config.ui.primary);
-                                spawn_all(app, client, config, &tx);
+                                // Reload config and rebuild the tab set so a
+                                // just-saved primary / account / vendor / API-key
+                                // change takes effect without a restart, snapping
+                                // to the configured primary since the user just
+                                // asked for it. A broken reload keeps the current
+                                // config rather than reverting to defaults.
+                                reload_config(app, config, client, &tx, true);
+                                // The save just rewrote config.toml; adopt its new
+                                // mtime so the background poll doesn't reload again.
+                                last_config_mtime = config_mtime();
                             }
                             SAction::Quit => return Ok(()),
                         }

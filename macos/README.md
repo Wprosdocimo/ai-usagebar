@@ -136,6 +136,14 @@ default (unnamed) Claude entry when every account is managed explicitly.
 Every immediate `accounts_dir` subdirectory counts as an account; this includes
 macOS logins whose credentials exist only in a config-dir-scoped Keychain item.
 
+## Live config reload
+
+The app watches `config.toml` and reloads on any change — enable a vendor, add
+an account, tweak an `[ui]` knob, and the menu bar updates within a second, no
+restart. It re-arms across an editor's atomic save, and a half-written file
+mid-edit is ignored (the running config is kept until the file parses again).
+The TUI does the same, polling the file every couple of seconds.
+
 ## How it works
 
 Runs `ai-usagebar --vendor <v> --format '{plan};;{session_pct};;…'`, parses the
