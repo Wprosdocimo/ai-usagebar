@@ -11,16 +11,22 @@ Each release is also published at
 
 ### Added
 
-- **`--add-custom-claude-account <label>`** registers a new custom Claude
-  (Anthropic) account without hand-editing config: it appends an
+- **`--add-custom-claude-account <label>`** takes a new custom Claude (Anthropic)
+  account from nothing to signed-in in one command: it appends an
   `[[anthropic.accounts]]` block to `config.toml` (creating the file if needed,
   preserving comments and formatting via `toml_edit`), creates the account's
-  credentials directory under `accounts/<label>/`, and prints how to sign it in
-  — the macOS Keychain-capture flow, or a `CLAUDE_CONFIG_DIR=… claude` login on
-  Linux. It validates the label and refuses a duplicate before writing anything,
-  and it never touches the default (unnamed) Claude account. Paired with live
-  reload (below), the new account shows up in the menu bar / TUI as soon as its
-  credentials exist — no restart.
+  credentials directory, and then **launches `claude` to sign in** with that
+  account's own `CLAUDE_CONFIG_DIR` — so the login writes exactly where
+  ai-usagebar reads it back (the config-dir-scoped Keychain item on macOS, a
+  `.credentials.json` on Linux) and **your default Claude login is never
+  touched**. When it returns, it re-stamps `config.toml` so the running menu bar
+  / TUI re-fetches and the account shows up **with data immediately** — no
+  restart, no hand-copying credentials. It's idempotent (re-run it to sign an
+  already-registered account back in), never touches the default account, and
+  `--no-login` skips the login step to just register the entry (headless boxes,
+  or add-now-sign-in-later). If `claude` isn't on `PATH` or the login is
+  cancelled, the entry is still registered and it prints the exact login command
+  to finish by hand.
 
 - **Live `config.toml` reload — no more restart after editing it.** Both the
   **macOS menu-bar app** and the **TUI** now watch `config.toml` and pick up

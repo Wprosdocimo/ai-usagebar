@@ -359,6 +359,20 @@ pub fn add_anthropic_account_to_doc(
     Ok(())
 }
 
+/// Is a `[[anthropic.accounts]]` entry with this label already in the document?
+/// Lets the "add account" flow be idempotent — re-running to *sign in* an
+/// already-registered account should skip the append, not error.
+pub fn doc_has_anthropic_account(doc: &toml_edit::DocumentMut, label: &str) -> bool {
+    doc.get("anthropic")
+        .and_then(|a| a.get("accounts"))
+        .and_then(toml_edit::Item::as_array_of_tables)
+        .is_some_and(|accts| {
+            accts
+                .iter()
+                .any(|t| t.get("label").and_then(toml_edit::Item::as_str) == Some(label))
+        })
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct OpenAiConfig {
@@ -1657,6 +1671,23 @@ credentials_path = "~/w/.credentials.json"
         let mut doc = toml_edit::DocumentMut::new();
         assert!(add_anthropic_account_to_doc(&mut doc, "a/b", "~/x/.credentials.json").is_err());
         assert!(add_anthropic_account_to_doc(&mut doc, "", "~/x/.credentials.json").is_err());
+    }
+
+    #[test]
+    fn doc_has_account_detects_membership() {
+        let doc: toml_edit::DocumentMut = r#"
+[[anthropic.accounts]]
+label = "work"
+credentials_path = "~/w/.credentials.json"
+"#
+        .parse()
+        .unwrap();
+        assert!(doc_has_anthropic_account(&doc, "work"));
+        assert!(!doc_has_anthropic_account(&doc, "home"));
+        assert!(!doc_has_anthropic_account(
+            &toml_edit::DocumentMut::new(),
+            "work"
+        ));
     }
 
     #[test]

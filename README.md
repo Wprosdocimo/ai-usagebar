@@ -407,9 +407,14 @@ ai-usagebar --add-custom-claude-account work
 ```
 
 It appends the `[[anthropic.accounts]]` block below (preserving your comments and
-formatting), creates the account's credentials directory, and prints how to sign
-it in. It validates the label, refuses a duplicate, and never touches the default
-account. Or write the block yourself:
+formatting), creates the account's credentials directory, then **launches
+`claude` to sign in** with that account's own `CLAUDE_CONFIG_DIR` — so the login
+lands exactly where ai-usagebar reads it (the config-dir-scoped Keychain item on
+macOS, a `.credentials.json` on Linux) and your **default Claude login is never
+touched**. It's idempotent (re-run to sign an existing account back in) and
+never touches the default account; add `--no-login` to only register the entry
+and sign in later. Paired with live reload, the account shows up in the menu bar
+/ TUI the moment it's signed in — no restart. Or write the block yourself:
 
 ```toml
 [anthropic]

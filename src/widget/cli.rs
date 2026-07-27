@@ -130,6 +130,12 @@ pub struct Cli {
     #[arg(long, value_name = "LABEL",
           conflicts_with_all = ["cycle_next", "cycle_prev", "watch", "pretty", "json"])]
     pub add_custom_claude_account: Option<String>,
+
+    /// With `--add-custom-claude-account`, only register the account in
+    /// config.toml — do not launch the interactive `claude` login afterwards.
+    /// Use it on a headless box, or to add the entry now and sign in later.
+    #[arg(long)]
+    pub no_login: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
