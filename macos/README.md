@@ -89,6 +89,12 @@ Settings persist in `UserDefaults` and apply **live, no rebuild**.
 `config.toml` limits and orders the Overview on macOS exactly as it does in the
 TUI. Requesting `anthropic` includes every configured named Claude account.
 
+In Overview mode, each dropdown row is a **checkbox**: click it to drop that
+provider from the always-visible top-bar summary (checkmark = shown; unchecked +
+dimmed = hidden). Hidden providers stay listed so you can re-enable them, and the
+choice persists. Jumping to a provider's detail view is via the *Trocar vendor*
+submenu / ⌥⌘\ (the Overview row click toggles visibility instead).
+
 The Preferences window needs **macOS 12+** (the menu bar itself works on
 10.15+). Tags/labels use the system label colors, so they adapt to a light or
 dark menu bar; only the bar fill/empty colors are configurable.

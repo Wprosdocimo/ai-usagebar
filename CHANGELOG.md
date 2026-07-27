@@ -11,6 +11,15 @@ Each release is also published at
 
 ### Added
 
+- **Per-provider on/off toggle in the Overview (macOS menu bar).** Each row in
+  the Overview dropdown is now a checkbox: click it to drop that provider from
+  the always-visible top-bar summary (checkmark = shown; unchecked + dimmed =
+  hidden). Hidden providers stay listed in the dropdown so you can turn them
+  back on, and dropping some also frees up the top bar to draw mini bars again
+  instead of compact text. The choice persists (UserDefaults). Jumping to a
+  provider's detail view moves to the *Trocar vendor* submenu / **⌥⌘\\** (the
+  Overview row click now toggles instead).
+
 - **Live `config.toml` reload — no more restart after editing it.** Both the
   **macOS menu-bar app** and the **TUI** now watch `config.toml` and pick up
   changes on the fly: enable a vendor, add an `[[anthropic.accounts]]` entry,
