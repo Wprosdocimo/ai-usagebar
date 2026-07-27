@@ -407,6 +407,16 @@ func testCompactToggle() {
                 "boundary: exactly barsMax still draws bars")
 }
 
+func testShortReset() {
+    assertEqual(shortReset("4d 1h"), "4d", "days+hours → leading days")
+    assertEqual(shortReset("2h 05m"), "2h", "hours+minutes → leading hours")
+    assertEqual(shortReset("0h 05m"), "5m", "under an hour → minutes, no leading zero")
+    assertEqual(shortReset("0h 00m"), "0m", "zero minutes stays 0m")
+    assertEqual(shortReset("now"), "now", "already reset")
+    assertEqual(shortReset("—"), nil, "em-dash → nil")
+    assertEqual(shortReset(""), nil, "empty → nil")
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -418,6 +428,7 @@ struct TestRunner {
         testVendorCycle()
         testClaudeAccounts()
         testCompactToggle()
+        testShortReset()
         if failures > 0 {
             print("\n\(failures) test(s) FAILED")
             exit(1)
