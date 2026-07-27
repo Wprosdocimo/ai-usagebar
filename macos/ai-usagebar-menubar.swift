@@ -801,6 +801,7 @@ struct SettingsView: View {
     @AppStorage("showMeta") private var showMeta = true
     @AppStorage("barStyle") private var barStyle = "block"
     @AppStorage("swapShortcutEnabled") private var swapShortcutEnabled = true
+    @AppStorage("compactShortcutEnabled") private var compactShortcutEnabled = true
     @AppStorage("colorLow") private var colorLow = "#98c379"
     @AppStorage("colorMid") private var colorMid = "#e5c07b"
     @AppStorage("colorHigh") private var colorHigh = "#d19a66"
@@ -841,6 +842,9 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Toggle("Trocar vendor com ⌥⌘\\ (atalho global)", isOn: $swapShortcutEnabled)
                         Text("Alterna o vendor ativo a partir de qualquer app.")
+                            .font(.caption).foregroundColor(.secondary)
+                        Toggle("Compactar/Expandir com ⌥⌘E (atalho global)", isOn: $compactShortcutEnabled)
+                        Text("Alterna a Visão geral entre barras e modo compacto.")
                             .font(.caption).foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -885,22 +889,33 @@ struct SettingsView: View {
 // posts a notification the delegate observes.
 
 let swapHotKeyNotification = Notification.Name("aiusagebar.swapHotKey")
+let compactHotKeyNotification = Notification.Name("aiusagebar.compactHotKey")
 
-/// Default shortcut: `\` (kVK_ANSI_Backslash) with Command+Option. `[ui]` on
-/// Linux has no equivalent; this is macOS-only.
+/// Default shortcuts: `\` (kVK_ANSI_Backslash) with Command+Option swaps the
+/// vendor; `E` with Command+Option toggles the overview's Compactar/Expandir.
+/// `[ui]` on Linux has no equivalent; this is macOS-only.
 let SWAP_HOTKEY_KEYCODE = UInt32(kVK_ANSI_Backslash)
+let COMPACT_HOTKEY_KEYCODE = UInt32(kVK_ANSI_E)
 let SWAP_HOTKEY_MODIFIERS = UInt32(cmdKey | optionKey)
+
+/// Registered hot-key ids, carried back to us in the event so one shared C
+/// callback can tell which shortcut fired.
+let SWAP_HOTKEY_ID = UInt32(1)
+let COMPACT_HOTKEY_ID = UInt32(2)
 
 private func swapHotKeyCallback(
     _ next: EventHandlerCallRef?, _ event: EventRef?, _ userData: UnsafeMutableRawPointer?
 ) -> OSStatus {
-    NotificationCenter.default.post(name: swapHotKeyNotification, object: nil)
+    var hk = EventHotKeyID()
+    GetEventParameter(event, EventParamName(kEventParamDirectObject),
+                      EventParamType(typeEventHotKeyID), nil,
+                      MemoryLayout<EventHotKeyID>.size, nil, &hk)
+    NotificationCenter.default.post(
+        name: hk.id == COMPACT_HOTKEY_ID ? compactHotKeyNotification : swapHotKeyNotification,
+        object: nil)
     return noErr
 }
 
-/// The next id in the cycle, wrapping. `current` absent from `ids` (e.g. the
-/// selected vendor was disabled) starts at the first (or last, backward).
-/// Pure + testable — the hot-key handler is not.
 /// Whether the overview status-bar title draws mini bars (vs. the compact
 /// %-text mode). "Compactar" forces the text mode even under the bars-count
 /// threshold. Pure + testable — the render path is not.
@@ -908,6 +923,9 @@ func overviewUsesBars(count: Int, barsMax: Int, compact: Bool) -> Bool {
     !compact && count <= barsMax
 }
 
+/// The next id in the cycle, wrapping. `current` absent from `ids` (e.g. the
+/// selected vendor was disabled) starts at the first (or last, backward).
+/// Pure + testable — the hot-key handler is not.
 func nextVendorId(current: String, in ids: [String], forward: Bool = true) -> String? {
     guard !ids.isEmpty else { return nil }
     let n = ids.count
@@ -919,6 +937,7 @@ func nextVendorId(current: String, in ids: [String], forward: Bool = true) -> St
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var swapHotKeyRef: EventHotKeyRef?
+    var compactHotKeyRef: EventHotKeyRef?
     var swapHotKeyHandlerInstalled = false
     var timer: Timer?
     var prefsWindow: NSWindow?
@@ -956,10 +975,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let vendorSubmenuItem = NSMenuItem(title: "Trocar vendor", action: nil, keyEquivalent: "")
     /// Overview-only: forces the status-bar title into the compact %-text mode
     /// ("Compactar"); while compact it reads "Expandir" and turns it back off.
-    let compactItem = NSMenuItem(title: "Compactar", action: nil, keyEquivalent: "e")
+    let compactItem = NSMenuItem(title: "Compactar", action: nil, keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        DEF.register(defaults: ["swapShortcutEnabled": true])
+        DEF.register(defaults: ["swapShortcutEnabled": true, "compactShortcutEnabled": true])
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "5h …"
         buildMenu()
@@ -974,7 +993,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSwapHotKey),
             name: swapHotKeyNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleCompactHotKey),
+            name: compactHotKeyNotification, object: nil)
         installSwapHotKey()
+        installCompactHotKey()
     }
 
     /// (Re)register the global ⌥⌘\ hot key to match the `swapShortcutEnabled`
@@ -1001,16 +1024,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             vendorSubmenuItem.attributedTitle = NSAttributedString(string: "Trocar vendor")
         }
         guard enabled else { return }
-        if !swapHotKeyHandlerInstalled {
-            var spec = EventTypeSpec(
-                eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-            InstallEventHandler(GetApplicationEventTarget(), swapHotKeyCallback, 1, &spec, nil, nil)
-            swapHotKeyHandlerInstalled = true
-        }
-        let id = EventHotKeyID(signature: OSType(0x4149_4242), id: 1)  // 'AIBB'
+        installHotKeyHandlerOnce()
+        let id = EventHotKeyID(signature: OSType(0x4149_4242), id: SWAP_HOTKEY_ID)  // 'AIBB'
         RegisterEventHotKey(
             SWAP_HOTKEY_KEYCODE, SWAP_HOTKEY_MODIFIERS, id, GetApplicationEventTarget(), 0,
             &swapHotKeyRef)
+    }
+
+    /// (Re)register the global ⌥⌘E Compactar/Expandir hot key to match the
+    /// `compactShortcutEnabled` preference. Idempotent, mirroring
+    /// `installSwapHotKey` — including the painted-in hint (a native
+    /// keyEquivalent would fire a second time while the menu is open, double-
+    /// toggling on one press).
+    func installCompactHotKey() {
+        if let ref = compactHotKeyRef {
+            UnregisterEventHotKey(ref)
+            compactHotKeyRef = nil
+        }
+        updateCompactItemTitle()
+        guard DEF.bool(forKey: "compactShortcutEnabled") else { return }
+        installHotKeyHandlerOnce()
+        let id = EventHotKeyID(signature: OSType(0x4149_4242), id: COMPACT_HOTKEY_ID)
+        RegisterEventHotKey(
+            COMPACT_HOTKEY_KEYCODE, SWAP_HOTKEY_MODIFIERS, id, GetApplicationEventTarget(), 0,
+            &compactHotKeyRef)
+    }
+
+    /// Compactar ↔ Expandir label plus the dimmed ⌥⌘E hint when the global
+    /// shortcut is on. Shared by the overview render and the hot-key installer.
+    func updateCompactItemTitle() {
+        let label = DEF.bool(forKey: "overviewCompact") ? "Expandir" : "Compactar"
+        guard DEF.bool(forKey: "compactShortcutEnabled") else {
+            compactItem.attributedTitle = NSAttributedString(string: label)
+            return
+        }
+        let font = NSFont.menuFont(ofSize: 0)
+        let s = NSMutableAttributedString(string: "\(label)  ", attributes: [.font: font])
+        s.append(NSAttributedString(string: "⌥⌘E", attributes: [
+            .font: font, .foregroundColor: NSColor.tertiaryLabelColor,
+        ]))
+        compactItem.attributedTitle = s
+    }
+
+    /// One Carbon handler serves every hot key; the event's EventHotKeyID
+    /// says which one fired.
+    private func installHotKeyHandlerOnce() {
+        guard !swapHotKeyHandlerInstalled else { return }
+        var spec = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), swapHotKeyCallback, 1, &spec, nil, nil)
+        swapHotKeyHandlerInstalled = true
     }
 
     func removeSwapHotKey() {
@@ -1027,6 +1090,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let next = nextVendorId(current: VENDOR, in: swapCycleIds()) {
             DEF.set(next, forKey: "vendor")
         }
+    }
+
+    /// ⌥⌘E: toggle Compactar/Expandir. Overview-only — flipping a hidden
+    /// preference from another view would be invisible and confusing.
+    @objc func handleCompactHotKey() {
+        guard VENDOR == "overview" else { return }
+        toggleCompact()
     }
 
     /// The swap-shortcut ring: every configured vendor plus the synthetic
@@ -1133,6 +1203,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // vendor switch, which itself writes defaults).
         if DEF.bool(forKey: "swapShortcutEnabled") != (swapHotKeyRef != nil) {
             installSwapHotKey()
+        }
+        if DEF.bool(forKey: "compactShortcutEnabled") != (compactHotKeyRef != nil) {
+            installCompactHotKey()
         }
         // A vendor swap re-fetches, which takes a moment; keeping the previous
         // vendor's view up reads as a freeze. Show a Loading placeholder at once.
@@ -1453,7 +1526,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // many). The dropdown always holds the full per-vendor list.
         statusItem.button?.attributedTitle = overviewBarTitle(items, appearance)
         compactItem.isHidden = false
-        compactItem.title = DEF.bool(forKey: "overviewCompact") ? "Expandir" : "Compactar"
+        updateCompactItemTitle()
         if rebuildSubmenu { rebuildVendorSubmenu() }
     }
 
