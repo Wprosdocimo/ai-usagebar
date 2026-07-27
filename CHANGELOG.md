@@ -11,6 +11,17 @@ Each release is also published at
 
 ### Added
 
+- **Claude multi-account in the macOS menu bar.** Every named Anthropic account
+  — explicit `[[anthropic.accounts]]` entries and `[anthropic] accounts_dir`
+  discoveries, the same config the binary and TUI already read — now appears as
+  its own entry ("Claude · work") in the *Trocar vendor* submenu, the **⌥⌘\\**
+  swap ring, the Preferences vendor selector, and the **Overview** (its own
+  dropdown row and status-bar segment, labeled by account). Fetches run as
+  `--vendor anthropic --account <label>`, so each account keeps its own cache
+  and refresh, and the dropdown header shows which account is active
+  ("Claude Max 20x · work"). `[anthropic] show_default_account = false` hides
+  the default (unnamed) Claude entry, mirroring the TUI.
+
 - **Overview across the TUI and the macOS menu bar.** A single view summarizing
   every vendor at once — one compact row each (key metric, colored by severity)
   — so all your limits are visible without switching tabs. In the **TUI** it is

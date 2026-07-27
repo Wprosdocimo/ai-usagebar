@@ -318,6 +318,83 @@ func testVendorCycle() {
     assertEqual(nextVendorId(current: "overview", in: ring) ?? "?", "anthropic", "overview wraps to first")
 }
 
+func testClaudeAccounts() {
+    // [[anthropic.accounts]] label extraction, in file order, ignoring other
+    // sections/keys and both quote styles.
+    let toml = """
+    [ui]
+    primary = "cursor"
+
+    [anthropic]
+    enabled = true
+    show_default_account = false
+
+    [[anthropic.accounts]]
+    label = "struct"
+    credentials_path = "~/x/struct/.credentials.json"
+
+    [[anthropic.accounts]]
+    label = 'gmail'
+    credentials_path = "~/x/gmail/.credentials.json"
+
+    [cursor]
+    enabled = true
+    """
+    assertEqual(anthropicAccountLabels(inTOML: toml).joined(separator: ","),
+                "struct,gmail", "labels in file order")
+    assertEqual(anthropicAccountLabels(inTOML: "[anthropic]\nenabled = true").isEmpty, true,
+                "no account blocks → no labels")
+    // A `label` key outside an accounts block must not count.
+    assertEqual(anthropicAccountLabels(inTOML: "[ui]\nlabel = \"nope\"").isEmpty, true,
+                "label outside [[anthropic.accounts]] ignored")
+
+    // Explicit wins over discovered on a clash; discovered appended sorted.
+    assertEqual(mergedAccountLabels(explicit: ["b"], discovered: ["a", "b", "c"])
+                    .joined(separator: ","),
+                "b,a,c", "explicit first, clash dropped")
+
+    // show_default_account semantics mirror Rust: ignored without accounts.
+    assertEqual(showDefaultClaudeAccount(configValue: "false", hasAccounts: false), true,
+                "no accounts → default always shown")
+    assertEqual(showDefaultClaudeAccount(configValue: "false", hasAccounts: true), false,
+                "false hides the default")
+    assertEqual(showDefaultClaudeAccount(configValue: nil, hasAccounts: true), true,
+                "omitted → shown")
+
+    // accounts_dir discovery: only subdirs holding .credentials.json, sorted.
+    let fm = FileManager.default
+    let dir = NSTemporaryDirectory() + "aiusagebar-tests-\(ProcessInfo.processInfo.processIdentifier)"
+    defer { try? fm.removeItem(atPath: dir) }
+    for sub in ["zeta", "alpha", "nofile"] {
+        try? fm.createDirectory(atPath: "\(dir)/\(sub)", withIntermediateDirectories: true)
+    }
+    fm.createFile(atPath: "\(dir)/zeta/.credentials.json", contents: Data("{}".utf8))
+    fm.createFile(atPath: "\(dir)/alpha/.credentials.json", contents: Data("{}".utf8))
+    fm.createFile(atPath: "\(dir)/stray.json", contents: Data("{}".utf8))
+    assertEqual(discoverAccountLabels(inDir: dir).joined(separator: ","),
+                "alpha,zeta", "subdirs with .credentials.json, sorted")
+    assertEqual(discoverAccountLabels(inDir: dir + "/missing").isEmpty, true,
+                "missing dir → empty")
+
+    // Pseudo-id mapping round-trip.
+    assertEqual(accountLabel(of: "anthropic@gmail") ?? "?", "gmail", "label extracted")
+    assertEqual(accountLabel(of: "anthropic") == nil, true, "base id has no label")
+    assertEqual(baseVendorId("anthropic@gmail"), "anthropic", "account → base vendor")
+    assertEqual(baseVendorId("cursor"), "cursor", "base id unchanged")
+    assertEqual(vendorArgs(for: "anthropic@gmail").joined(separator: " "),
+                "--vendor anthropic --account gmail", "account fetch args")
+    assertEqual(vendorArgs(for: "zai").joined(separator: " "), "--vendor zai", "vendor fetch args")
+    assertEqual(entryDisplayName("anthropic@gmail"), "Claude · gmail", "account display name")
+    assertEqual(entryDisplayName("overview"), "Visão geral", "overview display name")
+
+    // The swap ring cycles across accounts like any other entry.
+    let ring = ["anthropic@struct", "anthropic@gmail", "cursor", "overview"]
+    assertEqual(nextVendorId(current: "anthropic@struct", in: ring) ?? "?",
+                "anthropic@gmail", "ring steps between accounts")
+    assertEqual(nextVendorId(current: "overview", in: ring) ?? "?",
+                "anthropic@struct", "ring wraps to the first account")
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -327,6 +404,7 @@ struct TestRunner {
         testParserBalances()
         testOverviewHeadline()
         testVendorCycle()
+        testClaudeAccounts()
         if failures > 0 {
             print("\n\(failures) test(s) FAILED")
             exit(1)

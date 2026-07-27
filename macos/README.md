@@ -112,6 +112,17 @@ A **"Trocar vendor"** submenu in the dropdown (between "Atualizar agora" /
 checkmark on the active one.
 Selecting one switches immediately, without opening Preferences.
 
+## Multiple Claude accounts
+
+Named Anthropic accounts from the binary's config
+(`[[anthropic.accounts]]` entries and `[anthropic] accounts_dir`
+auto-discovery — see the main README's "Multiple accounts") each get their own
+entry, "Claude · label", in the vendor submenu, the ⌥⌘\ swap ring, the
+Preferences selector, and the Overview. Each is fetched as
+`--vendor anthropic --account <label>`, so caches and token refreshes stay
+per-account. Set `[anthropic] show_default_account = false` to hide the
+default (unnamed) Claude entry when every account is managed explicitly.
+
 ## How it works
 
 Runs `ai-usagebar --vendor <v> --format '{plan};;{session_pct};;…'`, parses the
