@@ -901,6 +901,13 @@ private func swapHotKeyCallback(
 /// The next id in the cycle, wrapping. `current` absent from `ids` (e.g. the
 /// selected vendor was disabled) starts at the first (or last, backward).
 /// Pure + testable — the hot-key handler is not.
+/// Whether the overview status-bar title draws mini bars (vs. the compact
+/// %-text mode). "Compactar" forces the text mode even under the bars-count
+/// threshold. Pure + testable — the render path is not.
+func overviewUsesBars(count: Int, barsMax: Int, compact: Bool) -> Bool {
+    !compact && count <= barsMax
+}
+
 func nextVendorId(current: String, in ids: [String], forward: Bool = true) -> String? {
     guard !ids.isEmpty else { return nil }
     let n = ids.count
@@ -947,6 +954,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // one is checked. Kept as a field so the menu owns it for its lifetime.
     let vendorSubmenu = NSMenu()
     let vendorSubmenuItem = NSMenuItem(title: "Trocar vendor", action: nil, keyEquivalent: "")
+    /// Overview-only: forces the status-bar title into the compact %-text mode
+    /// ("Compactar"); while compact it reads "Expandir" and turns it back off.
+    let compactItem = NSMenuItem(title: "Compactar", action: nil, keyEquivalent: "e")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DEF.register(defaults: ["swapShortcutEnabled": true])
@@ -1047,6 +1057,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             rows[key] = it
             menu.addItem(it)
         }
+        // First item after the usage rows, Overview-only (hidden elsewhere).
+        compactItem.action = #selector(toggleCompact)
+        compactItem.target = self
+        compactItem.isHidden = true
+        menu.addItem(compactItem)
 
         menu.addItem(.separator())
         addAction(menu, "Atualizar agora", #selector(refreshAction), "r")
@@ -1068,6 +1083,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func refreshAction() { refresh() }
     @objc func quit() { NSApp.terminate(nil) }
+
+    /// Flip the overview's compact mode; the UserDefaults observer re-renders,
+    /// which also relabels the item (Compactar ↔ Expandir).
+    @objc func toggleCompact() {
+        DEF.set(!DEF.bool(forKey: "overviewCompact"), forKey: "overviewCompact")
+    }
 
     @objc func openPrefs() {
         if prefsWindow == nil {
@@ -1145,6 +1166,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                          NSFont.boldSystemFont(ofSize: 13))
         for (_, it) in rows { it.isHidden = true }
         for it in overviewRows { it.isHidden = true }
+        compactItem.isHidden = true
         rebuildVendorSubmenu()
     }
 
@@ -1343,8 +1365,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard !heads.isEmpty else { return run("ovr", secondary) }
 
         let barsMax = Int(configValueTOML("ui", "overview_menubar_bars_max") ?? "") ?? 4
+        let compact = DEF.bool(forKey: "overviewCompact")
         let t = NSMutableAttributedString()
-        if heads.count <= barsMax {
+        if overviewUsesBars(count: heads.count, barsMax: barsMax, compact: compact) {
             for (i, e) in heads.enumerated() {
                 if i > 0 { t.append(run("   ", secondary)) }
                 t.append(run("\(ovLabel(e.name, 6)) ", secondary))
@@ -1429,6 +1452,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Menu-bar title: every vendor at once (mini bars when few, numbers when
         // many). The dropdown always holds the full per-vendor list.
         statusItem.button?.attributedTitle = overviewBarTitle(items, appearance)
+        compactItem.isHidden = false
+        compactItem.title = DEF.bool(forKey: "overviewCompact") ? "Expandir" : "Compactar"
         if rebuildSubmenu { rebuildVendorSubmenu() }
     }
 
@@ -1478,6 +1503,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func renderMenu(_ s: Snapshot) {
         let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
         for it in overviewRows { it.isHidden = true }
+        compactItem.isHidden = true
         headerItem.attributedTitle = run(s.plan.isEmpty ? "AI Usage" : s.plan,
                                          .labelColor, NSFont.boldSystemFont(ofSize: 13))
 
@@ -1557,6 +1583,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         headerItem.attributedTitle = run(msg, menuBarTextColor(appearance))
         for (_, it) in rows { it.isHidden = true }
         for it in overviewRows { it.isHidden = true }
+        compactItem.isHidden = true
     }
 }
 
