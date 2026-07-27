@@ -11,6 +11,7 @@
 //! see `fetch.rs`.
 
 use std::path::{Path, PathBuf};
+use std::{hash::Hash, hash::Hasher};
 
 use base64::Engine;
 use rusqlite::{Connection, OpenFlags};
@@ -88,6 +89,10 @@ pub fn read_access_token(path: &Path) -> Result<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionAuth {
     pub user_id: String,
+    /// Stable, non-plaintext cache identity for the signed-in Cursor account.
+    /// The hash is only a change detector: a different toolchain may produce a
+    /// different value and force one harmless refetch.
+    pub account_key: String,
     pub cookie_value: String,
 }
 
@@ -116,9 +121,13 @@ pub fn session_auth(token: &str) -> Result<SessionAuth> {
             ))
         })?
         .to_string();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    user_id.hash(&mut hasher);
+    let account_key = format!("{:016x}", hasher.finish());
     let cookie_value = format!("{user_id}%3A%3A{token}");
     Ok(SessionAuth {
         user_id,
+        account_key,
         cookie_value,
     })
 }
@@ -219,7 +228,18 @@ mod tests {
         let token = fake_jwt(serde_json::json!({"sub": "auth0|user_abc123"}));
         let auth = session_auth(&token).unwrap();
         assert_eq!(auth.user_id, "user_abc123");
+        assert_eq!(auth.account_key.len(), 16);
+        assert!(!auth.account_key.contains("user_abc123"));
         assert_eq!(auth.cookie_value, format!("user_abc123%3A%3A{token}"));
+    }
+
+    #[test]
+    fn session_auth_account_key_is_stable_and_account_specific() {
+        let one = session_auth(&fake_jwt(serde_json::json!({"sub": "auth0|one"}))).unwrap();
+        let one_again = session_auth(&fake_jwt(serde_json::json!({"sub": "auth0|one"}))).unwrap();
+        let two = session_auth(&fake_jwt(serde_json::json!({"sub": "auth0|two"}))).unwrap();
+        assert_eq!(one.account_key, one_again.account_key);
+        assert_ne!(one.account_key, two.account_key);
     }
 
     #[test]

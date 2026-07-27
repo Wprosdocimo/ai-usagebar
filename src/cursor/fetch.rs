@@ -54,18 +54,37 @@ pub async fn fetch_snapshot(
     endpoints: &Endpoints,
     cache_ttl: Duration,
 ) -> Result<FetchOutcome> {
+    fetch_snapshot_at(client, db_path, cache, endpoints, cache_ttl, Utc::now()).await
+}
+
+/// Clock seam for cache rollover tests. Cursor's payload describes one billing
+/// cycle, so serving it after `reset_at` would knowingly show the prior cycle.
+async fn fetch_snapshot_at(
+    client: &reqwest::Client,
+    db_path: &Path,
+    cache: &Cache,
+    endpoints: &Endpoints,
+    cache_ttl: Duration,
+    now: DateTime<Utc>,
+) -> Result<FetchOutcome> {
     cache.ensure_dir()?;
     let _lock = acquire_lock_async(&cache.lock_path(), LOCK_TIMEOUT).await?;
 
+    // Resolve the local identity before accepting a cache hit. Cursor can switch
+    // accounts in-place in this database; returning the cache first would show
+    // the previous account's private usage until the TTL elapsed.
+    let token = db::read_access_token(db_path)?;
+    let auth = db::session_auth(&token)?;
+
     if let Some(bytes) = cache.fresh_payload(cache_ttl)?
-        && let Ok(outcome) = reuse_cache(&bytes, cache, false)
+        && let Ok(outcome) = reuse_cache(&bytes, cache, false, &auth.account_key, now)
     {
         return Ok(outcome);
     }
 
-    match fetch_live(client, endpoints, db_path).await {
+    match fetch_live(client, endpoints, &auth).await {
         Ok(snap) => {
-            let bytes = serde_json::to_vec(&snap_to_json(&snap))?;
+            let bytes = serde_json::to_vec(&snap_to_json(&snap, &auth.account_key))?;
             cache.write_payload(&bytes)?;
             Ok(FetchOutcome {
                 snapshot: snap,
@@ -74,32 +93,42 @@ pub async fn fetch_snapshot(
                 cache_age: Some(Duration::ZERO),
             })
         }
-        Err(e) if e.is_transient() => fallback_silent(cache, e),
+        Err(e) if e.is_transient() => fallback_silent(cache, &auth.account_key, now, e),
         Err(e) => {
             cache.mark_stale();
             if let Some((code, msg)) = error_to_pair(&e) {
                 cache.write_last_error(code, &msg);
             }
-            fallback_with_error(cache, e)
+            fallback_with_error(cache, &auth.account_key, now, e)
         }
     }
 }
 
-fn fallback_silent(cache: &Cache, original: AppError) -> Result<FetchOutcome> {
+fn fallback_silent(
+    cache: &Cache,
+    account: &str,
+    now: DateTime<Utc>,
+    original: AppError,
+) -> Result<FetchOutcome> {
     let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
         return Err(original);
     };
-    match reuse_cache(&bytes, cache, true) {
+    match reuse_cache(&bytes, cache, true, account, now) {
         Ok(outcome) => Ok(outcome),
         Err(_) => Err(original),
     }
 }
 
-fn fallback_with_error(cache: &Cache, original: AppError) -> Result<FetchOutcome> {
+fn fallback_with_error(
+    cache: &Cache,
+    account: &str,
+    now: DateTime<Utc>,
+    original: AppError,
+) -> Result<FetchOutcome> {
     let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
         return Err(original);
     };
-    match reuse_cache(&bytes, cache, true) {
+    match reuse_cache(&bytes, cache, true, account, now) {
         Ok(mut outcome) => {
             outcome.last_error = error_to_pair(&original);
             Ok(outcome)
@@ -121,8 +150,14 @@ fn error_to_pair(e: &AppError) -> Option<(u16, String)> {
     }
 }
 
-fn reuse_cache(bytes: &[u8], cache: &Cache, stale: bool) -> Result<FetchOutcome> {
-    let snap = parse_cache(bytes)?;
+fn reuse_cache(
+    bytes: &[u8],
+    cache: &Cache,
+    stale: bool,
+    account: &str,
+    now: DateTime<Utc>,
+) -> Result<FetchOutcome> {
+    let snap = parse_cache_at(bytes, account, now)?;
     Ok(FetchOutcome {
         snapshot: snap,
         stale,
@@ -131,22 +166,44 @@ fn reuse_cache(bytes: &[u8], cache: &Cache, stale: bool) -> Result<FetchOutcome>
     })
 }
 
-fn parse_cache(bytes: &[u8]) -> Result<CursorSnapshot> {
+fn parse_cache_at(bytes: &[u8], account: &str, now: DateTime<Utc>) -> Result<CursorSnapshot> {
     let v: serde_json::Value = serde_json::from_slice(bytes)?;
+    if v.get("account").and_then(serde_json::Value::as_str) != Some(account) {
+        return Err(AppError::Schema(
+            "cursor cache belongs to a different account; refetching".into(),
+        ));
+    }
     let int = |key: &str| -> Result<i32> {
         v[key]
             .as_i64()
-            .map(|n| n as i32)
+            .filter(|n| *n >= 0)
+            .and_then(|n| i32::try_from(n).ok())
             .ok_or_else(|| AppError::Schema(format!("cursor cache: invalid {key}")))
     };
+    let plan = v["plan"]
+        .as_str()
+        .filter(|plan| !plan.trim().is_empty())
+        .ok_or_else(|| AppError::Schema("cursor cache: invalid plan".into()))?
+        .to_string();
+    let reset_at = parse_cache_datetime(&v["reset_at"])?
+        .ok_or_else(|| AppError::Schema("cursor cache: missing reset timestamp".into()))?;
+    if reset_at <= now {
+        return Err(AppError::Schema(
+            "cursor cache is past its billing-cycle reset; refetching".into(),
+        ));
+    }
     Ok(CursorSnapshot {
-        plan: v["plan"].as_str().unwrap_or("Cursor").to_string(),
+        plan,
         auto_pct: int("auto_pct")?,
         api_pct: int("api_pct")?,
         total_pct: int("total_pct")?,
-        unlimited: v["unlimited"].as_bool().unwrap_or(false),
-        on_demand_enabled: v["on_demand_enabled"].as_bool().unwrap_or(false),
-        reset_at: parse_cache_datetime(&v["reset_at"])?,
+        unlimited: v["unlimited"]
+            .as_bool()
+            .ok_or_else(|| AppError::Schema("cursor cache: invalid unlimited flag".into()))?,
+        on_demand_enabled: v["on_demand_enabled"]
+            .as_bool()
+            .ok_or_else(|| AppError::Schema("cursor cache: invalid on-demand flag".into()))?,
+        reset_at: Some(reset_at),
     })
 }
 
@@ -162,8 +219,9 @@ fn parse_cache_datetime(v: &serde_json::Value) -> Result<Option<DateTime<Utc>>> 
     }
 }
 
-fn snap_to_json(snap: &CursorSnapshot) -> serde_json::Value {
+fn snap_to_json(snap: &CursorSnapshot, account: &str) -> serde_json::Value {
     serde_json::json!({
+        "account": account,
         "plan": snap.plan,
         "auto_pct": snap.auto_pct,
         "api_pct": snap.api_pct,
@@ -177,13 +235,8 @@ fn snap_to_json(snap: &CursorSnapshot) -> serde_json::Value {
 async fn fetch_live(
     client: &reqwest::Client,
     endpoints: &Endpoints,
-    db_path: &Path,
+    auth: &db::SessionAuth,
 ) -> Result<CursorSnapshot> {
-    // Local, synchronous, and cheap — only reached on a cache miss, so a
-    // running Cursor IDE isn't contending for the sqlite file every tick.
-    let token = db::read_access_token(db_path)?;
-    let auth = db::session_auth(&token)?;
-
     // usage-summary keys off the session cookie alone (no `?user=` param); the
     // browser-ish headers get past its CORS gate.
     let resp = tokio::time::timeout(
@@ -257,9 +310,27 @@ mod tests {
         path
     }
 
+    fn account_key(token: &str) -> String {
+        db::session_auth(token).unwrap().account_key
+    }
+
+    fn cached_snapshot(account: &str, reset_at: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "account": account,
+            "plan": "Ultra",
+            "auto_pct": 40,
+            "api_pct": 10,
+            "total_pct": 30,
+            "unlimited": false,
+            "on_demand_enabled": false,
+            "reset_at": reset_at,
+        }))
+        .unwrap()
+    }
+
     fn sample_json() -> String {
         r#"{
-            "billingCycleEnd": "2026-08-04T00:35:51.000Z",
+            "billingCycleEnd": "2099-08-04T00:35:51.000Z",
             "membershipType": "ultra",
             "isUnlimited": false,
             "individualUsage": {
@@ -337,15 +408,10 @@ mod tests {
         let db_path = seed_state_db(&db_dir, &token);
         let (_cache_dir, cache) = cache_fixture();
         cache
-            .write_payload(
-                serde_json::json!({
-                    "plan": "Ultra", "auto_pct": 40, "api_pct": 10, "total_pct": 30,
-                    "unlimited": false, "on_demand_enabled": false,
-                    "reset_at": "2026-08-04T00:00:00Z",
-                })
-                .to_string()
-                .as_bytes(),
-            )
+            .write_payload(&cached_snapshot(
+                &account_key(&token),
+                "2099-08-04T00:00:00Z",
+            ))
             .unwrap();
 
         let client = reqwest::Client::new();
@@ -370,14 +436,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_cache_short_circuits_without_touching_the_db() {
+    async fn fresh_cache_is_used_after_verifying_the_current_account() {
+        let token = fake_token("user_123");
+        let db_dir = TempDir::new().unwrap();
+        let db_path = seed_state_db(&db_dir, &token);
         let (_cache_dir, cache) = cache_fixture();
         cache
             .write_payload(
                 serde_json::json!({
+                    "account": account_key(&token),
                     "plan": "Pro", "auto_pct": 7, "api_pct": 3, "total_pct": 5,
                     "unlimited": false, "on_demand_enabled": true,
-                    "reset_at": "2026-08-04T00:00:00Z",
+                    "reset_at": "2099-08-04T00:00:00Z",
                 })
                 .to_string()
                 .as_bytes(),
@@ -386,12 +456,9 @@ mod tests {
 
         let client = reqwest::Client::new();
         let endpoints = Endpoints::default();
-        // A path that doesn't exist would error if the db were read — proving
-        // the fresh-cache path never touches it.
-        let db_path = std::path::Path::new("/nonexistent/state.vscdb");
         let out = fetch_snapshot(
             &client,
-            db_path,
+            &db_path,
             &cache,
             &endpoints,
             Duration::from_secs(3600),
@@ -401,5 +468,100 @@ mod tests {
         assert_eq!(out.snapshot.auto_pct, 7);
         assert!(out.snapshot.on_demand_enabled);
         assert!(!out.stale);
+    }
+
+    #[tokio::test]
+    async fn switching_accounts_rejects_a_fresh_cache_and_refetches() {
+        let old_token = fake_token("old_account");
+        let new_token = fake_token("new_account");
+        let db_dir = TempDir::new().unwrap();
+        let db_path = seed_state_db(&db_dir, &new_token);
+        let (_cache_dir, cache) = cache_fixture();
+        cache
+            .write_payload(&cached_snapshot(
+                &account_key(&old_token),
+                "2099-08-04T00:00:00Z",
+            ))
+            .unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        let request = server
+            .mock("GET", "/api/usage-summary")
+            .match_header(
+                "cookie",
+                format!("WorkosCursorSessionToken=new_account%3A%3A{new_token}").as_str(),
+            )
+            .with_status(200)
+            .with_body(sample_json())
+            .expect(1)
+            .create_async()
+            .await;
+        let endpoints = Endpoints {
+            summary: format!("{}/api/usage-summary", server.url()),
+        };
+
+        let out = fetch_snapshot(
+            &reqwest::Client::new(),
+            &db_path,
+            &cache,
+            &endpoints,
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+        request.assert_async().await;
+        assert_eq!(out.snapshot.auto_pct, 98);
+        assert!(!out.stale);
+    }
+
+    #[tokio::test]
+    async fn cache_past_its_billing_reset_is_not_served_during_an_outage() {
+        let token = fake_token("user_123");
+        let db_dir = TempDir::new().unwrap();
+        let db_path = seed_state_db(&db_dir, &token);
+        let (_cache_dir, cache) = cache_fixture();
+        cache
+            .write_payload(&cached_snapshot(
+                &account_key(&token),
+                "2026-08-04T00:00:00Z",
+            ))
+            .unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/api/usage-summary")
+            .with_status(503)
+            .create_async()
+            .await;
+        let endpoints = Endpoints {
+            summary: format!("{}/api/usage-summary", server.url()),
+        };
+        let now = DateTime::parse_from_rfc3339("2026-08-05T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let err = fetch_snapshot_at(
+            &reqwest::Client::new(),
+            &db_path,
+            &cache,
+            &endpoints,
+            Duration::from_secs(0),
+            now,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::Http { status: 503, .. }));
+    }
+
+    #[test]
+    fn cached_percentages_are_range_checked_before_narrowing() {
+        let now = DateTime::parse_from_rfc3339("2026-08-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut payload: serde_json::Value =
+            serde_json::from_slice(&cached_snapshot("account", "2026-08-04T00:00:00Z")).unwrap();
+        payload["auto_pct"] = serde_json::json!(i64::MAX);
+        let err =
+            parse_cache_at(&serde_json::to_vec(&payload).unwrap(), "account", now).unwrap_err();
+        assert!(matches!(err, AppError::Schema(_)));
     }
 }

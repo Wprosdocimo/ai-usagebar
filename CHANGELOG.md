@@ -27,8 +27,9 @@ Each release is also published at
   — so all your limits are visible without switching tabs. In the **TUI** it is
   a virtual first tab that `Tab`/`h`/`l` wrap through at both ends and the
   default landing view (unless `[ui] primary` opens on a specific vendor);
-  `[ui] overview_vendors = [...]` picks and orders which vendors it lists. In the
-  **macOS menu-bar app** it is a target in the vendor submenu and in the global
+  `[ui] overview_vendors = [...]` picks and orders which vendors it lists on
+  both surfaces. In the **macOS menu-bar app** it is a target in the vendor
+  submenu and in the global
   **⌥⌘\\** swap ring (which now cycles all providers *and* the overview); its
   dropdown lists every configured vendor — each row **clickable** to jump to that
   vendor — and the bar shows every vendor at once (a mini bar each when few, or
@@ -76,9 +77,10 @@ Each release is also published at
 - **Auto-discovered Anthropic accounts (`[anthropic] accounts_dir`).** Point it
   at a directory and ai-usagebar discovers each account under it automatically,
   using Claude Code's own `CLAUDE_CONFIG_DIR` layout: every immediate
-  subdirectory holding a `.credentials.json` becomes an account labeled by the
-  subdirectory name — a TUI tab and `--account <label>`, refreshed
-  independently — with no per-account config entry. Populate it by running the
+  subdirectory becomes an account labeled by the subdirectory name — a TUI tab
+  and `--account <label>`, refreshed independently — with no per-account config
+  entry. This directory-based discovery also sees macOS logins whose credentials
+  live only in a config-dir-scoped Keychain item. Populate it by running the
   `claude` CLI with a per-account `CLAUDE_CONFIG_DIR`, the general way to keep
   several Claude Code logins side by side. Discovered accounts merge with
   explicit `[[anthropic.accounts]]` (explicit wins on a label clash); a missing
@@ -105,6 +107,22 @@ Each release is also published at
 
 ### Fixed
 
+- **Cursor caches are now bound to the signed-in account and billing cycle.**
+  A fresh cache from one Cursor login can no longer be shown after the IDE
+  switches accounts, and a stale snapshot is not served past its recorded
+  billing reset during an outage. Cached integers are range-checked before
+  narrowing, and the live payload must include a finite, representable
+  `totalPercentUsed` instead of silently turning schema drift into `0%`.
+
+- **macOS Overview, shortcuts, and login startup now reflect their real
+  configuration/state.** Overview honors `[ui] overview_vendors` (including all
+  named Claude accounts selected by `anthropic`) and grows its dropdown row pool
+  as accounts are discovered. Carbon handler/hot-key registration errors are
+  checked; an unavailable shortcut turns its preference back off instead of
+  appearing enabled while doing nothing. “Iniciar no login” reads the actual
+  LaunchAgent file, writes it atomically, and surfaces filesystem errors rather
+  than drifting from a stale `UserDefaults` value.
+
 - **Named/`accounts_dir` Anthropic accounts now find macOS Keychain-backed
   logins.** `CLAUDE_CONFIG_DIR=<accounts_dir>/<label> claude` was documented
   to make `<label>` "just work", but on macOS Claude Code stores the login in
@@ -119,6 +137,8 @@ Each release is also published at
   resurrecting those dead snapshots over the live login sitting in the
   Keychain. Token refreshes write back to the same scoped item, so
   ai-usagebar and Claude Code keep sharing one source of truth per account.
+  Account discovery itself now keys on each immediate directory, rather than
+  requiring the file that Keychain-only logins intentionally do not create.
   A different account's item can never match (the hash is per-directory), so
   this doesn't reopen the cross-account ambiguity the original file-only
   rule (#15) was written to avoid.

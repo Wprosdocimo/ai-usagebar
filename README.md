@@ -138,7 +138,7 @@ For each API-key vendor, ai-usagebar checks in this order:
 
 #### macOS: Anthropic credentials in the Keychain
 
-On macOS, recent Claude Code builds don't write `~/.claude/.credentials.json` — they keep the same OAuth JSON in the **login Keychain** under the generic-password service `Claude Code-credentials`. ai-usagebar detects the missing file and transparently reads (and writes refreshed tokens back to) that Keychain item via the built-in `security` tool, so no manual step is needed. If the file *does* exist it still takes precedence, matching Linux.
+On macOS, recent Claude Code builds don't write `~/.claude/.credentials.json` — they keep the same OAuth JSON in the **login Keychain** under the generic-password service `Claude Code-credentials`. ai-usagebar detects the missing file and transparently reads (and writes refreshed tokens back to) that Keychain item via the built-in `security` tool, so no manual step is needed. Scoped `CLAUDE_CONFIG_DIR` logins use their own `Claude Code-credentials-<hash>` item, which lets named accounts remain isolated. The default account still prefers an existing credentials file; named accounts prefer their scoped Keychain item and fall back to the file on Linux.
 
 ## Configuration
 
@@ -391,8 +391,10 @@ credentials file and its own cache directory:
 - The TUI shows the default Claude tab plus one tab per configured
   `[[anthropic.accounts]]` entry (see the config example below); Tab / `h` / `l`
   cycle through them like any other tab.
-- On macOS, the login Keychain can hold only one Claude credential per OS
-  user, so additional accounts must be file-based as shown above.
+- On macOS, named accounts can use Claude Code's config-dir-scoped Keychain
+  items; additional accounts do not need copied credential files. Prefer the
+  `accounts_dir` workflow below so Claude Code and ai-usagebar share the same
+  live credential source.
 
 #### Config-driven accounts (`--account`)
 
@@ -441,9 +443,10 @@ credentials_path = "~/.config/ai-usagebar/accounts/personal.json"
 Rather than list every account by hand, point `[anthropic] accounts_dir` at a
 directory and ai-usagebar discovers each account under it automatically — using
 **Claude Code's own [`CLAUDE_CONFIG_DIR`](https://docs.claude.com/en/docs/claude-code/settings)
-layout**: each immediate subdirectory that contains a `.credentials.json`
-becomes an account labeled by the subdirectory name. Drop one in (or log a new
-account in) and its tab / `--account <label>` appears with no config edit.
+layout**: each immediate subdirectory becomes an account labeled by the
+subdirectory name. Create one by logging in and its tab / `--account <label>`
+appears with no config edit. Discovery keys on the directories because macOS
+stores scoped logins in the Keychain without writing `.credentials.json`.
 
 ```toml
 [anthropic]
@@ -459,12 +462,12 @@ CLAUDE_CONFIG_DIR=~/.config/ai-usagebar/accounts/personal claude   # sign in as 
 CLAUDE_CONFIG_DIR=~/.config/ai-usagebar/accounts/work     claude   # sign in as work
 ```
 
-Each login writes that dir's own `.credentials.json`; ai-usagebar then reads and
-**refreshes each independently** (writing the refreshed token back to that dir),
-so all your accounts stay live at once. Discovered accounts are merged with any
-explicit `[[anthropic.accounts]]` entries — an explicit entry wins on a label
+On Linux, each login writes that dir's `.credentials.json`; on macOS it writes a
+config-dir-scoped Keychain item. ai-usagebar reads and **refreshes each source
+independently**, so all your accounts stay live at once. Discovered accounts
+are merged with any explicit `[[anthropic.accounts]]` entries — an explicit entry wins on a label
 clash — and a missing or unreadable `accounts_dir` is simply ignored. Because
-discovery keys only on the standard Claude Code layout, *any* tool or script
+discovery uses only the standard Claude Code layout, *any* tool or script
 that manages multiple Claude Code logins (not just one specific account
 switcher) works with it; a rotating account manager just needs to drop or
 refresh each login under this directory.

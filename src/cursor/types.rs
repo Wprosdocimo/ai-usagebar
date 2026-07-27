@@ -107,7 +107,9 @@ pub struct PlanUsage {
     #[serde(rename = "apiPercentUsed")]
     pub api_percent_used: f64,
     /// Overall included usage — the dashboard headline percentage.
-    #[serde(rename = "totalPercentUsed", default)]
+    /// Required because the Overview treats this value as authoritative; a
+    /// missing field is endpoint drift, not a real zero.
+    #[serde(rename = "totalPercentUsed")]
     pub total_percent_used: f64,
 }
 
@@ -129,7 +131,15 @@ fn pct(field: &str, v: f64) -> Result<i32> {
     }
     // Clamp only the low end: a pool can legitimately exceed 100% when it is
     // over its included allowance, and callers clamp for bar width themselves.
-    Ok(v.round().max(0.0) as i32)
+    // Reject absurd values before narrowing instead of saturating them to an
+    // unrelated i32 endpoint.
+    let rounded = v.round().max(0.0);
+    if rounded > f64::from(i32::MAX) {
+        return Err(AppError::Schema(format!(
+            "cursor: `{field}` is too large to represent"
+        )));
+    }
+    Ok(rounded as i32)
 }
 
 pub fn to_snapshot(resp: UsageSummary) -> Result<CursorSnapshot> {
@@ -331,6 +341,15 @@ mod tests {
     }
 
     #[test]
+    fn missing_total_percentage_is_a_parse_error_not_zero() {
+        let raw = r#"{
+            "billingCycleEnd": "2026-08-04T00:00:00Z", "membershipType": "pro",
+            "individualUsage": { "plan": { "autoPercentUsed": 1, "apiPercentUsed": 2 } }
+        }"#;
+        assert!(serde_json::from_str::<UsageSummary>(raw).is_err());
+    }
+
+    #[test]
     fn non_finite_percentage_is_rejected() {
         // serde rejects a non-finite JSON literal at parse time, so exercise the
         // guard directly: a NaN reaching a percentage field must be a schema
@@ -352,6 +371,14 @@ mod tests {
             named_model_selected_display_message: None,
         };
         assert!(matches!(to_snapshot(resp), Err(AppError::Schema(_))));
+    }
+
+    #[test]
+    fn percentage_too_large_for_the_snapshot_is_rejected() {
+        assert!(matches!(
+            pct("autoPercentUsed", f64::from(i32::MAX) + 1.0),
+            Err(AppError::Schema(_))
+        ));
     }
 
     /// The fixture backing the team-account fallback. **Unverified against a

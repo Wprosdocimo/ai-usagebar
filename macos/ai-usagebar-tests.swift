@@ -160,6 +160,36 @@ func testTomlParsing() {
               "enabled does not leak across sections")
     assertEqual(tomlValueInText(scoped, section: "deepseek", key: "api_key"), "ds-key",
                 "api_key read from the right section")
+
+    let overview = """
+    [ui]
+    overview_vendors = ["cursor", 'anthropic', "openai"] # ordered subset
+    """
+    assertEqual(tomlStringArrayInText(overview, section: "ui", key: "overview_vendors")?
+                    .joined(separator: ","),
+                "cursor,anthropic,openai", "quoted string array")
+    let multilineOverview = """
+    [ui]
+    overview_vendors = [
+        "anthropic", # every named account
+        "cursor",
+    ]
+    """
+    assertEqual(tomlStringArrayInText(multilineOverview, section: "ui",
+                                      key: "overview_vendors")?.joined(separator: ","),
+                "anthropic,cursor", "multiline string array with comments")
+    let emptyOverview = """
+    [ui]
+    overview_vendors = []
+    """
+    assertEqual(tomlStringArrayInText(emptyOverview, section: "ui", key: "overview_vendors")?
+                    .isEmpty, true, "empty string array")
+    let malformedOverview = """
+    [ui]
+    overview_vendors = ["cursor", 42]
+    """
+    assertNil(tomlStringArrayInText(malformedOverview, section: "ui", key: "overview_vendors"),
+              "malformed string array rejected")
 }
 
 // ─── Rust enabled defaults (src/config.rs) ───────────────────────────────
@@ -361,7 +391,8 @@ func testClaudeAccounts() {
     assertEqual(showDefaultClaudeAccount(configValue: nil, hasAccounts: true), true,
                 "omitted → shown")
 
-    // accounts_dir discovery: only subdirs holding .credentials.json, sorted.
+    // accounts_dir discovery: every subdir is an account (Keychain-backed
+    // logins need not have a .credentials.json), sorted.
     let fm = FileManager.default
     let dir = NSTemporaryDirectory() + "aiusagebar-tests-\(ProcessInfo.processInfo.processIdentifier)"
     defer { try? fm.removeItem(atPath: dir) }
@@ -372,7 +403,7 @@ func testClaudeAccounts() {
     fm.createFile(atPath: "\(dir)/alpha/.credentials.json", contents: Data("{}".utf8))
     fm.createFile(atPath: "\(dir)/stray.json", contents: Data("{}".utf8))
     assertEqual(discoverAccountLabels(inDir: dir).joined(separator: ","),
-                "alpha,zeta", "subdirs with .credentials.json, sorted")
+                "alpha,nofile,zeta", "account subdirs, sorted")
     assertEqual(discoverAccountLabels(inDir: dir + "/missing").isEmpty, true,
                 "missing dir → empty")
 
@@ -386,6 +417,24 @@ func testClaudeAccounts() {
     assertEqual(vendorArgs(for: "zai").joined(separator: " "), "--vendor zai", "vendor fetch args")
     assertEqual(entryDisplayName("anthropic@gmail"), "Claude · gmail", "account display name")
     assertEqual(entryDisplayName("overview"), "Visão geral", "overview display name")
+
+    let overviewEntries = [
+        MenuEntry(id: "anthropic@struct", name: "Claude · struct"),
+        MenuEntry(id: "anthropic@gmail", name: "Claude · gmail"),
+        MenuEntry(id: "openai", name: "OpenAI"),
+        MenuEntry(id: "cursor", name: "Cursor"),
+    ]
+    assertEqual(filterOverviewEntries(overviewEntries, requested: ["cursor", "anthropic"])
+                    .map { $0.id }.joined(separator: ","),
+                "cursor,anthropic@struct,anthropic@gmail",
+                "overview config order includes every requested account")
+    assertEqual(filterOverviewEntries(overviewEntries, requested: ["missing", "openai"])
+                    .map { $0.id }.joined(separator: ","),
+                "openai", "overview skips unavailable vendors")
+    assertEqual(filterOverviewEntries(overviewEntries, requested: nil)
+                    .map { $0.id }.joined(separator: ","),
+                "anthropic@struct,anthropic@gmail,openai,cursor",
+                "omitted overview list keeps all entries")
 
     // The swap ring cycles across accounts like any other entry.
     let ring = ["anthropic@struct", "anthropic@gmail", "cursor", "overview"]
@@ -417,6 +466,27 @@ func testShortReset() {
     assertEqual(shortReset(""), nil, "empty → nil")
 }
 
+func testSystemIntegrations() {
+    print("launch agent + hot-key status")
+    do {
+        let executable = "/Applications/Test & Tools/ai-usagebar-menubar"
+        let data = try launchAgentPlist(executable: executable)
+        let object = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+        let plist = object as? [String: Any]
+        assertEqual(plist?["Label"] as? String, LAUNCH_AGENT_LABEL,
+                    "launch agent label")
+        assertEqual((plist?["ProgramArguments"] as? [String])?.first, executable,
+                    "launch agent executable is preserved")
+        assertEqual(plist?["RunAtLoad"] as? Bool, true, "launch agent runs at login")
+    } catch {
+        print("  ✗ launch agent plist: \(error)")
+        failures += 1
+    }
+    assertEqual(hotKeyRegistrationSucceeded(noErr), true, "noErr is registration success")
+    assertEqual(hotKeyRegistrationSucceeded(OSStatus(-1)), false,
+                "nonzero OSStatus is registration failure")
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -429,6 +499,7 @@ struct TestRunner {
         testClaudeAccounts()
         testCompactToggle()
         testShortReset()
+        testSystemIntegrations()
         if failures > 0 {
             print("\n\(failures) test(s) FAILED")
             exit(1)

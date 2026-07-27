@@ -1332,7 +1332,10 @@ mod tests {
     #[test]
     fn headline_pct_is_the_worst_window_or_combined_total() {
         // Cursor: the combined total, not the worse pool (mirrors the menu bar).
-        assert_eq!(headline_pct(&VendorSnapshot::Cursor(cursor_snap())), Some(99));
+        assert_eq!(
+            headline_pct(&VendorSnapshot::Cursor(cursor_snap())),
+            Some(99)
+        );
 
         // Balance-only vendors have no meaningful percentage → no bar.
         let kilo = VendorSnapshot::Kilo(crate::usage::KiloSnapshot {

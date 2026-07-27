@@ -595,10 +595,138 @@ func tomlValueInText(_ text: String, section: String, key: String) -> String? {
     return nil
 }
 
+/// Read a TOML array of quoted strings. This intentionally stays small (the
+/// native app is a single dependency-free Swift file), but accepts multiline
+/// arrays and rejects malformed values instead of silently widening Overview.
+func tomlStringArrayInText(_ text: String, section: String, key: String) -> [String]? {
+    func withoutComment(_ line: String) -> String {
+        var result = ""
+        var quote: Character?
+        var escaped = false
+        for ch in line {
+            if let active = quote {
+                result.append(ch)
+                if active == "\"", escaped {
+                    escaped = false
+                } else if active == "\"", ch == "\\" {
+                    escaped = true
+                } else if ch == active {
+                    quote = nil
+                }
+            } else if ch == "#" {
+                break
+            } else {
+                result.append(ch)
+                if ch == "\"" || ch == "'" { quote = ch }
+            }
+        }
+        return result
+    }
+
+    func hasClosingBracket(_ value: String) -> Bool {
+        var quote: Character?
+        var escaped = false
+        for ch in value {
+            if let active = quote {
+                if active == "\"", escaped {
+                    escaped = false
+                } else if active == "\"", ch == "\\" {
+                    escaped = true
+                } else if ch == active {
+                    quote = nil
+                }
+            } else if ch == "\"" || ch == "'" {
+                quote = ch
+            } else if ch == "]" {
+                return true
+            }
+        }
+        return false
+    }
+
+    var inSection = false
+    var rawValue: String?
+    for rawLine in text.components(separatedBy: .newlines) {
+        let line = withoutComment(rawLine).trimmingCharacters(in: .whitespaces)
+        if let current = rawValue {
+            let joined = current + " " + line
+            rawValue = joined
+            if hasClosingBracket(joined) { break }
+            continue
+        }
+        if line.hasPrefix("[") {
+            inSection = line == "[\(section)]"
+            continue
+        }
+        guard inSection, !line.isEmpty else { continue }
+        let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              parts[0].trimmingCharacters(in: .whitespaces) == key else { continue }
+        let value = parts[1].trimmingCharacters(in: .whitespaces)
+        guard value.hasPrefix("[") else { return nil }
+        rawValue = value
+        if hasClosingBracket(value) { break }
+    }
+
+    guard let raw = rawValue, hasClosingBracket(raw) else { return nil }
+    let chars = Array(raw)
+    guard chars.first == "[" else { return nil }
+    var result: [String] = []
+    var i = 1
+
+    func skipSpace() {
+        while i < chars.count && chars[i].isWhitespace { i += 1 }
+    }
+
+    while true {
+        skipSpace()
+        guard i < chars.count else { return nil }
+        if chars[i] == "]" {
+            i += 1
+            skipSpace()
+            return i == chars.count ? result : nil
+        }
+        let quote = chars[i]
+        guard quote == "\"" || quote == "'" else { return nil }
+        i += 1
+        var value = ""
+        var closed = false
+        while i < chars.count {
+            let ch = chars[i]
+            i += 1
+            if ch == quote {
+                closed = true
+                break
+            }
+            if quote == "\"", ch == "\\", i < chars.count {
+                value.append(chars[i])
+                i += 1
+            } else {
+                value.append(ch)
+            }
+        }
+        guard closed else { return nil }
+        result.append(value)
+        skipSpace()
+        guard i < chars.count else { return nil }
+        if chars[i] == "," {
+            i += 1
+            continue
+        }
+        guard chars[i] == "]" else { return nil }
+    }
+}
+
 func configValueTOML(_ section: String, _ key: String) -> String? {
     let path = configPathTOML()
     guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
     return tomlValueInText(text, section: section, key: key)
+}
+
+func configuredOverviewVendorIds() -> [String]? {
+    let path = configPathTOML()
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+    return tomlStringArrayInText(text, section: "ui", key: "overview_vendors")
 }
 
 func apiKeyEnvironment(_ v: VendorAuth) -> String {
@@ -607,8 +735,8 @@ func apiKeyEnvironment(_ v: VendorAuth) -> String {
 
 // ── Anthropic multi-account ────────────────────────────────────────────────
 // Mirrors the Rust side (`src/config.rs`): explicit `[[anthropic.accounts]]`
-// entries plus subdirectories of `[anthropic] accounts_dir` holding a
-// `.credentials.json`, explicit labels winning on a clash. Each account is a
+// entries plus subdirectories of `[anthropic] accounts_dir`, explicit labels
+// winning on a clash. Each account is a
 // selectable entry with the pseudo-id `anthropic@<label>`, fetched by the
 // binary as `--vendor anthropic --account <label>` — the binary resolves the
 // account's credentials itself (file or its own Keychain item), so the app
@@ -644,8 +772,8 @@ func anthropicAccountLabels(inTOML text: String) -> [String] {
     return labels
 }
 
-/// Subdirectories of `dir` holding a `.credentials.json`, sorted — the same
-/// discovery rule as the Rust `accounts_dir` scan.
+/// Immediate subdirectories of `dir`, sorted — the same discovery rule as the
+/// Rust `accounts_dir` scan. Credentials may be file- or Keychain-backed.
 func discoverAccountLabels(inDir dir: String) -> [String] {
     let fm = FileManager.default
     guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
@@ -653,7 +781,6 @@ func discoverAccountLabels(inDir dir: String) -> [String] {
         var isDir: ObjCBool = false
         let sub = "\(dir)/\(name)"
         return fm.fileExists(atPath: sub, isDirectory: &isDir) && isDir.boolValue
-            && fm.fileExists(atPath: "\(sub)/.credentials.json")
     }.sorted()
 }
 
@@ -706,6 +833,22 @@ func vendorArgs(for id: String) -> [String] {
 struct MenuEntry {
     let id: String    // "cursor", "anthropic", or "anthropic@<label>"
     let name: String  // display: "Cursor", "Claude · <label>"
+}
+
+/// Apply `[ui] overview_vendors` with the same semantics as the TUI: preserve
+/// config order, omit unavailable vendors, and include every named Claude
+/// account when `anthropic` is requested.
+func filterOverviewEntries(_ entries: [MenuEntry], requested: [String]?) -> [MenuEntry] {
+    guard let requested else { return entries }
+    var result: [MenuEntry] = []
+    var seen = Set<String>()
+    for vendor in requested {
+        for entry in entries where baseVendorId(entry.id) == vendor && !seen.contains(entry.id) {
+            result.append(entry)
+            seen.insert(entry.id)
+        }
+    }
+    return result
 }
 
 /// The selectable entries, in menu order: every enabled+configured vendor,
@@ -957,7 +1100,8 @@ struct SettingsView: View {
     @AppStorage("colorCritical") private var colorCritical = "#e06c75"
     @AppStorage("colorEmpty") private var colorEmpty = "#3e4451"
     @AppStorage("binaryPath") private var binaryPath = ""
-    @AppStorage("launchAtLogin") private var launchAtLogin = false
+    @State private var launchAtLogin = launchAgentIsInstalled()
+    @State private var launchAtLoginError: String?
 
     // Only enabled vendors appear in the selector: Rust treats opt-in vendors
     // (deepseek/kimi/kilo/novita/moonshot/grok/anthropic_api) as disabled when
@@ -1028,10 +1172,24 @@ struct SettingsView: View {
                 }
                 GroupBox("Sistema") {
                     VStack(alignment: .leading, spacing: 4) {
-                        Toggle("Iniciar no login", isOn: $launchAtLogin)
-                            .onChange(of: launchAtLogin) { value in setLaunchAtLogin(value) }
+                        Toggle("Iniciar no login", isOn: Binding(
+                            get: { launchAtLogin },
+                            set: { enabled in
+                                do {
+                                    try setLaunchAtLogin(enabled)
+                                    launchAtLogin = launchAgentIsInstalled()
+                                    launchAtLoginError = nil
+                                } catch {
+                                    launchAtLogin = launchAgentIsInstalled()
+                                    launchAtLoginError = error.localizedDescription
+                                }
+                            }))
                         Text("Instala um LaunchAgent que sobe o app ao entrar na sua conta.")
                             .font(.caption).foregroundColor(.secondary)
+                        if let error = launchAtLoginError {
+                            Text("Não foi possível atualizar: \(error)")
+                                .font(.caption).foregroundColor(.red)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -1042,6 +1200,7 @@ struct SettingsView: View {
         }
         .frame(width: 460)
         .frame(minHeight: 300, idealHeight: 560, maxHeight: .infinity)
+        .onAppear { launchAtLogin = launchAgentIsInstalled() }
     }
 }
 
@@ -1055,6 +1214,10 @@ let LAUNCH_AGENT_LABEL = "com.akitaonrails.ai-usagebar-menubar"
 
 func launchAgentPlistPath() -> String {
     "\(NSHomeDirectory())/Library/LaunchAgents/\(LAUNCH_AGENT_LABEL).plist"
+}
+
+func launchAgentIsInstalled() -> Bool {
+    FileManager.default.fileExists(atPath: launchAgentPlistPath())
 }
 
 /// Absolute path of the running executable, for the LaunchAgent to relaunch.
@@ -1076,23 +1239,26 @@ func selfExecutablePath() -> String {
 /// user is still using) if it happened to be the launchd-managed one. launchd
 /// loads every agent in ~/Library/LaunchAgents at the next login, so writing
 /// (or removing) the file is all that's needed for a start-at-login toggle.
-func setLaunchAtLogin(_ enabled: Bool) {
+func launchAgentPlist(executable: String) throws -> Data {
+    let plist: [String: Any] = [
+        "Label": LAUNCH_AGENT_LABEL,
+        "ProgramArguments": [executable],
+        "RunAtLoad": true,
+        "ProcessType": "Interactive",
+    ]
+    return try PropertyListSerialization.data(
+        fromPropertyList: plist, format: .xml, options: 0)
+}
+
+func setLaunchAtLogin(_ enabled: Bool) throws {
     let path = launchAgentPlistPath()
     if enabled {
         let dir = (path as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let plist: [String: Any] = [
-            "Label": LAUNCH_AGENT_LABEL,
-            "ProgramArguments": [selfExecutablePath()],
-            "RunAtLoad": true,
-            "ProcessType": "Interactive",
-        ]
-        if let data = try? PropertyListSerialization.data(
-            fromPropertyList: plist, format: .xml, options: 0) {
-            try? data.write(to: URL(fileURLWithPath: path))
-        }
-    } else {
-        try? FileManager.default.removeItem(atPath: path)
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let data = try launchAgentPlist(executable: selfExecutablePath())
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+    } else if FileManager.default.fileExists(atPath: path) {
+        try FileManager.default.removeItem(atPath: path)
     }
 }
 
@@ -1151,6 +1317,10 @@ func nextVendorId(current: String, in ids: [String], forward: Bool = true) -> St
     return ids[j]
 }
 
+func hotKeyRegistrationSucceeded(_ status: OSStatus) -> Bool {
+    status == noErr
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var swapHotKeyRef: EventHotKeyRef?
@@ -1180,8 +1350,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var refreshQueued = false
     let headerItem = NSMenuItem()
     var rows: [String: NSMenuItem] = [:]
-    // Overview mode fills these (one per vendor); hidden in single-vendor mode.
-    // A fixed pool avoids rebuilding the menu (which would disrupt an open menu).
+    // Overview mode fills these (one per vendor/account); hidden in
+    // single-vendor mode. The pool starts at the built-in vendor count and can
+    // grow if account discovery adds more rows.
     var overviewRows: [NSMenuItem] = []
     /// Last overview fetch, so a settings/appearance change re-renders it without
     /// flashing the stale single-vendor snapshot.
@@ -1220,7 +1391,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// (Re)register the global ⌥⌘\ hot key to match the `swapShortcutEnabled`
     /// preference. Idempotent: always unregisters first.
     func installSwapHotKey() {
-        removeSwapHotKey()
+        guard removeSwapHotKey() else {
+            // The old registration is still live; reflect that instead of
+            // showing a disabled toggle that continues intercepting the key.
+            DEF.set(true, forKey: "swapShortcutEnabled")
+            return
+        }
         let enabled = DEF.bool(forKey: "swapShortcutEnabled")
         // Mirror the swap shortcut as a hint on the "Trocar vendor" item. A native
         // keyEquivalent is suppressed by the submenu's disclosure arrow, so paint
@@ -1241,11 +1417,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             vendorSubmenuItem.attributedTitle = NSAttributedString(string: "Trocar vendor")
         }
         guard enabled else { return }
-        installHotKeyHandlerOnce()
+        guard installHotKeyHandlerOnce() else {
+            disableFailedShortcut("swapShortcutEnabled", name: "⌥⌘\\")
+            vendorSubmenuItem.attributedTitle = NSAttributedString(string: "Trocar vendor")
+            return
+        }
         let id = EventHotKeyID(signature: OSType(0x4149_4242), id: SWAP_HOTKEY_ID)  // 'AIBB'
-        RegisterEventHotKey(
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(
             SWAP_HOTKEY_KEYCODE, SWAP_HOTKEY_MODIFIERS, id, GetApplicationEventTarget(), 0,
-            &swapHotKeyRef)
+            &ref)
+        guard hotKeyRegistrationSucceeded(status), let ref else {
+            if let ref { UnregisterEventHotKey(ref) }
+            disableFailedShortcut("swapShortcutEnabled", name: "⌥⌘\\", status: status)
+            vendorSubmenuItem.attributedTitle = NSAttributedString(string: "Trocar vendor")
+            return
+        }
+        swapHotKeyRef = ref
     }
 
     /// (Re)register the global ⌥⌘E Compactar/Expandir hot key to match the
@@ -1254,17 +1442,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// keyEquivalent would fire a second time while the menu is open, double-
     /// toggling on one press).
     func installCompactHotKey() {
-        if let ref = compactHotKeyRef {
-            UnregisterEventHotKey(ref)
-            compactHotKeyRef = nil
+        guard removeCompactHotKey() else {
+            DEF.set(true, forKey: "compactShortcutEnabled")
+            return
         }
         updateCompactItemTitle()
         guard DEF.bool(forKey: "compactShortcutEnabled") else { return }
-        installHotKeyHandlerOnce()
+        guard installHotKeyHandlerOnce() else {
+            disableFailedShortcut("compactShortcutEnabled", name: "⌥⌘E")
+            updateCompactItemTitle()
+            return
+        }
         let id = EventHotKeyID(signature: OSType(0x4149_4242), id: COMPACT_HOTKEY_ID)
-        RegisterEventHotKey(
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(
             COMPACT_HOTKEY_KEYCODE, SWAP_HOTKEY_MODIFIERS, id, GetApplicationEventTarget(), 0,
-            &compactHotKeyRef)
+            &ref)
+        guard hotKeyRegistrationSucceeded(status), let ref else {
+            if let ref { UnregisterEventHotKey(ref) }
+            disableFailedShortcut("compactShortcutEnabled", name: "⌥⌘E", status: status)
+            updateCompactItemTitle()
+            return
+        }
+        compactHotKeyRef = ref
     }
 
     /// Compactar ↔ Expandir label plus the dimmed ⌥⌘E hint when the global
@@ -1285,19 +1485,57 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// One Carbon handler serves every hot key; the event's EventHotKeyID
     /// says which one fired.
-    private func installHotKeyHandlerOnce() {
-        guard !swapHotKeyHandlerInstalled else { return }
+    private func installHotKeyHandlerOnce() -> Bool {
+        guard !swapHotKeyHandlerInstalled else { return true }
         var spec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), swapHotKeyCallback, 1, &spec, nil, nil)
+        let status = InstallEventHandler(
+            GetApplicationEventTarget(), swapHotKeyCallback, 1, &spec, nil, nil)
+        guard hotKeyRegistrationSucceeded(status) else {
+            NSLog("ai-usagebar: global hot-key handler registration failed (OSStatus %d)", status)
+            return false
+        }
         swapHotKeyHandlerInstalled = true
+        return true
     }
 
-    func removeSwapHotKey() {
+    private func disableFailedShortcut(_ key: String, name: String,
+                                       status: OSStatus? = nil) {
+        if let status {
+            NSLog("ai-usagebar: global shortcut %@ registration failed (OSStatus %d)",
+                  name, status)
+        } else {
+            NSLog("ai-usagebar: global shortcut %@ registration failed", name)
+        }
+        // Keep the visible preference honest when another app already owns the
+        // shortcut or Carbon refuses the registration.
+        DEF.set(false, forKey: key)
+    }
+
+    @discardableResult
+    func removeSwapHotKey() -> Bool {
         if let ref = swapHotKeyRef {
-            UnregisterEventHotKey(ref)
+            let status = UnregisterEventHotKey(ref)
+            guard hotKeyRegistrationSucceeded(status) else {
+                NSLog("ai-usagebar: could not unregister ⌥⌘\\ (OSStatus %d)", status)
+                return false
+            }
             swapHotKeyRef = nil
         }
+        return true
+    }
+
+    @discardableResult
+    private func removeCompactHotKey() -> Bool {
+        if let ref = compactHotKeyRef {
+            let status = UnregisterEventHotKey(ref)
+            guard hotKeyRegistrationSucceeded(status) else {
+                NSLog("ai-usagebar: could not unregister ⌥⌘E (OSStatus %d)", status)
+                return false
+            }
+            compactHotKeyRef = nil
+        }
+        return true
     }
 
     /// Advance the active vendor to the next configured one, wrapping. Fired by
@@ -1329,9 +1567,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
 
         menu.addItem(headerItem)
-        // One hidden slot per possible vendor for Overview mode. ponytail: 12 ≥
-        // the vendor count; bump if VENDOR_AUTH ever grows past it.
-        for _ in 0..<12 {
+        // One hidden slot per built-in vendor for Overview mode. Named accounts
+        // can take the total higher; renderOverview grows the pool on demand.
+        for _ in 0..<VENDOR_AUTH.count {
             let it = NSMenuItem()
             it.isHidden = true
             overviewRows.append(it)
@@ -1576,7 +1814,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func refreshOverview(bin: String, generation: Int) {
         // vendorEntries(active: "") keeps only configured entries — the
         // active-vendor courtesy slot has no place in an all-vendors sweep.
-        let entries = vendorEntries(active: "")
+        let entries = filterOverviewEntries(vendorEntries(active: ""),
+                                            requested: configuredOverviewVendorIds())
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var results: [(name: String, id: String, snap: Snapshot?)] = []
             for v in entries {
@@ -1696,6 +1935,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
         headerItem.attributedTitle = run("Visão geral", .labelColor, NSFont.boldSystemFont(ofSize: 13))
         for key in ["session", "weekly", "sonnet", "extra"] { rows[key]?.isHidden = true }
+        ensureOverviewRowCapacity(items.count)
 
         // Rows render in a monospaced font, so fixed character widths line the
         // columns up. Pre-compute the widest headline pct and reset so both can be
@@ -1749,6 +1989,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         compactItem.isHidden = false
         updateCompactItemTitle()
         if rebuildSubmenu { rebuildVendorSubmenu() }
+    }
+
+    /// Add overview row slots before the single-vendor rows when newly
+    /// discovered Claude accounts outgrow the initial built-in-vendor pool.
+    private func ensureOverviewRowCapacity(_ count: Int) {
+        guard count > overviewRows.count,
+              let menu = statusItem.menu,
+              let firstDetail = rows["session"] else { return }
+        while overviewRows.count < count {
+            let item = NSMenuItem()
+            item.isHidden = true
+            menu.insertItem(item, at: menu.index(of: firstDetail))
+            overviewRows.append(item)
+        }
     }
 
     func consume(_ output: String) {

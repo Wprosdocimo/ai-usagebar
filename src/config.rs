@@ -139,11 +139,12 @@ pub struct AnthropicConfig {
     /// single-account configs are byte-for-byte unchanged.
     pub accounts: Vec<AnthropicAccount>,
     /// Directory to auto-discover extra accounts from, in Claude Code's own
-    /// `CLAUDE_CONFIG_DIR` layout: each immediate subdirectory holding a
-    /// `.credentials.json` becomes an account labeled by the subdirectory name,
-    /// so `CLAUDE_CONFIG_DIR=<accounts_dir>/<label> claude` makes `<label>`
-    /// appear with no config edit. Merged with `accounts` (explicit wins on a
-    /// label clash); each is refreshed independently.
+    /// `CLAUDE_CONFIG_DIR` layout: each immediate subdirectory becomes an
+    /// account labeled by the subdirectory name. The credentials may live in
+    /// that directory's `.credentials.json` or in the macOS Keychain, so
+    /// discovery intentionally does not probe for the credentials file.
+    /// Merged with `accounts` (explicit wins on a label clash); each is
+    /// refreshed independently.
     pub accounts_dir: Option<PathBuf>,
     /// Whether the default (unnamed) Claude account gets its own tab. Defaults
     /// to `true` for back-compat. Set `false` when every account is managed
@@ -267,12 +268,12 @@ fn validate_account_label(label: &str) -> Result<()> {
 }
 
 /// Discover accounts under `accounts_dir` in the `CLAUDE_CONFIG_DIR` layout:
-/// each immediate subdirectory holding a `.credentials.json` becomes an account
-/// labeled by the subdirectory name. Best-effort: an unreadable directory, a
-/// subdir without the credentials file, or an unusable label is skipped
+/// each immediate subdirectory becomes an account labeled by the subdirectory
+/// name. Best-effort: an unreadable directory or unusable label is skipped
 /// silently rather than failing the whole config — discovery is convenience,
-/// while an explicit `[[anthropic.accounts]]` entry stays authoritative. Sorted
-/// by label so the tab order is stable across runs.
+/// while an explicit `[[anthropic.accounts]]` entry stays authoritative. The
+/// fetch path resolves credentials from either `.credentials.json` or the macOS
+/// Keychain. Sorted by label so the tab order is stable across runs.
 fn discover_accounts(accounts_dir: &std::path::Path) -> Vec<AnthropicAccount> {
     let Ok(entries) = std::fs::read_dir(accounts_dir) else {
         return Vec::new();
@@ -284,15 +285,11 @@ fn discover_accounts(accounts_dir: &std::path::Path) -> Vec<AnthropicAccount> {
             if !path.is_dir() {
                 return None;
             }
-            let creds = path.join(".credentials.json");
-            if !creds.is_file() {
-                return None;
-            }
             let label = path.file_name()?.to_str()?.to_string();
             validate_account_label(&label).ok()?;
             Some(AnthropicAccount {
                 label,
-                credentials_path: creds,
+                credentials_path: path.join(".credentials.json"),
             })
         })
         .collect();
@@ -1342,12 +1339,13 @@ enabled = false
     }
 
     #[test]
-    fn discovers_credential_dirs_in_claude_config_dir_layout() {
+    fn discovers_account_dirs_in_claude_config_dir_layout() {
         let td = tempfile::tempdir().unwrap();
         seed_account_dir(td.path(), "work");
         seed_account_dir(td.path(), "personal");
-        // A subdir with no .credentials.json is ignored.
-        std::fs::create_dir_all(td.path().join("empty")).unwrap();
+        // Keychain-backed macOS logins may not write .credentials.json; their
+        // config directories are still account entries.
+        std::fs::create_dir_all(td.path().join("keychain-only")).unwrap();
         // A loose file (not a dir) is ignored.
         std::fs::write(td.path().join("stray.json"), "{}").unwrap();
 
@@ -1357,10 +1355,9 @@ enabled = false
         };
         let all = cfg.all_accounts();
         let labels: Vec<&str> = all.iter().map(|a| a.label.as_str()).collect();
-        // Sorted, and only the two real credential dirs.
-        assert_eq!(labels, vec!["personal", "work"]);
+        assert_eq!(labels, vec!["keychain-only", "personal", "work"]);
         assert_eq!(
-            all[1].credentials_path,
+            all[2].credentials_path,
             td.path().join("work").join(".credentials.json")
         );
     }

@@ -40,9 +40,10 @@ enabled = true
 # the default ~/.claude/.credentials.json.
 # credentials_path = "/home/you/.claude/.credentials.json"
 # Auto-discover extra accounts from a directory, in Claude Code's own
-# CLAUDE_CONFIG_DIR layout: each subdir holding a .credentials.json becomes an
-# account labeled by the subdir name (shown as a TUI tab and selectable with
-# --account <label>), refreshed independently. Populate it with, e.g.:
+# CLAUDE_CONFIG_DIR layout: each immediate subdir becomes an account labeled by
+# the subdir name (shown as a TUI tab and selectable with --account <label>),
+# refreshed independently. Credentials live in .credentials.json on Linux and
+# may live only in a config-dir-scoped Keychain item on macOS. Populate it with:
 #   CLAUDE_CONFIG_DIR=~/.config/ai-usagebar/accounts/work claude   # sign in
 # Merged with the explicit [[anthropic.accounts]] entries below (explicit wins).
 # accounts_dir = "~/.config/ai-usagebar/accounts"

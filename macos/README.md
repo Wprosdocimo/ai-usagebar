@@ -15,10 +15,12 @@ A single Swift file (`NSStatusItem` + `NSAttributedString`); no Xcode project.
 
 ## Vendor scope
 
-The selector supports **eleven vendors** that ship in the binary:
+The selector supports **twelve vendors** that ship in the binary:
 
 - **Rate-limit windows (5h / weekly):** Anthropic (Claude), OpenAI (Codex), and
   Z.AI (GLM).
+- **Included-usage pools:** Cursor (Cursor Models and Other Models, both reset
+  on the billing cycle).
 - **Balance-only:** OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok
   (xAI), and Anthropic (API). These have no 5h/weekly quota windows, so the app
   shows their balance/credits in the header (`cr <amount>`) and suppresses the
@@ -26,7 +28,7 @@ The selector supports **eleven vendors** that ship in the binary:
   bar when a monthly limit is configured.
 
 Only **enabled** vendors appear in the selector. The opt-in balance vendors
-(DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok, Anthropic API) default to
+(DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok, Anthropic API, Cursor) default to
 disabled in the Rust config, matching `src/config.rs`; set
 `[vendor].enabled = true` (or save an API key via the TUI) to turn one on.
 
@@ -79,6 +81,13 @@ Settings persist in `UserDefaults` and apply **live, no rebuild**.
 | Refresh interval | 30 s | 5–3600 |
 | Vendor | anthropic | selectors: only enabled vendors (see [Vendor scope](#vendor-scope)). Anthropic, OpenAI, and Z.AI expose session/weekly windows; balance-only vendors show a credit balance instead. |
 | Binary path | auto | empty = `~/.cargo/bin`, Homebrew, then `PATH` |
+| Global vendor shortcut | on | **⌥⌘\\** cycles every configured vendor/account and Overview; turns itself back off if macOS cannot register it |
+| Global compact shortcut | on | **⌥⌘E** toggles Overview between mini bars and compact text; turns itself back off if unavailable |
+| Start at login | current LaunchAgent state | writes/removes the per-user LaunchAgent; write errors are shown below the toggle |
+
+`[ui] overview_vendors = ["anthropic", "cursor", "openai"]` in
+`config.toml` limits and orders the Overview on macOS exactly as it does in the
+TUI. Requesting `anthropic` includes every configured named Claude account.
 
 The Preferences window needs **macOS 12+** (the menu bar itself works on
 10.15+). Tags/labels use the system label colors, so they adapt to a light or
@@ -111,6 +120,8 @@ A **"Trocar vendor"** submenu in the dropdown (between "Atualizar agora" /
 "Abrir TUI" and "Preferências…") lists only configured vendors, with a
 checkmark on the active one.
 Selecting one switches immediately, without opening Preferences.
+The global **⌥⌘\\** shortcut performs the same cycle from any app; disable it
+under Preferências → Atalho if that chord belongs to another application.
 
 ## Multiple Claude accounts
 
@@ -122,6 +133,8 @@ Preferences selector, and the Overview. Each is fetched as
 `--vendor anthropic --account <label>`, so caches and token refreshes stay
 per-account. Set `[anthropic] show_default_account = false` to hide the
 default (unnamed) Claude entry when every account is managed explicitly.
+Every immediate `accounts_dir` subdirectory counts as an account; this includes
+macOS logins whose credentials exist only in a config-dir-scoped Keychain item.
 
 ## How it works
 
