@@ -34,9 +34,11 @@ Each release is also published at
   vendor — and the bar shows every vendor at once (a mini bar each when few, or
   compact %-text past `[ui] overview_menubar_bars_max` (default 4), capped at
   `overview_menubar_max`, in stable provider-grouped entry order). A
-  **Compactar** item (⌘E) right under the usage rows forces the compact %-text
+  **Compactar** item right under the usage rows forces the compact %-text
   mode even under the threshold; while compact it reads **Expandir** and turns
-  it back off. Each vendor's headline is the metric that matters:
+  it back off. It also has a **global ⌥⌘E shortcut** (hinted on the item,
+  toggleable in Preferências → Atalho next to the ⌥⌘\\ swap toggle; overview
+  mode only). Each vendor's headline is the metric that matters:
   **Cursor** shows its combined *included total usage*; **Anthropic** the biggest
   of 5h / weekly / the scoped-model (Fable) window.
 
