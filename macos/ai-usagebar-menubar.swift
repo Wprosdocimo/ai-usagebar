@@ -591,6 +591,141 @@ func apiKeyEnvironment(_ v: VendorAuth) -> String {
     configValueTOML(v.id, "api_key_env") ?? v.env
 }
 
+// ── Anthropic multi-account ────────────────────────────────────────────────
+// Mirrors the Rust side (`src/config.rs`): explicit `[[anthropic.accounts]]`
+// entries plus subdirectories of `[anthropic] accounts_dir` holding a
+// `.credentials.json`, explicit labels winning on a clash. Each account is a
+// selectable entry with the pseudo-id `anthropic@<label>`, fetched by the
+// binary as `--vendor anthropic --account <label>` — the binary resolves the
+// account's credentials itself (file or its own Keychain item), so the app
+// never needs to know where they live.
+
+/// `[[anthropic.accounts]]` labels, in file order. Pure text scan, like the
+/// rest of this app's TOML reading: a `[[anthropic.accounts]]` header opens a
+/// block, the first `label = "…"` inside it counts.
+func anthropicAccountLabels(inTOML text: String) -> [String] {
+    var labels: [String] = []
+    var inBlock = false
+    for rawLine in text.components(separatedBy: .newlines) {
+        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        if line.hasPrefix("[") {
+            inBlock = line == "[[anthropic.accounts]]"
+            continue
+        }
+        guard inBlock, line.hasPrefix("label") else { continue }
+        let parts = line.split(separator: "=", maxSplits: 1)
+        guard parts.count == 2,
+              parts[0].trimmingCharacters(in: .whitespaces) == "label" else { continue }
+        var value = parts[1].trimmingCharacters(in: .whitespaces)
+        if let quote = value.first, quote == "\"" || quote == "'" {
+            let content = value.dropFirst()
+            guard let end = content.firstIndex(of: quote) else { continue }
+            value = String(content[..<end])
+        }
+        if !value.isEmpty {
+            labels.append(value)
+            inBlock = false  // one label per block
+        }
+    }
+    return labels
+}
+
+/// Subdirectories of `dir` holding a `.credentials.json`, sorted — the same
+/// discovery rule as the Rust `accounts_dir` scan.
+func discoverAccountLabels(inDir dir: String) -> [String] {
+    let fm = FileManager.default
+    guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
+    return names.filter { name in
+        var isDir: ObjCBool = false
+        let sub = "\(dir)/\(name)"
+        return fm.fileExists(atPath: sub, isDirectory: &isDir) && isDir.boolValue
+            && fm.fileExists(atPath: "\(sub)/.credentials.json")
+    }.sorted()
+}
+
+/// Explicit labels first (file order), then discovered ones that don't clash.
+func mergedAccountLabels(explicit: [String], discovered: [String]) -> [String] {
+    explicit + discovered.filter { !explicit.contains($0) }
+}
+
+/// All configured Claude account labels, from the same config the binary reads.
+func claudeAccountLabels() -> [String] {
+    guard let text = try? String(contentsOfFile: configPathTOML(), encoding: .utf8) else {
+        return []
+    }
+    let explicit = anthropicAccountLabels(inTOML: text)
+    var discovered: [String] = []
+    if let dir = tomlValueInText(text, section: "anthropic", key: "accounts_dir"), !dir.isEmpty {
+        discovered = discoverAccountLabels(inDir: NSString(string: dir).expandingTildeInPath)
+    }
+    return mergedAccountLabels(explicit: explicit, discovered: discovered)
+}
+
+/// Rust semantics (`show_default_account`): `false` hides the default
+/// (unnamed) Claude entry, but is ignored when there are no named accounts,
+/// so Anthropic never loses its only entry.
+func showDefaultClaudeAccount(configValue: String?, hasAccounts: Bool) -> Bool {
+    guard hasAccounts else { return true }
+    return configValue != "false"
+}
+
+/// Pseudo-id mapping: `anthropic@<label>` selects a named account.
+let ACCOUNT_ID_PREFIX = "anthropic@"
+
+func accountLabel(of id: String) -> String? {
+    id.hasPrefix(ACCOUNT_ID_PREFIX) ? String(id.dropFirst(ACCOUNT_ID_PREFIX.count)) : nil
+}
+
+func baseVendorId(_ id: String) -> String {
+    accountLabel(of: id) != nil ? "anthropic" : id
+}
+
+/// The subprocess arguments that select `id` (base vendor or named account).
+func vendorArgs(for id: String) -> [String] {
+    if let label = accountLabel(of: id) {
+        return ["--vendor", "anthropic", "--account", label]
+    }
+    return ["--vendor", id]
+}
+
+/// One selectable entry: a base vendor or one Claude account.
+struct MenuEntry {
+    let id: String    // "cursor", "anthropic", or "anthropic@<label>"
+    let name: String  // display: "Cursor", "Claude · <label>"
+}
+
+/// The selectable entries, in menu order: every enabled+configured vendor,
+/// with Anthropic expanded into its named accounts (the default entry kept
+/// only per `show_default_account`). `active` stays listed even when
+/// unconfigured — same rule the per-vendor list always had.
+func vendorEntries(active: String) -> [MenuEntry] {
+    var out: [MenuEntry] = []
+    for v in VENDOR_AUTH where vendorEnabled(v) {
+        if v.id == "anthropic" {
+            let labels = claudeAccountLabels()
+            let showDefault = showDefaultClaudeAccount(
+                configValue: configValueTOML("anthropic", "show_default_account"),
+                hasAccounts: !labels.isEmpty)
+            if showDefault && (v.id == active || vendorConfigured(v)) {
+                out.append(MenuEntry(id: v.id, name: v.name))
+            }
+            for label in labels {
+                out.append(MenuEntry(id: ACCOUNT_ID_PREFIX + label, name: "Claude · \(label)"))
+            }
+        } else if v.id == active || vendorConfigured(v) {
+            out.append(MenuEntry(id: v.id, name: v.name))
+        }
+    }
+    return out
+}
+
+/// Display name for any selectable id (base vendor, account, or overview).
+func entryDisplayName(_ id: String) -> String {
+    if id == "overview" { return "Visão geral" }
+    if let label = accountLabel(of: id) { return "Claude · \(label)" }
+    return VENDOR_AUTH.first { $0.id == id }?.name ?? id
+}
+
 /// Rust defaults (`src/config.rs`): the OAuth/api-key vendors that ship enabled,
 /// versus the opt-in balance vendors that default to disabled. An omitted
 /// `[vendor].enabled` must reproduce these, not silently enable everything.
@@ -810,9 +945,16 @@ struct SettingsView: View {
 
     // Only enabled vendors appear in the selector: Rust treats opt-in vendors
     // (deepseek/kimi/kilo/novita/moonshot/grok/anthropic_api) as disabled when
-    // their `[vendor].enabled` is omitted, and so must this picker.
+    // their `[vendor].enabled` is omitted, and so must this picker. Claude
+    // accounts appear as their `anthropic@<label>` pseudo-ids, same as the
+    // "Trocar vendor" submenu.
     private var vendors: [String] {
-        VENDOR_AUTH.filter { vendorEnabled($0) }.map { $0.id }
+        var ids = VENDOR_AUTH.filter { vendorEnabled($0) }.map { $0.id }
+        let labels = claudeAccountLabels()
+        if let at = ids.firstIndex(of: "anthropic") {
+            ids.insert(contentsOf: labels.map { ACCOUNT_ID_PREFIX + $0 }, at: at + 1)
+        }
+        return ids
     }
 
     var body: some View {
@@ -1019,12 +1161,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The swap-shortcut ring: every configured vendor plus the synthetic
-    /// "overview" target, so ⌥⌘\ cycles all providers *and* the overview.
+    /// The swap-shortcut ring: every configured entry (vendors *and* Claude
+    /// accounts) plus the synthetic "overview" target, so ⌥⌘\ cycles them all.
     func swapCycleIds() -> [String] {
-        var ids = VENDOR_AUTH
-            .filter { vendorEnabled($0) && ($0.id == VENDOR || vendorConfigured($0)) }
-            .map { $0.id }
+        var ids = vendorEntries(active: VENDOR).map { $0.id }
         ids.append("overview")
         return ids
     }
@@ -1137,9 +1277,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         lastSnapshot = nil
         lastOverview = nil
         let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
-        let name = VENDOR == "overview"
-            ? "Visão geral"
-            : (VENDOR_AUTH.first { $0.id == VENDOR }?.name ?? VENDOR)
+        let name = entryDisplayName(VENDOR)
         statusItem.button?.attributedTitle = run("\(name) …", menuBarTextColor(appearance))
         headerItem.attributedTitle = run("\(name) · carregando…", .labelColor,
                                          NSFont.boldSystemFont(ofSize: 13))
@@ -1206,7 +1344,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: bin)
-            p.arguments = ["--vendor", vendor, "--format", FORMAT_WITH_SENTINEL]
+            p.arguments = vendorArgs(for: vendor) + ["--format", FORMAT_WITH_SENTINEL]
             let pipe = Pipe()
             p.standardOutput = pipe
             p.standardError = FileHandle.nullDevice
@@ -1266,13 +1404,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// respects the per-vendor cache flock and avoids an OAuth-refresh 429 burst.
     /// ponytail: parallelize only if it ever feels slow.
     func refreshOverview(bin: String, generation: Int) {
-        let vendors = VENDOR_AUTH.filter { vendorEnabled($0) && vendorConfigured($0) }
+        // vendorEntries(active: "") keeps only configured entries — the
+        // active-vendor courtesy slot has no place in an all-vendors sweep.
+        let entries = vendorEntries(active: "")
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var results: [(name: String, id: String, snap: Snapshot?)] = []
-            for v in vendors {
+            for v in entries {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: bin)
-                p.arguments = ["--vendor", v.id, "--format", FORMAT_WITH_SENTINEL]
+                p.arguments = vendorArgs(for: v.id) + ["--format", FORMAT_WITH_SENTINEL]
                 let pipe = Pipe()
                 p.standardOutput = pipe
                 p.standardError = FileHandle.nullDevice
@@ -1291,7 +1431,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 if let data = out.data(using: .utf8),
                    let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let text = obj["text"] as? String {
-                    snap = parse(text, vendor: v.id)
+                    snap = parse(text, vendor: baseVendorId(v.id))
                 }
                 results.append((name: v.name, id: v.id, snap: snap))
             }
@@ -1321,10 +1461,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return (0, "—", nil, nil)
     }
 
-    /// First word of a vendor name, clipped to `maxLen` — a compact bar label.
+    /// Compact bar label for a vendor name. Usually the first word; for a
+    /// Claude account ("Claude · gmail") the account label is the part that
+    /// distinguishes entries, so use it instead of the shared "Claude".
     func ovLabel(_ name: String, _ maxLen: Int) -> String {
-        let first = String(name.split(separator: " ").first ?? Substring(name))
-        return first.count <= maxLen ? first : String(first.prefix(maxLen))
+        let base = name.range(of: " · ").map { String(name[$0.upperBound...]) }
+            ?? String(name.split(separator: " ").first ?? Substring(name))
+        return base.count <= maxLen ? base : String(base.prefix(maxLen))
     }
 
     /// Status-bar summary for overview mode: every vendor at once. Mini bar per
@@ -1436,7 +1579,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             setError("saída inválida")
             return
         }
-        guard let snap = parse(text, vendor: VENDOR) else {
+        guard let snap = parse(text, vendor: baseVendorId(VENDOR)) else {
             lastSnapshot = nil
             let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
             statusItem.button?.attributedTitle = run(stripMarkup(text), menuBarTextColor(appearance))  // Loading… / ⚠
@@ -1475,8 +1618,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func renderMenu(_ s: Snapshot) {
         let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
         for it in overviewRows { it.isHidden = true }
-        headerItem.attributedTitle = run(s.plan.isEmpty ? "AI Usage" : s.plan,
-                                         .labelColor, NSFont.boldSystemFont(ofSize: 13))
+        // With several Claude accounts the plan alone ("Claude Max 20x") no
+        // longer says WHICH account this is — suffix the label.
+        let plan = s.plan.isEmpty ? "AI Usage" : s.plan
+        let header = accountLabel(of: VENDOR).map { "\(plan) · \($0)" } ?? plan
+        headerItem.attributedTitle = run(header, .labelColor, NSFont.boldSystemFont(ofSize: 13))
 
         func row(_ key: String, _ name: String, _ pct: Int, _ value: String, _ reset: String?, _ elapsed: Int?) {
             guard let item = rows[key] else { return }
@@ -1517,15 +1663,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func rebuildVendorSubmenu() {
         vendorSubmenu.removeAllItems()
         let active = VENDOR
-        let configured = VENDOR_AUTH.filter { vendorEnabled($0) && ($0.id == active || vendorConfigured($0)) }
-        if configured.isEmpty {
+        let entries = vendorEntries(active: active)
+        if entries.isEmpty {
             let none = NSMenuItem(title: "Nenhum configurado", action: nil, keyEquivalent: "")
             none.isEnabled = false
             vendorSubmenu.addItem(none)
             vendorSubmenuItem.isHidden = false
             return
         }
-        for v in configured {
+        for v in entries {
             let it = NSMenuItem(title: v.name, action: #selector(switchVendor(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = v.id
