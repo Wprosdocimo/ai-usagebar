@@ -9,6 +9,8 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-07-27
+
 ### Added
 
 - **Claude multi-account in the macOS menu bar.** Every named Anthropic account
@@ -1086,7 +1088,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.17.2...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/akitaonrails/ai-usagebar/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/akitaonrails/ai-usagebar/compare/v0.16.0...v0.17.1
 [0.16.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.15.0...v0.16.0
