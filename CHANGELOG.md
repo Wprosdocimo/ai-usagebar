@@ -9,6 +9,18 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- **Live `config.toml` reload — no more restart after editing it.** Both the
+  **macOS menu-bar app** and the **TUI** now watch `config.toml` and pick up
+  changes on the fly: enable a vendor, add an `[[anthropic.accounts]]` entry,
+  tweak an `[ui]` knob, and it takes effect within a second or two — the vendor
+  submenu, swap ring, Overview, and TUI tab set all rebuild in place. The menu
+  bar watches natively (`DispatchSource`, re-arming across an editor's atomic
+  save) so it's instant; the TUI polls the file's mtime every 2s (no new
+  dependency). In the TUI, a half-written/broken file mid-edit is ignored and
+  retried until it parses, so the running config is not replaced with defaults.
+
 ## [0.18.0] — 2026-07-27
 
 ### Added
