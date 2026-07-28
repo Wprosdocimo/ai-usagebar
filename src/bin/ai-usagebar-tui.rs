@@ -10,6 +10,7 @@
 //!   q / Esc / Ctrl-C   quit
 
 use std::io;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use ai_usagebar::config::Config;
@@ -116,12 +117,27 @@ impl Drop for TerminalGuard {
 // watches natively (DispatchSource, free via Foundation); the TUI polls.
 const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// mtime of the resolved config file, or `None` when there is no config yet or
+/// Cheap identity for the resolved config file. Including the resolved path and
+/// length avoids missing a canonical/legacy-path switch or a same-timestamp
+/// rewrite on filesystems with coarse mtime resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigStamp {
+    path: PathBuf,
+    modified: SystemTime,
+    len: u64,
+}
+
+/// Stamp of the resolved config file, or `None` when there is no config yet or
 /// it can't be stat'd. Re-resolves the path each call, so a config file created
 /// after the TUI started is still noticed.
-fn config_mtime() -> Option<SystemTime> {
+fn config_stamp() -> Option<ConfigStamp> {
     let path = ai_usagebar::config::resolved_path()?;
-    std::fs::metadata(path).ok()?.modified().ok()
+    let metadata = std::fs::metadata(&path).ok()?;
+    Some(ConfigStamp {
+        path,
+        modified: metadata.modified().ok()?,
+        len: metadata.len(),
+    })
 }
 
 /// Re-read `config.toml` into `config` and rebuild everything the TUI derives
@@ -210,7 +226,7 @@ where
     // Watch config.toml for external edits and hot-reload without a restart.
     let mut config_poll = tokio::time::interval(CONFIG_POLL_INTERVAL);
     config_poll.tick().await; // consume the immediate tick.
-    let mut last_config_mtime = config_mtime();
+    let mut last_config_stamp = config_stamp();
 
     loop {
         terminal.draw(|f| draw(f, app))?;
@@ -235,10 +251,13 @@ where
             // Hot-reload config.toml when it changes on disk (external editor,
             // `--add-custom-claude-account`, etc.), preserving the current tab.
             _ = config_poll.tick() => {
-                let now = config_mtime();
-                if now != last_config_mtime {
-                    last_config_mtime = now;
-                    reload_config(app, config, client, &tx, false);
+                let now = config_stamp();
+                if now != last_config_stamp
+                    && reload_config(app, config, client, &tx, false)
+                {
+                    // Only consume the stamp after a successful parse. A
+                    // half-written file is retried until it becomes valid.
+                    last_config_stamp = now;
                 }
             }
             // Keyboard + resize, delivered by the single reader thread.
@@ -303,10 +322,11 @@ where
                                 // to the configured primary since the user just
                                 // asked for it. A broken reload keeps the current
                                 // config rather than reverting to defaults.
-                                reload_config(app, config, client, &tx, true);
-                                // The save just rewrote config.toml; adopt its new
-                                // mtime so the background poll doesn't reload again.
-                                last_config_mtime = config_mtime();
+                                if reload_config(app, config, client, &tx, true) {
+                                    // The save just rewrote config.toml; adopt its
+                                    // new stamp so the poll doesn't reload again.
+                                    last_config_stamp = config_stamp();
+                                }
                             }
                             SAction::Quit => return Ok(()),
                         }

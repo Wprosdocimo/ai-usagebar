@@ -172,11 +172,17 @@ impl App {
     /// Replace the tab set — used after a Settings save reloads config, so
     /// tabs added or removed in `config.toml` while the TUI is open (e.g. a
     /// new `[[anthropic.accounts]]` entry) appear without a restart. Every
-    /// tab resets to `Loading` (the caller re-spawns fetches) and the
-    /// selection is clamped in case the list shrank.
+    /// tab resets to `Loading` (the caller re-spawns fetches). The selected tab
+    /// is preserved by identity when possible; otherwise its old position is
+    /// clamped in case the list shrank.
     pub fn set_tabs(&mut self, tabs_meta: Vec<TabId>) {
+        let selected = self.active_tab_id().cloned();
+        let fallback = self.active.min(tabs_meta.len().saturating_sub(1));
         self.tab_generation = self.tab_generation.wrapping_add(1);
-        self.active = self.active.min(tabs_meta.len().saturating_sub(1));
+        self.active = selected
+            .as_ref()
+            .and_then(|tab| tabs_meta.iter().position(|candidate| candidate == tab))
+            .unwrap_or(fallback);
         self.tabs = vec![TabState::Loading; tabs_meta.len()];
         self.tabs_meta = tabs_meta;
     }
@@ -756,6 +762,27 @@ mod tests {
         assert_eq!(app.tabs_meta, vec![TabId::vendor(VendorId::Anthropic)]);
         assert_eq!(app.active, 0, "selection clamped after shrink");
         assert!(matches!(app.tabs[0], TabState::Loading));
+    }
+
+    #[test]
+    fn set_tabs_preserves_selected_identity_when_entries_are_inserted() {
+        let mut app = App::with_theme(
+            vec![
+                TabId::vendor(VendorId::Anthropic),
+                TabId::vendor(VendorId::Openai),
+            ],
+            Theme::default(),
+        );
+        app.active = 1;
+
+        app.set_tabs(vec![
+            TabId::vendor(VendorId::Anthropic),
+            TabId::account("work"),
+            TabId::vendor(VendorId::Openai),
+        ]);
+
+        assert_eq!(app.active, 2);
+        assert_eq!(app.active_tab_id(), Some(&TabId::vendor(VendorId::Openai)));
     }
 
     #[test]
