@@ -35,11 +35,6 @@ use crate::zai;
 /// Entry point — runs to completion and ALWAYS returns Ok with exit code 0
 /// in the caller. Mirrors claudebar's `die()` invariant.
 pub async fn run(cli: Cli) -> i32 {
-    // Admin short-circuit: register a new Claude account in config.toml, sign it
-    // in, and exit (prints human guidance, not a Waybar payload — run by hand).
-    if let Some(label) = cli.add_custom_claude_account.as_deref() {
-        return run_add_custom_claude_account(label, !cli.no_login);
-    }
     // Scroll-cycle short-circuit: don't render, just bump state + signal waybar.
     if cli.cycle_next || cli.cycle_prev {
         return run_cycle(&cli).await;
@@ -84,178 +79,6 @@ async fn run_cycle(cli: &Cli) -> i32 {
     // shell-safe value on Linux glibc is signal 47 (= SIGRTMIN(34)+13).
     crate::waybar::request_refresh();
     0
-}
-
-/// A registered account, ready to sign in.
-struct Registered {
-    config_path: std::path::PathBuf,
-    /// The account's own `CLAUDE_CONFIG_DIR` — where `claude` writes, and where
-    /// the binary reads (scoped Keychain on macOS, `.credentials.json` on Linux).
-    account_dir: std::path::PathBuf,
-    cred_display: String,
-    dir_display: String,
-    /// The full config.toml text after registration, so a post-login re-stamp
-    /// can nudge a running app to re-fetch without re-reading the file.
-    rendered: String,
-    already_existed: bool,
-}
-
-/// The `claude` login command that populates a named account, ready to paste.
-fn manual_login_hint(dir_display: &str) -> String {
-    format!(
-        "Sign in by logging `claude` in as this account:\n\n  \
-         CLAUDE_CONFIG_DIR={dir_display} claude\n\n\
-         It appears automatically once you're signed in — the app watches config.toml.\n"
-    )
-}
-
-/// `--add-custom-claude-account <label>`: register the account in config.toml
-/// and (unless `--no-login`) drive the interactive `claude` login for it, so a
-/// single command takes it from nothing to signed-in. Prints human guidance and
-/// exits non-zero on failure (it's a manual command, not a Waybar render).
-fn run_add_custom_claude_account(label: &str, login: bool) -> i32 {
-    let reg = match register_custom_claude_account(label) {
-        Ok(reg) => reg,
-        Err(e) => {
-            eprintln!("ai-usagebar: could not add Claude account {label:?}: {e}");
-            return 1;
-        }
-    };
-
-    if reg.already_existed {
-        println!(
-            "Claude account {label:?} is already in {}.",
-            reg.config_path.display()
-        );
-    } else {
-        println!(
-            "✓ Added Claude account {label:?} to {}",
-            reg.config_path.display()
-        );
-        println!("  credentials_path = {}", reg.cred_display);
-    }
-    println!();
-
-    if !login {
-        print!("{}", manual_login_hint(&reg.dir_display));
-        return 0;
-    }
-
-    println!(
-        "Opening `claude` to sign in as {label:?} (its own CLAUDE_CONFIG_DIR, so your\n\
-         default Claude login is untouched). Finish the login, then it returns here."
-    );
-    println!();
-    match login_claude_account(&reg.account_dir) {
-        LoginOutcome::NotFound => {
-            eprintln!(
-                "`claude` was not found on PATH. The account is registered — finish sign-in with:\n"
-            );
-            eprint!("{}", manual_login_hint(&reg.dir_display));
-            1
-        }
-        LoginOutcome::Failed(code) => {
-            eprintln!(
-                "`claude` exited before finishing (status {code}). The account is registered — retry with:\n"
-            );
-            eprint!("{}", manual_login_hint(&reg.dir_display));
-            1
-        }
-        LoginOutcome::Ok => {
-            // Credentials now live where the binary reads them. Re-stamp
-            // config.toml so a running menu bar / TUI re-fetches and shows the
-            // account with data right away instead of at the next interval.
-            let _ = crate::cache::atomic_write(&reg.config_path, reg.rendered.as_bytes());
-            println!();
-            println!("✓ {label:?} is signed in — it'll show up in the menu bar / TUI momentarily.");
-            0
-        }
-    }
-}
-
-/// Outcome of spawning the interactive `claude` login.
-enum LoginOutcome {
-    Ok,
-    Failed(i32),
-    NotFound,
-}
-
-/// Run `CLAUDE_CONFIG_DIR=<account_dir> claude` inheriting this terminal so the
-/// user completes the login interactively. That writes the account's own scoped
-/// credentials (Keychain on macOS, `.credentials.json` on Linux) — exactly what
-/// the binary reads back for this account — so nothing needs copying afterward.
-fn login_claude_account(account_dir: &std::path::Path) -> LoginOutcome {
-    match std::process::Command::new("claude")
-        .env("CLAUDE_CONFIG_DIR", account_dir)
-        .status()
-    {
-        Ok(status) if status.success() => LoginOutcome::Ok,
-        Ok(status) => LoginOutcome::Failed(status.code().unwrap_or(-1)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => LoginOutcome::NotFound,
-        Err(_) => LoginOutcome::Failed(-1),
-    }
-}
-
-/// Ensure `label` is a registered `[[anthropic.accounts]]` entry (append it if
-/// missing, no-op if already present) and its credentials directory exists.
-/// Idempotent so the command can double as "sign in an already-added account".
-fn register_custom_claude_account(label: &str) -> Result<Registered> {
-    let config_path = crate::config::resolved_path()
-        .or_else(crate::config::default_path)
-        .ok_or_else(|| {
-            AppError::Other("could not resolve a config.toml path (no home directory?)".into())
-        })?;
-
-    let cred_file = crate::config::default_account_credentials_path(&config_path, label);
-    let account_dir = cred_file
-        .parent()
-        .unwrap_or(config_path.as_path())
-        .to_path_buf();
-
-    // Tilde-render paths for the written config value and the printed commands.
-    let home = crate::cache::home_dir().ok();
-    let tilde = |p: &std::path::Path| {
-        home.as_deref()
-            .map(|h| crate::config::tildify(p, h))
-            .unwrap_or_else(|| p.display().to_string())
-    };
-    let cred_display = tilde(&cred_file);
-    let dir_display = tilde(&account_dir);
-
-    let original = match std::fs::read_to_string(&config_path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(AppError::io_at(&config_path, e)),
-    };
-    let mut doc: toml_edit::DocumentMut = if original.trim().is_empty() {
-        toml_edit::DocumentMut::new()
-    } else {
-        original.parse().map_err(|e: toml_edit::TomlError| {
-            AppError::Other(format!("config.toml not parseable: {e}"))
-        })?
-    };
-
-    // Re-running to sign in an already-registered account must not error — skip
-    // the append, keep the config untouched, and go straight to the login.
-    let already_existed = crate::config::doc_has_anthropic_account(&doc, label);
-    if !already_existed {
-        crate::config::add_anthropic_account_to_doc(&mut doc, label, &cred_display)?;
-    }
-
-    std::fs::create_dir_all(&account_dir).map_err(|e| AppError::io_at(&account_dir, e))?;
-    let rendered = doc.to_string();
-    if !already_existed {
-        crate::cache::atomic_write(&config_path, rendered.as_bytes())?;
-    }
-
-    Ok(Registered {
-        config_path,
-        account_dir,
-        cred_display,
-        dir_display,
-        rendered,
-        already_existed,
-    })
 }
 
 /// `--watch` repaints in place, which only makes sense on a terminal. Piped or
@@ -871,15 +694,6 @@ mod tests {
         // args to get the canonical defaults.
         use clap::Parser;
         Cli::parse_from(["ai-usagebar"])
-    }
-
-    #[test]
-    fn manual_login_hint_names_the_scoped_login_command() {
-        let hint = manual_login_hint("~/.config/ai-usagebar/accounts/work");
-        assert!(
-            hint.contains("CLAUDE_CONFIG_DIR=~/.config/ai-usagebar/accounts/work claude"),
-            "hint must give the per-account CLAUDE_CONFIG_DIR login: {hint}"
-        );
     }
 
     fn dummy_outcome() -> FetchOutcome {

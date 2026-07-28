@@ -11,7 +11,7 @@ Each release is also published at
 
 ### Added
 
-- **`--add-custom-claude-account <label>`** takes a new custom Claude (Anthropic)
+- **`ai-usagebar account add <label>`** takes a new custom Claude (Anthropic)
   account from nothing to signed-in in one command: it appends an
   `[[anthropic.accounts]]` block to `config.toml` (creating the file if needed,
   preserving comments and formatting via `toml_edit`), creates the account's

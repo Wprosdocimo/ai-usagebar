@@ -173,7 +173,7 @@ impl Default for AnthropicConfig {
 /// ```toml
 /// [[anthropic.accounts]]
 /// label = "work"
-/// credentials_path = "~/.config/ai-usagebar/accounts/work.json"
+/// credentials_path = "~/.config/ai-usagebar/accounts/work/.credentials.json"
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AnthropicAccount {
@@ -249,19 +249,21 @@ impl AnthropicConfig {
 
 /// The label doubles as a cache subdirectory name
 /// (`~/.cache/ai-usagebar/anthropic/<label>/`), which nests inside the default
-/// account's cache dir — so path separators or dot-dirs would escape or
-/// collide with the cache layout (`usage.json`, `.stale`, …). Reject anything
-/// that isn't a plain single-segment name.
+/// account's cache dir — so path separators, control characters, or reserved
+/// cache sidecar names would escape, spoof terminal output, or collide with the
+/// cache layout (`usage.json`, `.stale`, …).
 fn validate_account_label(label: &str) -> Result<()> {
+    const RESERVED: [&str; 4] = ["usage.json", ".stale", ".last_error", ".fetch.lock"];
     let bad = label.is_empty()
         || label == "."
         || label == ".."
         || label.contains(['/', '\\'])
-        || label == "usage.json";
+        || label.chars().any(char::is_control)
+        || RESERVED.contains(&label);
     if bad {
         return Err(AppError::Credentials(format!(
             "invalid anthropic account label {label:?}: must be a non-empty name \
-             without path separators (it becomes a cache subdirectory)"
+             without path separators, control characters, or reserved cache names"
         )));
     }
     Ok(())
@@ -357,20 +359,6 @@ pub fn add_anthropic_account_to_doc(
     table["credentials_path"] = value(credentials_path);
     accounts.push(table);
     Ok(())
-}
-
-/// Is a `[[anthropic.accounts]]` entry with this label already in the document?
-/// Lets the "add account" flow be idempotent — re-running to *sign in* an
-/// already-registered account should skip the append, not error.
-pub fn doc_has_anthropic_account(doc: &toml_edit::DocumentMut, label: &str) -> bool {
-    doc.get("anthropic")
-        .and_then(|a| a.get("accounts"))
-        .and_then(toml_edit::Item::as_array_of_tables)
-        .is_some_and(|accts| {
-            accts
-                .iter()
-                .any(|t| t.get("label").and_then(toml_edit::Item::as_str) == Some(label))
-        })
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1386,7 +1374,19 @@ enabled = false
     #[test]
     fn account_label_rejects_path_like_names() {
         let cfg = AnthropicConfig::default();
-        for bad in ["", ".", "..", "a/b", r"a\b", "usage.json"] {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            r"a\b",
+            "line\nbreak",
+            "tab\tname",
+            "usage.json",
+            ".stale",
+            ".last_error",
+            ".fetch.lock",
+        ] {
             let err = cfg.account(bad).unwrap_err();
             assert!(
                 format!("{err:?}").contains("invalid anthropic account label"),
@@ -1671,23 +1671,6 @@ credentials_path = "~/w/.credentials.json"
         let mut doc = toml_edit::DocumentMut::new();
         assert!(add_anthropic_account_to_doc(&mut doc, "a/b", "~/x/.credentials.json").is_err());
         assert!(add_anthropic_account_to_doc(&mut doc, "", "~/x/.credentials.json").is_err());
-    }
-
-    #[test]
-    fn doc_has_account_detects_membership() {
-        let doc: toml_edit::DocumentMut = r#"
-[[anthropic.accounts]]
-label = "work"
-credentials_path = "~/w/.credentials.json"
-"#
-        .parse()
-        .unwrap();
-        assert!(doc_has_anthropic_account(&doc, "work"));
-        assert!(!doc_has_anthropic_account(&doc, "home"));
-        assert!(!doc_has_anthropic_account(
-            &toml_edit::DocumentMut::new(),
-            "work"
-        ));
     }
 
     #[test]

@@ -403,7 +403,7 @@ extra Anthropic accounts once in config and select them with `--account
 <label>`. To add one without hand-editing the file, run:
 
 ```bash
-ai-usagebar --add-custom-claude-account work
+ai-usagebar account add work
 ```
 
 It appends the `[[anthropic.accounts]]` block below (preserving your comments and
@@ -424,11 +424,11 @@ and sign in later. Paired with live reload, the account shows up in the menu bar
 
 [[anthropic.accounts]]
 label = "work"
-credentials_path = "~/.config/ai-usagebar/accounts/work.json"
+credentials_path = "~/.config/ai-usagebar/accounts/work/.credentials.json"
 
 [[anthropic.accounts]]
 label = "personal"
-credentials_path = "~/.config/ai-usagebar/accounts/personal.json"
+credentials_path = "~/.config/ai-usagebar/accounts/personal/.credentials.json"
 ```
 
 ```jsonc

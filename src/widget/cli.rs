@@ -10,6 +10,7 @@ use clap::{Parser, ValueEnum};
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "ai-usagebar",
+    args_conflicts_with_subcommands = true,
     about = "Waybar widget for AI plan usage (Anthropic / OpenAI / Z.AI / OpenRouter / DeepSeek / Kimi)",
     long_about = "\
 Drop-in replacement for `claudebar` with multi-vendor support.
@@ -122,20 +123,31 @@ pub struct Cli {
     #[arg(long, value_name = "LABEL", conflicts_with = "creds_path")]
     pub account: Option<String>,
 
-    /// Register a new custom Claude (Anthropic) account and exit: append an
-    /// `[[anthropic.accounts]]` entry to config.toml, create its credentials
-    /// directory, and print how to sign it in. Does not touch the default
-    /// (unnamed) Claude account. Once the credentials file exists the account
-    /// shows up live (the app watches config.toml).
-    #[arg(long, value_name = "LABEL",
-          conflicts_with_all = ["cycle_next", "cycle_prev", "watch", "pretty", "json"])]
-    pub add_custom_claude_account: Option<String>,
+    /// Administrative command. Omit it to run the normal usage widget.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
 
-    /// With `--add-custom-claude-account`, only register the account in
-    /// config.toml — do not launch the interactive `claude` login afterwards.
-    /// Use it on a headless box, or to add the entry now and sign in later.
-    #[arg(long)]
-    pub no_login: bool,
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum Command {
+    /// Manage named Claude (Anthropic) accounts.
+    Account {
+        #[command(subcommand)]
+        action: AccountAction,
+    },
+}
+
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum AccountAction {
+    /// Register an isolated account and open Claude Code to sign it in.
+    Add {
+        /// Stable name used by `--account`, the TUI, and desktop apps.
+        label: String,
+
+        /// Only register the account; do not launch interactive login.
+        #[arg(long)]
+        no_login: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -304,6 +316,33 @@ mod tests {
         assert!(!cli.pretty);
         assert!(!cli.json);
         assert!(cli.watch.is_none());
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn account_add_subcommand_parses_without_widget_flags() {
+        let cli = Cli::parse_from(["ai-usagebar", "account", "add", "work", "--no-login"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Account {
+                action: AccountAction::Add { ref label, no_login: true }
+            }) if label == "work"
+        ));
+    }
+
+    #[test]
+    fn account_subcommand_rejects_ignored_widget_flags() {
+        assert!(
+            Cli::try_parse_from([
+                "ai-usagebar",
+                "--vendor",
+                "anthropic",
+                "account",
+                "add",
+                "work",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

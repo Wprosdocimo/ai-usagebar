@@ -110,7 +110,7 @@ impl Drop for TerminalGuard {
 }
 
 /// How often to check `config.toml`'s mtime for edits made outside the TUI
-/// (a text editor, `--add-custom-claude-account`, another tool).
+/// (a text editor, `ai-usagebar account add`, another tool).
 // ponytail: an mtime poll, not a notify(7)/FSEvents watcher — one stat() every
 // couple seconds beats pulling in a file-watching crate + its background thread
 // for a file that changes a handful of times a session. The macOS menu-bar app
@@ -249,7 +249,7 @@ where
                 spawn_all(app, client, config, &tx);
             }
             // Hot-reload config.toml when it changes on disk (external editor,
-            // `--add-custom-claude-account`, etc.), preserving the current tab.
+            // `ai-usagebar account add`, etc.), preserving the current tab.
             _ = config_poll.tick() => {
                 let now = config_stamp();
                 if now != last_config_stamp
