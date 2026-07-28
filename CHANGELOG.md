@@ -20,6 +20,23 @@ Each release is also published at
   provider's detail view moves to the *Trocar vendor* submenu / **⌥⌘\\** (the
   Overview row click now toggles instead).
 
+- **`ai-usagebar account add <label>`** takes a new custom Claude (Anthropic)
+  account from nothing to signed-in in one command: it appends an
+  `[[anthropic.accounts]]` block to `config.toml` (creating the file if needed,
+  preserving comments and formatting via `toml_edit`), creates the account's
+  credentials directory, and then **launches `claude` to sign in** with that
+  account's own `CLAUDE_CONFIG_DIR` — so the login writes exactly where
+  ai-usagebar reads it back (the config-dir-scoped Keychain item on macOS, a
+  `.credentials.json` on Linux) and **your default Claude login is never
+  touched**. When it returns, it re-stamps `config.toml` so the running menu bar
+  / TUI re-fetches and the account shows up **with data immediately** — no
+  restart, no hand-copying credentials. It's idempotent (re-run it to sign an
+  already-registered account back in), never touches the default account, and
+  `--no-login` skips the login step to just register the entry (headless boxes,
+  or add-now-sign-in-later). If `claude` isn't on `PATH` or the login is
+  cancelled, the entry is still registered and it prints the exact login command
+  to finish by hand.
+
 - **Live `config.toml` reload — no more restart after editing it.** Both the
   **macOS menu-bar app** and the **TUI** now watch `config.toml` and pick up
   changes on the fly: enable a vendor, add an `[[anthropic.accounts]]` entry,
@@ -27,9 +44,8 @@ Each release is also published at
   submenu, swap ring, Overview, and TUI tab set all rebuild in place. The menu
   bar watches natively (`DispatchSource`, re-arming across an editor's atomic
   save) so it's instant; the TUI polls the file's mtime every 2s (no new
-  dependency). A half-written/broken file mid-edit is ignored — the running
-  config is kept until the file parses again — so you never get bounced back to
-  defaults.
+  dependency). In the TUI, a half-written/broken file mid-edit is ignored and
+  retried until it parses, so the running config is not replaced with defaults.
 
 ## [0.18.0] — 2026-07-27
 

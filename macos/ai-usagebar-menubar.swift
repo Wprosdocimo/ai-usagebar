@@ -1357,7 +1357,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var lastSnapshot: Snapshot?
     var pendingRefresh: DispatchWorkItem?
     /// Live watch on config.toml so external edits (a text editor, the TUI's
-    /// Settings overlay, `ai-usagebar --add-custom-claude-account`) hot-reload
+    /// Settings overlay, `ai-usagebar account add`) hot-reload
     /// the vendor list without restarting the app. The fd is closed by the
     /// source's cancel handler; `pendingConfigReload` coalesces an editor's
     /// burst of vnode events into a single reload.
