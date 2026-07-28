@@ -400,7 +400,21 @@ credentials file and its own cache directory:
 
 Instead of repeating `--creds-path`/`--cache-dir` on every module, name your
 extra Anthropic accounts once in config and select them with `--account
-<label>`:
+<label>`. To add one without hand-editing the file, run:
+
+```bash
+ai-usagebar account add work
+```
+
+It appends the `[[anthropic.accounts]]` block below (preserving your comments and
+formatting), creates the account's credentials directory, then **launches
+`claude` to sign in** with that account's own `CLAUDE_CONFIG_DIR` — so the login
+lands exactly where ai-usagebar reads it (the config-dir-scoped Keychain item on
+macOS, a `.credentials.json` on Linux) and your **default Claude login is never
+touched**. It's idempotent (re-run to sign an existing account back in) and
+never touches the default account; add `--no-login` to only register the entry
+and sign in later. Paired with live reload, the account shows up in the menu bar
+/ TUI the moment it's signed in — no restart. Or write the block yourself:
 
 ```toml
 [anthropic]
@@ -410,11 +424,11 @@ extra Anthropic accounts once in config and select them with `--account
 
 [[anthropic.accounts]]
 label = "work"
-credentials_path = "~/.config/ai-usagebar/accounts/work.json"
+credentials_path = "~/.config/ai-usagebar/accounts/work/.credentials.json"
 
 [[anthropic.accounts]]
 label = "personal"
-credentials_path = "~/.config/ai-usagebar/accounts/personal.json"
+credentials_path = "~/.config/ai-usagebar/accounts/personal/.credentials.json"
 ```
 
 ```jsonc

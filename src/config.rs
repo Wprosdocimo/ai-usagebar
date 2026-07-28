@@ -15,7 +15,7 @@
 //! `*_api_key_env` field lets the user override which env var name).
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -173,7 +173,7 @@ impl Default for AnthropicConfig {
 /// ```toml
 /// [[anthropic.accounts]]
 /// label = "work"
-/// credentials_path = "~/.config/ai-usagebar/accounts/work.json"
+/// credentials_path = "~/.config/ai-usagebar/accounts/work/.credentials.json"
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AnthropicAccount {
@@ -249,19 +249,21 @@ impl AnthropicConfig {
 
 /// The label doubles as a cache subdirectory name
 /// (`~/.cache/ai-usagebar/anthropic/<label>/`), which nests inside the default
-/// account's cache dir — so path separators or dot-dirs would escape or
-/// collide with the cache layout (`usage.json`, `.stale`, …). Reject anything
-/// that isn't a plain single-segment name.
+/// account's cache dir — so path separators, control characters, or reserved
+/// cache sidecar names would escape, spoof terminal output, or collide with the
+/// cache layout (`usage.json`, `.stale`, …).
 fn validate_account_label(label: &str) -> Result<()> {
+    const RESERVED: [&str; 4] = ["usage.json", ".stale", ".last_error", ".fetch.lock"];
     let bad = label.is_empty()
         || label == "."
         || label == ".."
         || label.contains(['/', '\\'])
-        || label == "usage.json";
+        || label.chars().any(char::is_control)
+        || RESERVED.contains(&label);
     if bad {
         return Err(AppError::Credentials(format!(
             "invalid anthropic account label {label:?}: must be a non-empty name \
-             without path separators (it becomes a cache subdirectory)"
+             without path separators, control characters, or reserved cache names"
         )));
     }
     Ok(())
@@ -295,6 +297,75 @@ fn discover_accounts(accounts_dir: &std::path::Path) -> Vec<AnthropicAccount> {
         .collect();
     found.sort_by(|a, b| a.label.cmp(&b.label));
     found
+}
+
+/// Render a path with `$HOME` collapsed back to `~`, matching the style the docs
+/// and existing `[[anthropic.accounts]]` entries use. Pure so it's testable;
+/// paths outside home are returned verbatim.
+pub fn tildify(path: &Path, home: &Path) -> String {
+    path.strip_prefix(home)
+        .map(|rest| {
+            let rendered = rest.display().to_string();
+            // Config paths use the same portable `~/...` spelling on every
+            // platform. A Windows `~\...` would not be expanded by the loader.
+            #[cfg(windows)]
+            let rendered = rendered.replace('\\', "/");
+            format!("~/{rendered}")
+        })
+        .unwrap_or_else(|_| path.display().to_string())
+}
+
+/// Where a newly-registered account's credentials file lives by default: next
+/// to `config.toml`, under `accounts/<label>/.credentials.json`. Returns the
+/// absolute path (for `mkdir`) — tilde-render it with [`tildify`] for display
+/// and for the value written into config.
+pub fn default_account_credentials_path(config_path: &Path, label: &str) -> PathBuf {
+    let base = config_path.parent().unwrap_or_else(|| Path::new("."));
+    base.join("accounts").join(label).join(".credentials.json")
+}
+
+/// Append a `[[anthropic.accounts]]` entry to a parsed config document, in
+/// place. Pure over a `toml_edit` document so the validation, duplicate check,
+/// and formatting are testable without disk. Preserves the rest of the file
+/// (comments, key order, other sections) — only the new array-of-tables entry
+/// is added. Errors on an invalid label or a label that already exists.
+pub fn add_anthropic_account_to_doc(
+    doc: &mut toml_edit::DocumentMut,
+    label: &str,
+    credentials_path: &str,
+) -> Result<()> {
+    use toml_edit::{Item, Table, value};
+
+    validate_account_label(label)?;
+
+    let anthropic = doc
+        .entry("anthropic")
+        .or_insert_with(|| Item::Table(Table::new()));
+    let anthropic = anthropic
+        .as_table_mut()
+        .ok_or_else(|| AppError::Other("[anthropic] in config.toml is not a table".into()))?;
+
+    let accounts = anthropic
+        .entry("accounts")
+        .or_insert_with(|| Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
+    let accounts = accounts.as_array_of_tables_mut().ok_or_else(|| {
+        AppError::Other("[[anthropic.accounts]] in config.toml is not an array of tables".into())
+    })?;
+
+    let exists = accounts
+        .iter()
+        .any(|t| t.get("label").and_then(Item::as_str) == Some(label));
+    if exists {
+        return Err(AppError::Credentials(format!(
+            "anthropic account {label:?} already exists in config.toml"
+        )));
+    }
+
+    let mut table = Table::new();
+    table["label"] = value(label);
+    table["credentials_path"] = value(credentials_path);
+    accounts.push(table);
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1310,7 +1381,19 @@ enabled = false
     #[test]
     fn account_label_rejects_path_like_names() {
         let cfg = AnthropicConfig::default();
-        for bad in ["", ".", "..", "a/b", r"a\b", "usage.json"] {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            r"a\b",
+            "line\nbreak",
+            "tab\tname",
+            "usage.json",
+            ".stale",
+            ".last_error",
+            ".fetch.lock",
+        ] {
             let err = cfg.account(bad).unwrap_err();
             assert!(
                 format!("{err:?}").contains("invalid anthropic account label"),
@@ -1530,5 +1613,86 @@ enabled = false
         let c = Config::load_from(f.path()).unwrap();
         assert!(c.is_enabled(VendorId::Cursor));
         assert!(c.enabled_vendors().contains(&VendorId::Cursor));
+    }
+
+    #[test]
+    fn add_account_appends_and_preserves_existing() {
+        let mut doc: toml_edit::DocumentMut = r#"
+# keep me
+[anthropic]
+enabled = true
+
+[[anthropic.accounts]]
+label = "personal"
+credentials_path = "~/.config/ai-usagebar/accounts/personal/.credentials.json"
+"#
+        .parse()
+        .unwrap();
+        add_anthropic_account_to_doc(
+            &mut doc,
+            "work",
+            "~/.config/ai-usagebar/accounts/work/.credentials.json",
+        )
+        .unwrap();
+        let rendered = doc.to_string();
+        assert!(rendered.contains("# keep me"), "comment must survive");
+        // Round-trips through the real loader with both accounts intact and ordered.
+        let f = write_toml(&rendered);
+        let c = Config::load_from(f.path()).unwrap();
+        let labels: Vec<&str> = c
+            .anthropic
+            .accounts
+            .iter()
+            .map(|a| a.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["personal", "work"]);
+    }
+
+    #[test]
+    fn add_account_to_empty_doc_is_loadable() {
+        let mut doc = toml_edit::DocumentMut::new();
+        add_anthropic_account_to_doc(&mut doc, "solo", "~/x/.credentials.json").unwrap();
+        let f = write_toml(&doc.to_string());
+        let c = Config::load_from(f.path()).unwrap();
+        assert_eq!(c.anthropic.accounts.len(), 1);
+        assert_eq!(c.anthropic.accounts[0].label, "solo");
+    }
+
+    #[test]
+    fn add_account_rejects_duplicate_label() {
+        let mut doc: toml_edit::DocumentMut = r#"
+[[anthropic.accounts]]
+label = "work"
+credentials_path = "~/w/.credentials.json"
+"#
+        .parse()
+        .unwrap();
+        assert!(
+            add_anthropic_account_to_doc(&mut doc, "work", "~/other/.credentials.json").is_err(),
+            "a duplicate label must be rejected, not appended"
+        );
+    }
+
+    #[test]
+    fn add_account_rejects_bad_label() {
+        let mut doc = toml_edit::DocumentMut::new();
+        assert!(add_anthropic_account_to_doc(&mut doc, "a/b", "~/x/.credentials.json").is_err());
+        assert!(add_anthropic_account_to_doc(&mut doc, "", "~/x/.credentials.json").is_err());
+    }
+
+    #[test]
+    fn tildify_collapses_home_only() {
+        let home = Path::new("/Users/me");
+        assert_eq!(tildify(&home.join("a/b"), home), "~/a/b");
+        assert_eq!(tildify(Path::new("/etc/hosts"), home), "/etc/hosts");
+    }
+
+    #[test]
+    fn default_account_credentials_path_nests_under_config_dir() {
+        let cfg = Path::new("/home/u/.config/ai-usagebar/config.toml");
+        assert_eq!(
+            default_account_credentials_path(cfg, "work"),
+            Path::new("/home/u/.config/ai-usagebar/accounts/work/.credentials.json"),
+        );
     }
 }

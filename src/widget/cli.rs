@@ -10,6 +10,7 @@ use clap::{Parser, ValueEnum};
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "ai-usagebar",
+    args_conflicts_with_subcommands = true,
     about = "Waybar widget for AI plan usage (Anthropic / OpenAI / Z.AI / OpenRouter / DeepSeek / Kimi)",
     long_about = "\
 Drop-in replacement for `claudebar` with multi-vendor support.
@@ -121,6 +122,32 @@ pub struct Cli {
     /// `--creds-path` (they both name a credentials file).
     #[arg(long, value_name = "LABEL", conflicts_with = "creds_path")]
     pub account: Option<String>,
+
+    /// Administrative command. Omit it to run the normal usage widget.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum Command {
+    /// Manage named Claude (Anthropic) accounts.
+    Account {
+        #[command(subcommand)]
+        action: AccountAction,
+    },
+}
+
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum AccountAction {
+    /// Register an isolated account and open Claude Code to sign it in.
+    Add {
+        /// Stable name used by `--account`, the TUI, and desktop apps.
+        label: String,
+
+        /// Only register the account; do not launch interactive login.
+        #[arg(long)]
+        no_login: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -289,6 +316,33 @@ mod tests {
         assert!(!cli.pretty);
         assert!(!cli.json);
         assert!(cli.watch.is_none());
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn account_add_subcommand_parses_without_widget_flags() {
+        let cli = Cli::parse_from(["ai-usagebar", "account", "add", "work", "--no-login"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Account {
+                action: AccountAction::Add { ref label, no_login: true }
+            }) if label == "work"
+        ));
+    }
+
+    #[test]
+    fn account_subcommand_rejects_ignored_widget_flags() {
+        assert!(
+            Cli::try_parse_from([
+                "ai-usagebar",
+                "--vendor",
+                "anthropic",
+                "account",
+                "add",
+                "work",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
