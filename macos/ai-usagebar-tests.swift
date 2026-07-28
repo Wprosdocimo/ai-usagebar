@@ -466,6 +466,16 @@ func testShortReset() {
     assertEqual(shortReset(""), nil, "empty → nil")
 }
 
+func testOverviewProviderToggle() {
+    // The top-bar summary keeps only providers not toggled off, in order.
+    let ids = ["anthropic@struct", "anthropic@gmail", "cursor"]
+    assertEqual(overviewVisibleIds(ids, hidden: []), ids, "nothing hidden → all shown, in order")
+    assertEqual(overviewVisibleIds(ids, hidden: ["anthropic@gmail"]),
+                ["anthropic@struct", "cursor"], "a hidden provider drops out, order preserved")
+    assertEqual(overviewVisibleIds(ids, hidden: Set(ids)), [], "all hidden → empty summary")
+    assertEqual(overviewVisibleIds(ids, hidden: ["gone"]), ids, "a stale hidden id matches nothing")
+}
+
 func testSystemIntegrations() {
     print("launch agent + hot-key status")
     do {
@@ -499,6 +509,7 @@ struct TestRunner {
         testClaudeAccounts()
         testCompactToggle()
         testShortReset()
+        testOverviewProviderToggle()
         testSystemIntegrations()
         if failures > 0 {
             print("\n\(failures) test(s) FAILED")

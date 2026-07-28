@@ -1306,6 +1306,25 @@ func overviewUsesBars(count: Int, barsMax: Int, compact: Bool) -> Bool {
     !compact && count <= barsMax
 }
 
+/// Provider ids the user toggled out of the always-visible top-bar summary in
+/// Overview mode. The dropdown still lists them (unchecked + dimmed) so they can
+/// be turned back on. Persisted in UserDefaults; absent key → nothing hidden.
+func overviewHiddenProviders() -> Set<String> {
+    Set(DEF.stringArray(forKey: "overviewHiddenProviders") ?? [])
+}
+
+func setOverviewProvider(_ id: String, hidden: Bool) {
+    var hiddenSet = overviewHiddenProviders()
+    if hidden { hiddenSet.insert(id) } else { hiddenSet.remove(id) }
+    DEF.set(hiddenSet.sorted(), forKey: "overviewHiddenProviders")
+}
+
+/// The ids that survive the top-bar filter, in their original order. Pure +
+/// testable — the render path (which also drops nil snapshots) is not.
+func overviewVisibleIds(_ ids: [String], hidden: Set<String>) -> [String] {
+    ids.filter { !hidden.contains($0) }
+}
+
 /// The next id in the cycle, wrapping. `current` absent from `ids` (e.g. the
 /// selected vendor was disabled) starts at the first (or last, backward).
 /// Pure + testable — the hot-key handler is not.
@@ -1345,6 +1364,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var configWatchSource: DispatchSourceFileSystemObject?
     var configWatchFD: CInt = -1
     var pendingConfigReload: DispatchWorkItem?
+    /// A visibility checkbox changes presentation only. Its UserDefaults
+    /// notification should repaint from cache without restarting the timer or
+    /// launching a fresh round of provider subprocesses.
+    var overviewVisibilityChangePending = false
     /// Bumped on every refresh attempt. A result whose generation is no longer
     /// current belongs to a superseded attempt — most often the previously
     /// selected vendor — and must not be rendered. Without this, the timer,
@@ -1731,6 +1754,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Settings changed in Preferences: re-render instantly from cache, re-arm
     // the timer, and re-fetch (debounced) in case vendor/binary changed.
     @objc func settingsChanged() {
+        if overviewVisibilityChangePending {
+            overviewVisibilityChangePending = false
+            if VENDOR == "overview", let ov = lastOverview { renderOverview(ov) }
+            return
+        }
         // The swap-shortcut toggle lives in defaults too; re-register only when
         // its state and the live registration disagree (avoids churn on every
         // vendor switch, which itself writes defaults).
@@ -1966,9 +1994,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func overviewBarTitle(_ items: [(name: String, id: String, snap: Snapshot?)],
                           _ appearance: NSAppearance) -> NSAttributedString {
         let secondary = menuBarTextColor(appearance, secondary: true)
+        // Providers toggled off in the dropdown are dropped from the always-on
+        // top summary (but still listed there so they can be re-enabled).
+        let hidden = overviewHiddenProviders()
+        let visible = Set(overviewVisibleIds(items.map { $0.id }, hidden: hidden))
         let heads: [(name: String, pct: Int, elapsed: Int?, value: String, reset: String?)] =
             items.compactMap {
-                guard let s = $0.snap else { return nil }
+                guard visible.contains($0.id), let s = $0.snap else { return nil }
                 if let cb = s.creditBalance { return ($0.name, -1, nil, "cr \(cb)", nil) }
                 let h = overviewHeadline(s)
                 return ($0.name, h.pct, h.elapsed, "\(h.pct)%", h.reset.flatMap(shortReset))
@@ -2032,13 +2064,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             String(repeating: " ", count: max(0, w - s.count)) + s
         }
 
+        let hidden = overviewHiddenProviders()
         for (i, item) in items.enumerated() where i < overviewRows.count {
             let it = overviewRows[i]
             it.isHidden = false
-            // Click a row to jump straight to that vendor's detail view.
+            // Click a row to toggle whether this provider shows in the top-bar
+            // summary. Checkmark = shown; unchecked + dimmed = hidden from the
+            // bar (still listed here so it can be turned back on). Jump-to-vendor
+            // moved to the "Trocar vendor" submenu and ⌥⌘\.
+            let isHidden = hidden.contains(item.id)
+            it.state = isHidden ? .off : .on
             it.representedObject = item.id
             it.target = self
-            it.action = #selector(switchVendor(_:))
+            it.action = #selector(toggleOverviewProvider(_:))
             let a = NSMutableAttributedString()
             let fitted = item.name.count > nameW
                 ? String(item.name.prefix(nameW - 1)) + "…"
@@ -2058,6 +2096,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             } else {
                 a.append(run("—", .secondaryLabelColor))
+            }
+            // Grey the whole row while hidden, so "off" reads at a glance.
+            if isHidden {
+                a.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor,
+                               range: NSRange(location: 0, length: a.length))
             }
             it.attributedTitle = a
         }
@@ -2205,6 +2248,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func switchVendor(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         DEF.set(id, forKey: "vendor")
+    }
+
+    /// Toggle whether a provider appears in the Overview top-bar summary, from
+    /// its dropdown row. The UserDefaults observer re-renders from the last
+    /// fetch and consumes this presentation-only change without re-fetching.
+    @objc func toggleOverviewProvider(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        overviewVisibilityChangePending = true
+        setOverviewProvider(id, hidden: !overviewHiddenProviders().contains(id))
     }
 
     func setError(_ msg: String) {

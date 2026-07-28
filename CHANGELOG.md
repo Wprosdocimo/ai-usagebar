@@ -11,6 +11,15 @@ Each release is also published at
 
 ### Added
 
+- **Per-provider on/off toggle in the Overview (macOS menu bar).** Each row in
+  the Overview dropdown is now a checkbox: click it to drop that provider from
+  the always-visible top-bar summary (checkmark = shown; unchecked + dimmed =
+  hidden). Hidden providers stay listed in the dropdown so you can turn them
+  back on, and dropping some also frees up the top bar to draw mini bars again
+  instead of compact text. The choice persists (UserDefaults). Jumping to a
+  provider's detail view moves to the *Trocar vendor* submenu / **⌥⌘\\** (the
+  Overview row click now toggles instead).
+
 - **`ai-usagebar account add <label>`** takes a new custom Claude (Anthropic)
   account from nothing to signed-in in one command: it appends an
   `[[anthropic.accounts]]` block to `config.toml` (creating the file if needed,
