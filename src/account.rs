@@ -12,6 +12,7 @@ struct Registered {
     account_dir: PathBuf,
     credential_display: String,
     already_existed: bool,
+    anthropic_enabled: bool,
 }
 
 impl Registered {
@@ -51,6 +52,9 @@ fn add(label: &str, login: bool) -> i32 {
             registration.config_path.display()
         );
         println!("  credentials_path = {}", registration.credential_display);
+    }
+    if !registration.anthropic_enabled {
+        println!("  note: [anthropic] is disabled; set enabled = true for this account to appear.");
     }
     println!();
 
@@ -152,14 +156,16 @@ fn register_at(config_path: &Path, label: &str, home: Option<&Path>) -> Result<R
 
     // Honor an existing explicit or accounts_dir-discovered account. In
     // particular, do not send a re-login to a different default directory.
-    let existing = if config_path.exists() {
-        Config::load_from(config_path)?
+    let (existing, anthropic_enabled) = if config_path.exists() {
+        let config = Config::load_from(config_path)?;
+        let existing = config
             .anthropic
             .all_accounts()
             .into_iter()
-            .find(|account| account.label == label)
+            .find(|account| account.label == label);
+        (existing, config.anthropic.enabled)
     } else {
-        None
+        (None, true)
     };
     let already_existed = existing.is_some();
     let credential_file = existing.map_or_else(
@@ -179,10 +185,15 @@ fn register_at(config_path: &Path, label: &str, home: Option<&Path>) -> Result<R
         crate::config::add_anthropic_account_to_doc(&mut doc, label, &credential_display)?;
     }
 
-    let directory_was_missing = !account_dir.exists();
-    std::fs::create_dir_all(&account_dir).map_err(|error| AppError::io_at(&account_dir, error))?;
-    if !already_existed || directory_was_missing {
-        restrict_account_dir(&account_dir)?;
+    let supports_scoped_login =
+        credential_file.file_name().and_then(|name| name.to_str()) == Some(".credentials.json");
+    if !already_existed || supports_scoped_login {
+        let directory_was_missing = !account_dir.exists();
+        std::fs::create_dir_all(&account_dir)
+            .map_err(|error| AppError::io_at(&account_dir, error))?;
+        if !already_existed || directory_was_missing {
+            restrict_account_dir(&account_dir)?;
+        }
     }
     if !already_existed {
         crate::cache::atomic_write(config_path, doc.to_string().as_bytes())?;
@@ -194,6 +205,7 @@ fn register_at(config_path: &Path, label: &str, home: Option<&Path>) -> Result<R
         account_dir,
         credential_display,
         already_existed,
+        anthropic_enabled,
     })
 }
 
@@ -294,6 +306,19 @@ mod tests {
         assert!(registration.already_existed);
         assert_eq!(registration.credential_file, credentials);
         assert!(!registration.supports_scoped_login());
+        assert!(!temporary.path().join("custom").exists());
+    }
+
+    #[test]
+    fn disabled_anthropic_setting_is_preserved_and_reportable() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let config_path = temporary.path().join("config.toml");
+        std::fs::write(&config_path, "[anthropic]\nenabled = false\n").unwrap();
+
+        let registration = register_at(&config_path, "work", None).unwrap();
+        assert!(!registration.anthropic_enabled);
+        let written = std::fs::read_to_string(config_path).unwrap();
+        assert!(written.contains("enabled = false"));
     }
 
     #[test]

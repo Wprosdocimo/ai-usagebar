@@ -27,10 +27,10 @@ Each release is also published at
   credentials directory, and then **launches `claude` to sign in** with that
   account's own `CLAUDE_CONFIG_DIR` — so the login writes exactly where
   ai-usagebar reads it back (the config-dir-scoped Keychain item on macOS, a
-  `.credentials.json` on Linux) and **your default Claude login is never
+  `.credentials.json` on Linux/Windows) and **your default Claude login is never
   touched**. When it returns, it re-stamps `config.toml` so the running menu bar
-  / TUI re-fetches and the account shows up **with data immediately** — no
-  restart, no hand-copying credentials. It's idempotent (re-run it to sign an
+  / TUI re-fetches and the enabled account shows up **with data immediately** —
+  no restart, no hand-copying credentials. It's idempotent (re-run it to sign an
   already-registered account back in), never touches the default account, and
   `--no-login` skips the login step to just register the entry (headless boxes,
   or add-now-sign-in-later). If `claude` isn't on `PATH` or the login is

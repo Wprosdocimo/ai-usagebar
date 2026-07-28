@@ -354,6 +354,11 @@ If you'd rather see them all at once:
 
 ### Multiple accounts (advanced)
 
+For a new Claude account, prefer the config-driven `ai-usagebar account add`
+flow below. It gives Claude its own credential source and avoids copying an
+active OAuth refresh token. The lower-level `--creds-path` form in this first
+example is intended for credentials files you already manage independently.
+
 To watch **more than one account of the same vendor** — say a personal and a
 work Claude subscription — run one module per account, giving each its own
 credentials file and its own cache directory:
@@ -375,12 +380,11 @@ credentials file and its own cache directory:
 }
 ```
 
-- `--creds-path` points the module at a different OAuth credentials file
-  (same JSON shape Claude Code writes). To capture a second account's file,
-  log in with `claude` under that account and copy
-  `~/.claude/.credentials.json` somewhere stable — token refreshes are
-  written back to whatever file the flag names, so each account keeps
-  itself alive independently. `chmod 600` the copies.
+- `--creds-path` points the module at a different OAuth credentials file (same
+  JSON shape Claude Code writes). Refreshes are written back to that exact
+  file. Do not point two running clients at copies of the same refresh token:
+  token rotation can strand one copy. Keep independently managed files at mode
+  `600`, or use `account add` so no credential secret is copied by hand.
 - `--cache-dir` gives the module a private cache so the two accounts don't
   overwrite each other's 60-second cache window. Any directory works; the
   per-vendor default is `~/.cache/ai-usagebar/<vendor>`.
@@ -410,11 +414,12 @@ It appends the `[[anthropic.accounts]]` block below (preserving your comments an
 formatting), creates the account's credentials directory, then **launches
 `claude` to sign in** with that account's own `CLAUDE_CONFIG_DIR` — so the login
 lands exactly where ai-usagebar reads it (the config-dir-scoped Keychain item on
-macOS, a `.credentials.json` on Linux) and your **default Claude login is never
-touched**. It's idempotent (re-run to sign an existing account back in) and
-never touches the default account; add `--no-login` to only register the entry
-and sign in later. Paired with live reload, the account shows up in the menu bar
-/ TUI the moment it's signed in — no restart. Or write the block yourself:
+macOS, a `.credentials.json` on Linux/Windows) and your **default Claude login
+is never touched**. It's idempotent (re-run to sign an existing account back
+in) and never touches the default account; add `--no-login` to only register the
+entry and sign in later. Paired with live reload, the account shows up in the
+menu bar / TUI the moment it's signed in — no restart (provided `[anthropic]`
+is enabled). Or write the block yourself:
 
 ```toml
 [anthropic]
