@@ -1364,6 +1364,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var configWatchSource: DispatchSourceFileSystemObject?
     var configWatchFD: CInt = -1
     var pendingConfigReload: DispatchWorkItem?
+    /// A visibility checkbox changes presentation only. Its UserDefaults
+    /// notification should repaint from cache without restarting the timer or
+    /// launching a fresh round of provider subprocesses.
+    var overviewVisibilityChangePending = false
     /// Bumped on every refresh attempt. A result whose generation is no longer
     /// current belongs to a superseded attempt — most often the previously
     /// selected vendor — and must not be rendered. Without this, the timer,
@@ -1750,6 +1754,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Settings changed in Preferences: re-render instantly from cache, re-arm
     // the timer, and re-fetch (debounced) in case vendor/binary changed.
     @objc func settingsChanged() {
+        if overviewVisibilityChangePending {
+            overviewVisibilityChangePending = false
+            if VENDOR == "overview", let ov = lastOverview { renderOverview(ov) }
+            return
+        }
         // The swap-shortcut toggle lives in defaults too; re-register only when
         // its state and the live registration disagree (avoids churn on every
         // vendor switch, which itself writes defaults).
@@ -1988,9 +1997,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Providers toggled off in the dropdown are dropped from the always-on
         // top summary (but still listed there so they can be re-enabled).
         let hidden = overviewHiddenProviders()
+        let visible = Set(overviewVisibleIds(items.map { $0.id }, hidden: hidden))
         let heads: [(name: String, pct: Int, elapsed: Int?, value: String, reset: String?)] =
             items.compactMap {
-                guard !hidden.contains($0.id), let s = $0.snap else { return nil }
+                guard visible.contains($0.id), let s = $0.snap else { return nil }
                 if let cb = s.creditBalance { return ($0.name, -1, nil, "cr \(cb)", nil) }
                 let h = overviewHeadline(s)
                 return ($0.name, h.pct, h.elapsed, "\(h.pct)%", h.reset.flatMap(shortReset))
@@ -2241,12 +2251,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Toggle whether a provider appears in the Overview top-bar summary, from
-    /// its dropdown row. Re-renders from the last fetch (visibility only — no
-    /// re-fetch), so the bar and the row's checkmark update at once.
+    /// its dropdown row. The UserDefaults observer re-renders from the last
+    /// fetch and consumes this presentation-only change without re-fetching.
     @objc func toggleOverviewProvider(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
+        overviewVisibilityChangePending = true
         setOverviewProvider(id, hidden: !overviewHiddenProviders().contains(id))
-        if let ov = lastOverview { renderOverview(ov) }
     }
 
     func setError(_ msg: String) {
