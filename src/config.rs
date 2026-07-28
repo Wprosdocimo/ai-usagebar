@@ -304,7 +304,14 @@ fn discover_accounts(accounts_dir: &std::path::Path) -> Vec<AnthropicAccount> {
 /// paths outside home are returned verbatim.
 pub fn tildify(path: &Path, home: &Path) -> String {
     path.strip_prefix(home)
-        .map(|rest| format!("~/{}", rest.display()))
+        .map(|rest| {
+            let rendered = rest.display().to_string();
+            // Config paths use the same portable `~/...` spelling on every
+            // platform. A Windows `~\...` would not be expanded by the loader.
+            #[cfg(windows)]
+            let rendered = rendered.replace('\\', "/");
+            format!("~/{rendered}")
+        })
         .unwrap_or_else(|_| path.display().to_string())
 }
 
