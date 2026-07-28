@@ -9,6 +9,27 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- **MiniMax Token Plan vendor** (`--vendor minimax`, `[minimax]`, opt-in). Reads
+  the subscription quota from `GET /v1/token_plan/remains` (undocumented,
+  captured against the live global endpoint). The plan reports one row per model
+  bucket, each with a rolling interval window and a weekly window, so it renders
+  as a two-pool quota vendor: `general` (text/coding) drives the bar and the
+  generic `{session_pct}` / `{weekly_pct}` aliases, and `video` rides along in
+  the tooltip and TUI panel. `{vendor_short}` is `mmx`.
+  Four properties of this API are encoded deliberately, each with a test:
+  it answers **HTTP 200 even when auth fails** (the real status is
+  `base_resp.status_code`; the two credential codes map onto HTTP 401 so a bad
+  key reports as an auth problem, not schema drift); the percentages are what
+  **remains**, not what was consumed, and are inverted on the way in; the
+  interval length is **not fixed** (5h for `general`, 24h for `video`), so each
+  window's duration comes from its own start/end; and all timestamps are epoch
+  **milliseconds**. `[minimax] region` picks the *instance* rather than a unit —
+  the global and CN deployments issue separate keys and reject each other's, so
+  the endpoint is recorded in the cache payload and a mismatched cache is
+  discarded instead of being shown against the wrong account.
+
 ## [0.19.0] — 2026-07-27
 
 ### Added

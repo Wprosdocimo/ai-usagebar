@@ -166,6 +166,7 @@ pub enum Vendor {
     Grok,
     Antigravity,
     Cursor,
+    Minimax,
 }
 
 impl Vendor {
@@ -184,6 +185,7 @@ impl Vendor {
             Vendor::Grok => crate::vendor::VendorId::Grok,
             Vendor::Antigravity => crate::vendor::VendorId::Antigravity,
             Vendor::Cursor => crate::vendor::VendorId::Cursor,
+            Vendor::Minimax => crate::vendor::VendorId::Minimax,
         }
     }
 }
@@ -269,6 +271,7 @@ fn id_to_vendor(id: crate::vendor::VendorId) -> Vendor {
         crate::vendor::VendorId::Grok => Vendor::Grok,
         crate::vendor::VendorId::Antigravity => Vendor::Antigravity,
         crate::vendor::VendorId::Cursor => Vendor::Cursor,
+        crate::vendor::VendorId::Minimax => Vendor::Minimax,
     }
 }
 

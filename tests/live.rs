@@ -51,6 +51,7 @@ use ai_usagebar::cache::Cache;
 use ai_usagebar::cursor;
 use ai_usagebar::error::AppError;
 use ai_usagebar::kimi;
+use ai_usagebar::minimax;
 use ai_usagebar::openai;
 use ai_usagebar::openrouter;
 use ai_usagebar::zai;
@@ -377,5 +378,58 @@ async fn cursor_live() {
         out.snapshot.total_pct,
         out.snapshot.on_demand_enabled,
         out.snapshot.reset_at,
+    );
+}
+
+/// MiniMax Token Plan — optional: skipped unless a subscription key is present.
+///
+/// The endpoint answers HTTP 200 even for auth failures, so a green run here is
+/// what proves the in-band `base_resp.status_code` check is still doing its job:
+/// a wrong key surfaces as an error rather than an all-zero plan.
+#[tokio::test]
+#[ignore = "live API; run with --ignored"]
+async fn minimax_live() {
+    let Ok(api_key) = std::env::var("MINIMAX_API_KEY") else {
+        eprintln!("minimax_live: MINIMAX_API_KEY is unset — skipping optional MiniMax smoke test");
+        return;
+    };
+    if api_key.trim().is_empty() {
+        eprintln!("minimax_live: MINIMAX_API_KEY is empty — skipping optional MiniMax smoke test");
+        return;
+    }
+    let cache = xdg_cache_for("minimax");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap();
+    let endpoints = minimax::fetch::Endpoints::default();
+    let out = minimax::fetch_snapshot(
+        &client,
+        &api_key,
+        &cache,
+        &endpoints,
+        Duration::from_secs(0),
+    )
+    .await
+    .expect("minimax fetch should succeed against the real API");
+
+    assert_pct("minimax.session", out.snapshot.session.utilization_pct);
+    assert_pct("minimax.weekly", out.snapshot.weekly.utilization_pct);
+    // The interval length is read from the payload rather than assumed: it has
+    // been observed at both 4h and 5h on the same account. A non-positive one
+    // would divide the pace math by nothing.
+    assert!(
+        out.snapshot.session.window_duration > chrono::Duration::zero(),
+        "minimax: interval window has no length — payload shape changed?"
+    );
+    if let Some(v) = out.snapshot.video_session.as_ref() {
+        assert_pct("minimax.video", v.utilization_pct);
+    }
+    println!(
+        "✅ minimax: {} · session {}% · weekly {}% · video {:?}",
+        out.snapshot.plan,
+        out.snapshot.session.utilization_pct,
+        out.snapshot.weekly.utilization_pct,
+        out.snapshot.video_session.as_ref().map(|w| w.utilization_pct),
     );
 }

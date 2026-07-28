@@ -24,6 +24,7 @@ pub mod format;
 pub mod grok;
 pub mod kilo;
 pub mod kimi;
+pub mod minimax;
 pub mod moonshot;
 pub mod novita;
 pub mod openai;
