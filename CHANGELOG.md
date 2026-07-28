@@ -18,9 +18,8 @@ Each release is also published at
   submenu, swap ring, Overview, and TUI tab set all rebuild in place. The menu
   bar watches natively (`DispatchSource`, re-arming across an editor's atomic
   save) so it's instant; the TUI polls the file's mtime every 2s (no new
-  dependency). A half-written/broken file mid-edit is ignored — the running
-  config is kept until the file parses again — so you never get bounced back to
-  defaults.
+  dependency). In the TUI, a half-written/broken file mid-edit is ignored and
+  retried until it parses, so the running config is not replaced with defaults.
 
 ## [0.18.0] — 2026-07-27
 
