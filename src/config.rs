@@ -62,6 +62,27 @@ pub struct UiConfig {
     /// menu-bar's top section), in this order. `None` → every enabled vendor,
     /// in the canonical order.
     pub overview_vendors: Option<Vec<VendorId>>,
+    /// Layout style for vendor navigation in the TUI: sidebar | navbar | none.
+    pub vendor_box: Option<VendorBoxStyle>,
+}
+
+impl UiConfig {
+    pub fn vendor_box(&self) -> VendorBoxStyle {
+        self.vendor_box.unwrap_or_default()
+    }
+}
+
+/// Presentation style of the TUI vendor navigation box.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VendorBoxStyle {
+    /// Vertical sidebar box on wide terminals; falls back to top navbar on narrow terminals.
+    #[default]
+    Sidebar,
+    /// Horizontal navbar strip above the dashboard detail panel.
+    Navbar,
+    /// Completely hide vendor navigation (dashboards expand to fill full width).
+    None,
 }
 
 /// Where the context view docks in the dashboard body. `v` cycles it while the
@@ -994,6 +1015,27 @@ enabled = false
         assert!(
             Config::load_from(file.path()).is_err(),
             "an unknown layout must be rejected, not silently defaulted"
+        );
+    }
+
+    #[test]
+    fn vendor_box_defaults_to_sidebar_and_parses_each_variant() {
+        assert_eq!(Config::default().ui.vendor_box(), VendorBoxStyle::Sidebar);
+        for (text, want) in [
+            ("sidebar", VendorBoxStyle::Sidebar),
+            ("navbar", VendorBoxStyle::Navbar),
+            ("none", VendorBoxStyle::None),
+        ] {
+            let file = write_toml(&format!("[ui]\nvendor_box = \"{text}\"\n"));
+            assert_eq!(
+                Config::load_from(file.path()).unwrap().ui.vendor_box(),
+                want
+            );
+        }
+        let file = write_toml("[ui]\nvendor_box = \"floating\"\n");
+        assert!(
+            Config::load_from(file.path()).is_err(),
+            "an unknown vendor_box style must be rejected, not silently defaulted"
         );
     }
 
