@@ -9,6 +9,48 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- **`ai-usagebar account status` and `account switch <label>` — see and change
+  which Claude account you are actually signed in as (macOS).** There are two
+  separate identities on a Mac and they drift apart constantly: the **Claude
+  Desktop app** (signed in through its own `config.json`) and the **`claude`
+  CLI** (one default login in the login Keychain). `account status` reports both
+  — with each account's e-mail, session count, and whether its credential and
+  browser state have been captured — and `--json` makes that available to
+  scripts and the menu bar. `account switch` moves either one: `--desktop`,
+  `--cli`, or neither for both, with `--dry-run` to see exactly what would
+  happen first.
+
+  Switching the **Desktop app** merges your local history into the target
+  account first — session indexes newest-wins, routines/schedules unioned by
+  task id — so the account you land on shows the union of everything rather
+  than only its own chats; then it quits the app, swaps the credential and the
+  cookie/LevelDB state, and reopens it. Before any of that it writes a rollback
+  archive of everything a switch can destroy (`--keep-backups`, default 10;
+  `--backup-sessions` for a full session-tree archive), and it writes
+  `config.json` atomically so a crash mid-switch cannot strand every account's
+  tokens. The volatile `bridge-state.json` is cleared each time, since a stale
+  cloud-session id makes `/remote-control` fail to disconnect; `--keep-bridge`
+  turns that off for diagnosing browser-connection issues.
+
+  Switching the **CLI** copies the account's stored credential into the one
+  default slot plain `claude` reads. The outgoing account's credential is saved
+  back into its own slot first, and while a label is the live CLI login
+  ai-usagebar reads that label from the default slot — so one rotating refresh
+  token is never live in two places, which is what would otherwise 401 one of
+  the two copies within hours. A CLI login that belongs to no configured
+  account is never silently discarded: the switch refuses unless `--force`.
+
+  Desktop accounts are read from (and written back to) the profile store
+  created by [claude-acc](https://github.com/ohmaseclaro/claude-acc), whose
+  reverse-engineering of the Claude Desktop internals this builds on and whose
+  `switch` command it ports; `[anthropic] desktop_profiles_dir` overrides the
+  location. Capturing (`add`), forgetting (`remove`), and chat filtering
+  (`only`/`reset`) stay with claude-acc. Nothing here affects the Linux build:
+  the modules compile and are tested everywhere, and simply find no Claude
+  Desktop installation.
+
 ## [0.19.0] — 2026-07-27
 
 ### Added

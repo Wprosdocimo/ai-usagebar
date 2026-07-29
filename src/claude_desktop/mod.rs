@@ -1,0 +1,994 @@
+//! Switching which Claude account the **Claude Desktop app** is signed in as,
+//! carrying local history along so the account you land on shows the union of
+//! everything rather than only its own conversations.
+//!
+//! The Claude Desktop internals this relies on — the data-directory layout, the
+//! `oauth:tokenCache` / `oauth:tokenCacheV2` / `lastKnownAccountUuid` fields in
+//! `config.json`, which cookie and LevelDB stores carry the renderer's "who am
+//! I", the newest-wins rule for session indexes, and the reason
+//! `bridge-state.json` must be deleted rather than restored — were
+//! reverse-engineered by **claude-acc** (<https://github.com/ohmaseclaro/claude-acc>,
+//! MIT). [`plan_switch`]/[`apply_switch`] are a port of its `cmd_switch`, and
+//! they read and write its profile store so the two tools stay interchangeable.
+//! claude-acc still owns capturing (`add`), forgetting (`remove`), and chat
+//! filtering (`only`/`reset`); this module deliberately covers read + switch.
+//!
+//! Nothing here is compiled out on Linux. Every path is injected through
+//! [`Paths`], the platform commands live behind [`app::AppControl`], and the
+//! whole thing simply finds no data directory on a machine with no Claude
+//! Desktop app — which keeps the logic under CI's clippy and its tests running
+//! everywhere.
+
+pub mod app;
+pub mod merge;
+
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+use crate::config::AnthropicConfig;
+use crate::error::{AppError, Result};
+
+use app::AppControl;
+use merge::{ScheduledMerge, SessionMerge};
+
+/// Claude Desktop's own state file: OAuth token caches plus the account pointer.
+const CONFIG_JSON: &str = "config.json";
+/// Root of the per-account session-index tree, `<root>/<account>/<org>/`.
+const SESSIONS_DIR: &str = "claude-code-sessions";
+/// Chromium-style cookie jar — part of the renderer's identity, not just
+/// `config.json`'s oauth fields.
+const COOKIE_FILES: [&str; 2] = ["Cookies", "Cookies-journal"];
+/// LevelDB stores that carry the rest of that identity.
+const LEVELDB_DIRS: [&str; 3] = ["Local Storage", "Session Storage", "IndexedDB"];
+/// Remote-control / cloud-session bridge. Holds a volatile `cse_…` session id
+/// that goes stale fast, so it is deleted on every switch and *never* saved
+/// into a profile: restoring a dead id makes `/remote-control` fail to
+/// disconnect.
+const BRIDGE_FILE: &str = "bridge-state.json";
+/// Account-keyed map of browser-extension device registrations. Additive only —
+/// see [`merge::merge_device_registry`].
+const DEVICE_REGISTRY: &str = "ant-device-registry.json";
+
+/// Profile-store filenames, owned by claude-acc's layout.
+const TOKEN_CACHE: &str = "config-tokenCache";
+const TOKEN_CACHE_V2: &str = "config-tokenCacheV2";
+const DESKTOP_STATE: &str = "desktop-state";
+const META_JSON: &str = "meta.json";
+
+/// Where the Claude Desktop app and the saved profiles live.
+///
+/// Constructed with [`Paths::at`] in tests so nothing reads a real `$HOME`.
+#[derive(Debug, Clone)]
+pub struct Paths {
+    pub data_dir: PathBuf,
+    pub profiles_dir: PathBuf,
+    pub backups_dir: PathBuf,
+}
+
+impl Paths {
+    /// Test seam: every root explicit.
+    pub fn at(data_dir: PathBuf, profiles_dir: PathBuf, backups_dir: PathBuf) -> Self {
+        Self {
+            data_dir,
+            profiles_dir,
+            backups_dir,
+        }
+    }
+
+    /// Production paths. `desktop_profiles_dir` overrides the claude-acc
+    /// default; rollback archives land beside the profile store.
+    pub fn resolve(anthropic: &AnthropicConfig) -> Result<Self> {
+        let home = crate::cache::home_dir()?;
+        let profiles_dir = anthropic
+            .desktop_profiles_dir
+            .clone()
+            .unwrap_or_else(|| home.join(".claude-acc").join("profiles"));
+        let backups_dir = profiles_dir
+            .parent()
+            .map_or_else(|| home.join(".claude-acc"), Path::to_path_buf)
+            .join("backups");
+        Ok(Self {
+            data_dir: home.join("Library/Application Support/Claude"),
+            profiles_dir,
+            backups_dir,
+        })
+    }
+
+    /// Whether there is a Claude Desktop app installation to act on at all.
+    /// False on Linux, and on a Mac where the app has never run.
+    pub fn available(&self) -> bool {
+        self.data_dir.is_dir()
+    }
+
+    pub fn config_json(&self) -> PathBuf {
+        self.data_dir.join(CONFIG_JSON)
+    }
+
+    pub fn sessions_root(&self) -> PathBuf {
+        self.data_dir.join(SESSIONS_DIR)
+    }
+
+    pub fn profile_dir(&self, label: &str) -> PathBuf {
+        self.profiles_dir.join(label)
+    }
+}
+
+/// One saved account in the profile store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileMeta {
+    /// The profile directory's name — authoritative, so a hand-edited
+    /// `meta.json` can never make a profile answer to the wrong label.
+    pub label: String,
+    pub email: Option<String>,
+    pub account_uuid: String,
+    /// Absent until the app has created a session folder for the account;
+    /// without it the history merges are skipped but the credential swap
+    /// still works.
+    pub org_uuid: Option<String>,
+    pub has_credentials: bool,
+    pub has_desktop_state: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawMeta {
+    email: Option<String>,
+    #[serde(rename = "accountUuid")]
+    account_uuid: Option<String>,
+    #[serde(rename = "orgUuid")]
+    org_uuid: Option<String>,
+}
+
+/// Every saved profile, sorted by label. Best-effort by design: one unreadable
+/// or hand-mangled `meta.json` is skipped rather than failing `account status`
+/// for every other account.
+pub fn load_profiles(profiles_dir: &Path) -> Vec<ProfileMeta> {
+    let Ok(entries) = std::fs::read_dir(profiles_dir) else {
+        return Vec::new();
+    };
+    let mut profiles: Vec<ProfileMeta> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let dir = entry.path();
+            let label = dir.file_name()?.to_str()?.to_string();
+            let raw: RawMeta =
+                serde_json::from_slice(&std::fs::read(dir.join(META_JSON)).ok()?).ok()?;
+            let account_uuid = raw.account_uuid.filter(|uuid| !uuid.is_empty())?;
+            Some(ProfileMeta {
+                label,
+                email: raw.email.filter(|email| !email.is_empty()),
+                account_uuid,
+                org_uuid: raw.org_uuid.filter(|uuid| !uuid.is_empty()),
+                has_credentials: dir.join(TOKEN_CACHE).is_file()
+                    && dir.join(TOKEN_CACHE_V2).is_file(),
+                has_desktop_state: dir.join(DESKTOP_STATE).is_dir(),
+            })
+        })
+        .collect();
+    profiles.sort_by(|a, b| a.label.cmp(&b.label));
+    profiles
+}
+
+/// Which account the Desktop app currently believes it is. This is the app's
+/// own pointer, not a guess from file timestamps.
+pub fn active_account_uuid(config_json: &Path) -> Option<String> {
+    let bytes = std::fs::read(config_json).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value
+        .get("lastKnownAccountUuid")?
+        .as_str()
+        .filter(|uuid| !uuid.is_empty())
+        .map(str::to_string)
+}
+
+pub fn label_for_uuid<'a>(profiles: &'a [ProfileMeta], account_uuid: &str) -> Option<&'a str> {
+    profiles
+        .iter()
+        .find(|profile| profile.account_uuid == account_uuid)
+        .map(|profile| profile.label.as_str())
+}
+
+/// How many conversations the account's history folder holds.
+pub fn session_count(sessions_root: &Path, profile: &ProfileMeta) -> usize {
+    let Some(org) = &profile.org_uuid else {
+        return 0;
+    };
+    let Ok(entries) = std::fs::read_dir(sessions_root.join(&profile.account_uuid).join(org)) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .count()
+}
+
+/// Knobs that change what a switch does rather than which account it targets.
+#[derive(Debug, Clone)]
+pub struct SwitchOpts {
+    /// Keep `bridge-state.json` instead of deleting it. Off by default, so the
+    /// shipped behaviour matches claude-acc; on, it turns "does the remote
+    /// bridge cause the browser disconnect?" into a one-command experiment.
+    pub keep_bridge: bool,
+    /// Also archive the whole session tree. Off by default: the session merge
+    /// is additive (the older copy always survives in its source folder), so a
+    /// full-tree archive costs tens of megabytes per switch to protect against
+    /// nothing. On, it matches claude-acc byte for byte.
+    pub backup_sessions: bool,
+    /// Rollback archives to retain.
+    pub keep_backups: usize,
+}
+
+impl Default for SwitchOpts {
+    fn default() -> Self {
+        Self {
+            keep_bridge: false,
+            backup_sessions: false,
+            keep_backups: 10,
+        }
+    }
+}
+
+/// The saved OAuth token caches for the account being switched to. Opaque
+/// blobs; never logged or printed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedTokens {
+    pub token_cache: String,
+    pub token_cache_v2: String,
+}
+
+/// Everything a switch would do, decided before anything is touched.
+#[derive(Debug)]
+pub struct SwitchPlan {
+    pub target: ProfileMeta,
+    /// The account being switched away from, when it is one we manage.
+    pub outgoing: Option<String>,
+    pub sessions: SessionMerge,
+    /// Absent when the target has no known org yet, so there is no history
+    /// folder to merge into.
+    pub scheduled: Option<ScheduledMerge>,
+    /// Absent when the profile has no saved Desktop credential; the switch then
+    /// migrates history but leaves the app signed in as it was.
+    pub tokens: Option<SavedTokens>,
+    pub archive: PathBuf,
+    pub archive_members: Vec<String>,
+    pub restores_desktop_state: bool,
+    pub opts: SwitchOpts,
+}
+
+/// Decide the whole switch without performing any of it.
+///
+/// This is what makes `--dry-run` free, and a test asserts it leaves the data
+/// directory byte-identical.
+pub fn plan_switch(paths: &Paths, label: &str, opts: SwitchOpts) -> Result<SwitchPlan> {
+    let profiles = load_profiles(&paths.profiles_dir);
+    let target = profiles
+        .iter()
+        .find(|profile| profile.label == label)
+        .cloned()
+        .ok_or_else(|| {
+            let known: Vec<&str> = profiles.iter().map(|p| p.label.as_str()).collect();
+            AppError::Credentials(format!(
+                "no saved Claude Desktop account {label:?} in {}; known: {known:?}. \
+                 Capture one with `claude-acc add {label}` \
+                 (https://github.com/ohmaseclaro/claude-acc)",
+                paths.profiles_dir.display()
+            ))
+        })?;
+
+    let sessions_root = paths.sessions_root();
+    let (sessions, scheduled) = match &target.org_uuid {
+        Some(org) => (
+            merge::plan_session_merge(&sessions_root, &target.account_uuid, org),
+            Some(merge::plan_scheduled_merge(
+                &sessions_root,
+                &target.account_uuid,
+                org,
+            )?),
+        ),
+        None => (SessionMerge::default(), None),
+    };
+
+    let outgoing = active_account_uuid(&paths.config_json())
+        .and_then(|uuid| label_for_uuid(&profiles, &uuid).map(str::to_string));
+
+    let profile_dir = paths.profile_dir(label);
+    let tokens = match (
+        std::fs::read_to_string(profile_dir.join(TOKEN_CACHE)),
+        std::fs::read_to_string(profile_dir.join(TOKEN_CACHE_V2)),
+    ) {
+        (Ok(token_cache), Ok(token_cache_v2)) => Some(SavedTokens {
+            token_cache,
+            token_cache_v2,
+        }),
+        _ => None,
+    };
+
+    let stamp = crate::claude_desktop::timestamp();
+    Ok(SwitchPlan {
+        archive: paths
+            .backups_dir
+            .join(format!("switch-{stamp}-{label}.tar.gz")),
+        archive_members: archive_members(paths, &opts),
+        restores_desktop_state: profile_dir.join(DESKTOP_STATE).is_dir(),
+        target,
+        outgoing,
+        sessions,
+        scheduled,
+        tokens,
+        opts,
+    })
+}
+
+/// Perform a planned switch.
+///
+/// `Err` means the switch aborted **before** the app or any credential was
+/// touched. Once the app is down every remaining step is best-effort and
+/// reports through the returned notes: bailing out halfway would leave the user
+/// with a quit app and a half-swapped identity, which is worse than proceeding.
+pub fn apply_switch(paths: &Paths, plan: &SwitchPlan, app: &dyn AppControl) -> Result<Vec<String>> {
+    let mut notes = Vec::new();
+
+    // The rollback archive comes first: no backup, no mutation.
+    let members: Vec<&str> = plan
+        .archive_members
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !members.is_empty() {
+        app.archive(&plan.archive, &paths.data_dir, &members)?;
+        prune_archives(&paths.backups_dir, plan.opts.keep_backups, &mut notes);
+    }
+
+    // History merges abort too — a partial merge is recoverable, but doing it
+    // after the credential swap would strand the user on an account whose
+    // history never arrived.
+    for (source, destination) in plan.sessions.copied.iter().chain(&plan.sessions.updated) {
+        copy_file(source, destination)?;
+    }
+    if let Some(scheduled) = &plan.scheduled
+        && let Err(error) = crate::cache::atomic_write(&scheduled.target, &scheduled.bytes)
+    {
+        notes.push(format!("schedule merge skipped: {error}"));
+    }
+
+    // From here the app is down and nothing returns early — the relaunch in the
+    // tail must run whatever happens above it.
+    app.quit();
+
+    // Identify the outgoing account from the *live* config, after the quit:
+    // the app rewrites this file on shutdown. Snapshotting it must also happen
+    // strictly before the swap below, or the outgoing tokens get filed under
+    // the incoming label and an account is destroyed.
+    let live_config = paths.config_json();
+    let outgoing = active_account_uuid(&live_config).and_then(|uuid| {
+        label_for_uuid(&load_profiles(&paths.profiles_dir), &uuid).map(str::to_string)
+    });
+    if let Some(label) = &outgoing {
+        snapshot_profile(paths, label, &mut notes);
+    }
+
+    match &plan.tokens {
+        Some(tokens) => {
+            swap_credentials(&live_config, tokens, &plan.target.account_uuid, &mut notes)
+        }
+        None => notes.push(format!(
+            "no saved Desktop credential for {:?} yet — sign in once in the app, \
+             then switch again to capture it",
+            plan.target.label
+        )),
+    }
+
+    if plan.restores_desktop_state {
+        restore_desktop_state(paths, &plan.target.label, &mut notes);
+    } else {
+        notes.push(format!(
+            "no saved browser state for {:?} yet — the app may still show the previous account",
+            plan.target.label
+        ));
+    }
+
+    if !plan.opts.keep_bridge {
+        let bridge = paths.data_dir.join(BRIDGE_FILE);
+        if bridge.is_file()
+            && let Err(error) = std::fs::remove_file(&bridge)
+        {
+            notes.push(format!("could not clear {BRIDGE_FILE}: {error}"));
+        }
+    }
+    restore_device_registry(paths, &plan.target.label, &mut notes);
+
+    app.relaunch();
+    Ok(notes)
+}
+
+/// Save the outgoing account's live credential and browser state back into its
+/// profile, so switching to it later restores what it looked like just now.
+/// Only safe with the app fully quit — copying a live SQLite/LevelDB store
+/// risks grabbing it mid-write.
+///
+/// Deliberately never writes `meta.json`: that file belongs to `claude-acc add`,
+/// and two tools writing it is how the stores drift apart.
+fn snapshot_profile(paths: &Paths, label: &str, notes: &mut Vec<String>) {
+    let profile_dir = paths.profile_dir(label);
+    if let Err(error) = std::fs::create_dir_all(&profile_dir) {
+        notes.push(format!("could not snapshot {label:?}: {error}"));
+        return;
+    }
+    restrict(&profile_dir, 0o700, notes);
+
+    if let Ok(bytes) = std::fs::read(paths.config_json())
+        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+    {
+        for (key, file) in [
+            ("oauth:tokenCache", TOKEN_CACHE),
+            ("oauth:tokenCacheV2", TOKEN_CACHE_V2),
+        ] {
+            if let Some(blob) = value.get(key).and_then(serde_json::Value::as_str) {
+                let path = profile_dir.join(file);
+                if let Err(error) = crate::cache::atomic_write(&path, blob.as_bytes()) {
+                    notes.push(format!("could not save {label:?}'s credential: {error}"));
+                } else {
+                    restrict(&path, 0o600, notes);
+                }
+            }
+        }
+    }
+
+    // The registry is account-keyed and shared, so it is snapshotted (never
+    // moved) purely so a lost key can be folded back in later.
+    let registry = paths.data_dir.join(DEVICE_REGISTRY);
+    if registry.is_file() {
+        let _ = copy_file(&registry, &profile_dir.join(DEVICE_REGISTRY));
+    }
+
+    let state_dir = profile_dir.join(DESKTOP_STATE);
+    if let Err(error) = std::fs::create_dir_all(&state_dir) {
+        notes.push(format!(
+            "could not snapshot {label:?}'s browser state: {error}"
+        ));
+        return;
+    }
+    restrict(&state_dir, 0o700, notes);
+    for name in COOKIE_FILES {
+        let source = paths.data_dir.join(name);
+        if source.is_file() {
+            let destination = state_dir.join(name);
+            if copy_file(&source, &destination).is_ok() {
+                restrict(&destination, 0o600, notes);
+            }
+        }
+    }
+    for name in LEVELDB_DIRS {
+        let source = paths.data_dir.join(name);
+        if source.is_dir()
+            && let Err(error) = replace_dir(&source, &state_dir.join(name))
+        {
+            notes.push(format!("could not snapshot {label:?}'s {name}: {error}"));
+        }
+    }
+    // bridge-state.json is deliberately not snapshotted — see BRIDGE_FILE.
+}
+
+fn swap_credentials(
+    config_json: &Path,
+    tokens: &SavedTokens,
+    account_uuid: &str,
+    notes: &mut Vec<String>,
+) {
+    let existing = match std::fs::read(config_json) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            notes.push(format!("could not read the Desktop config: {error}"));
+            return;
+        }
+    };
+    match merge::swap_config_tokens(
+        &existing,
+        &tokens.token_cache,
+        &tokens.token_cache_v2,
+        account_uuid,
+    ) {
+        // Atomic, unlike claude-acc's truncating write: a crash mid-write here
+        // would take every account's tokens with it.
+        Ok(bytes) => {
+            if let Err(error) = crate::cache::atomic_write(config_json, &bytes) {
+                notes.push(format!("could not write the Desktop config: {error}"));
+            }
+        }
+        Err(error) => notes.push(format!("could not swap the Desktop credential: {error}")),
+    }
+}
+
+fn restore_desktop_state(paths: &Paths, label: &str, notes: &mut Vec<String>) {
+    let state_dir = paths.profile_dir(label).join(DESKTOP_STATE);
+    for name in COOKIE_FILES {
+        let source = state_dir.join(name);
+        if source.is_file()
+            && let Err(error) = copy_file(&source, &paths.data_dir.join(name))
+        {
+            notes.push(format!("could not restore {name}: {error}"));
+        }
+    }
+    for name in LEVELDB_DIRS {
+        let source = state_dir.join(name);
+        if source.is_dir()
+            && let Err(error) = replace_dir(&source, &paths.data_dir.join(name))
+        {
+            notes.push(format!("could not restore {name}: {error}"));
+        }
+    }
+}
+
+/// Fold a snapshotted device registry back into the live one. Purely additive
+/// (live wins every conflict), so this can only ever restore a lost entry.
+fn restore_device_registry(paths: &Paths, label: &str, notes: &mut Vec<String>) {
+    let snapshot = paths.profile_dir(label).join(DEVICE_REGISTRY);
+    let live = paths.data_dir.join(DEVICE_REGISTRY);
+    let (Ok(saved), Ok(current)) = (std::fs::read(&snapshot), std::fs::read(&live)) else {
+        return;
+    };
+    match merge::merge_device_registry(&current, &saved) {
+        Ok(bytes) if bytes != current => {
+            if let Err(error) = crate::cache::atomic_write(&live, &bytes) {
+                notes.push(format!("could not merge {DEVICE_REGISTRY}: {error}"));
+            }
+        }
+        Ok(_) => {}
+        Err(error) => notes.push(format!("could not merge {DEVICE_REGISTRY}: {error}")),
+    }
+}
+
+/// What goes into the rollback archive, relative to the data directory.
+///
+/// Only what a switch can actually destroy: the credential pointer, the
+/// schedule registries it rewrites, and the device registry. Missing entries
+/// are dropped, because `tar` fails the whole archive on one of them.
+fn archive_members(paths: &Paths, opts: &SwitchOpts) -> Vec<String> {
+    let mut members = Vec::new();
+    for name in [CONFIG_JSON, DEVICE_REGISTRY] {
+        if paths.data_dir.join(name).exists() {
+            members.push(name.to_string());
+        }
+    }
+    if opts.backup_sessions {
+        if paths.sessions_root().is_dir() {
+            members.push(SESSIONS_DIR.to_string());
+        }
+        return members;
+    }
+    let sessions_root = paths.sessions_root();
+    let Ok(accounts) = std::fs::read_dir(&sessions_root) else {
+        return members;
+    };
+    let mut registries = Vec::new();
+    for account in accounts.flatten() {
+        let Ok(orgs) = std::fs::read_dir(account.path()) else {
+            continue;
+        };
+        for org in orgs.flatten() {
+            let path = org.path().join("scheduled-tasks.json");
+            if path.is_file()
+                && let Ok(relative) = path.strip_prefix(&paths.data_dir)
+            {
+                registries.push(relative.display().to_string());
+            }
+        }
+    }
+    registries.sort();
+    members.extend(registries);
+    members
+}
+
+fn prune_archives(backups_dir: &Path, keep: usize, notes: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(backups_dir) else {
+        return;
+    };
+    // The name embeds a sortable timestamp right after the constant prefix, so
+    // lexicographic order is chronological order.
+    let mut archives: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("switch-") && name.ends_with(".tar.gz"))
+        })
+        .collect();
+    if archives.len() <= keep {
+        return;
+    }
+    archives.sort();
+    let doomed = archives.len() - keep;
+    for path in archives.into_iter().take(doomed) {
+        if let Err(error) = std::fs::remove_file(&path) {
+            notes.push(format!("could not prune {}: {error}", path.display()));
+        }
+    }
+}
+
+fn copy_file(source: &Path, destination: &Path) -> Result<()> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| AppError::io_at(parent, e))?;
+    }
+    std::fs::copy(source, destination).map_err(|e| AppError::io_at(source, e))?;
+    Ok(())
+}
+
+/// Replace `destination` with a fresh copy of `source`. LevelDB stores must not
+/// be merged file-by-file — a stale manifest beside fresh log files is a
+/// corrupt store — so the old directory goes first.
+fn replace_dir(source: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        std::fs::remove_dir_all(destination).map_err(|e| AppError::io_at(destination, e))?;
+    }
+    copy_dir(source, destination)
+}
+
+fn copy_dir(source: &Path, destination: &Path) -> Result<()> {
+    std::fs::create_dir_all(destination).map_err(|e| AppError::io_at(destination, e))?;
+    let entries = std::fs::read_dir(source).map_err(|e| AppError::io_at(source, e))?;
+    for entry in entries.flatten() {
+        let child = entry.path();
+        let target = destination.join(entry.file_name());
+        if child.is_dir() {
+            copy_dir(&child, &target)?;
+        } else {
+            std::fs::copy(&child, &target).map_err(|e| AppError::io_at(&child, e))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict(path: &Path, mode: u32, notes: &mut Vec<String>) {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+        notes.push(format!("could not restrict {}: {error}", path.display()));
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict(_path: &Path, _mode: u32, _notes: &mut Vec<String>) {}
+
+fn timestamp() -> String {
+    chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use app::Recorder;
+
+    struct Fixture {
+        _root: tempfile::TempDir,
+        paths: Paths,
+    }
+
+    fn write(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    /// Two accounts: `here` (active) and `there` (fully captured).
+    fn fixture() -> Fixture {
+        let root = tempfile::TempDir::new().unwrap();
+        let data = root.path().join("data");
+        let profiles = root.path().join("profiles");
+        let backups = root.path().join("backups");
+
+        write(
+            &data.join(CONFIG_JSON),
+            r#"{"lastKnownAccountUuid":"uuid-here","oauth:tokenCache":"live-a",
+                "oauth:tokenCacheV2":"live-b","dxt:allowlistEnabled:org-1":true}"#,
+        );
+        write(
+            &data.join(DEVICE_REGISTRY),
+            r#"{"uuid-here":{"deviceId":"d1"}}"#,
+        );
+        write(
+            &data.join(BRIDGE_FILE),
+            r#"{"remoteSessionId":"cse_stale"}"#,
+        );
+        write(&data.join("Cookies"), "live-cookies");
+        write(&data.join("Local Storage/leveldb/CURRENT"), "live-ldb");
+        write(
+            &data.join(SESSIONS_DIR).join("uuid-here/org-1/local_x.json"),
+            r#"{"lastActivityAt":500}"#,
+        );
+        write(
+            &data
+                .join(SESSIONS_DIR)
+                .join("uuid-here/org-1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1}]}"#,
+        );
+
+        write(
+            &profiles.join("here/meta.json"),
+            r#"{"label":"here","email":"here@example.com","accountUuid":"uuid-here","orgUuid":"org-1"}"#,
+        );
+        write(
+            &profiles.join("there/meta.json"),
+            r#"{"label":"there","email":"there@example.com","accountUuid":"uuid-there","orgUuid":"org-2"}"#,
+        );
+        write(&profiles.join("there").join(TOKEN_CACHE), "saved-a");
+        write(&profiles.join("there").join(TOKEN_CACHE_V2), "saved-b");
+        write(
+            &profiles.join("there").join(DESKTOP_STATE).join("Cookies"),
+            "there-cookies",
+        );
+        write(
+            &profiles
+                .join("there")
+                .join(DESKTOP_STATE)
+                .join("Local Storage/leveldb/CURRENT"),
+            "there-ldb",
+        );
+
+        Fixture {
+            paths: Paths::at(data, profiles, backups),
+            _root: root,
+        }
+    }
+
+    /// `(relative path, length)` for every file under a root, so a test can
+    /// assert nothing changed.
+    fn manifest(root: &Path) -> Vec<(String, u64)> {
+        fn walk(dir: &Path, root: &Path, out: &mut Vec<(String, u64)>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, root, out);
+                } else if let Ok(meta) = entry.metadata() {
+                    let relative = path.strip_prefix(root).unwrap().display().to_string();
+                    out.push((relative, meta.len()));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn profiles_load_sorted_with_their_capture_state() {
+        let fixture = fixture();
+        let profiles = load_profiles(&fixture.paths.profiles_dir);
+
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].label, "here");
+        assert_eq!(profiles[0].email.as_deref(), Some("here@example.com"));
+        assert!(!profiles[0].has_credentials);
+        assert_eq!(profiles[1].label, "there");
+        assert!(profiles[1].has_credentials);
+        assert!(profiles[1].has_desktop_state);
+    }
+
+    #[test]
+    fn a_malformed_profile_is_skipped_not_fatal() {
+        let fixture = fixture();
+        write(
+            &fixture.paths.profiles_dir.join("broken/meta.json"),
+            "{ not json",
+        );
+        write(
+            &fixture.paths.profiles_dir.join("no-uuid/meta.json"),
+            r#"{"label":"x"}"#,
+        );
+
+        let profiles = load_profiles(&fixture.paths.profiles_dir);
+        let labels: Vec<&str> = profiles.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(labels, ["here", "there"]);
+    }
+
+    #[test]
+    fn the_active_account_resolves_to_its_label() {
+        let fixture = fixture();
+        let profiles = load_profiles(&fixture.paths.profiles_dir);
+        let uuid = active_account_uuid(&fixture.paths.config_json()).unwrap();
+
+        assert_eq!(label_for_uuid(&profiles, &uuid), Some("here"));
+        assert_eq!(label_for_uuid(&profiles, "uuid-nobody"), None);
+    }
+
+    #[test]
+    fn session_counts_come_from_the_accounts_own_folder() {
+        let fixture = fixture();
+        let profiles = load_profiles(&fixture.paths.profiles_dir);
+        let sessions_root = fixture.paths.sessions_root();
+
+        assert_eq!(session_count(&sessions_root, &profiles[0]), 2);
+        assert_eq!(session_count(&sessions_root, &profiles[1]), 0);
+    }
+
+    #[test]
+    fn planning_a_switch_changes_nothing_on_disk() {
+        let fixture = fixture();
+        let before = manifest(&fixture.paths.data_dir);
+
+        let plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+
+        assert_eq!(plan.outgoing.as_deref(), Some("here"));
+        assert!(plan.tokens.is_some());
+        assert!(plan.restores_desktop_state);
+        assert_eq!(plan.sessions.copied.len(), 1, "{:?}", plan.sessions);
+        assert_eq!(manifest(&fixture.paths.data_dir), before);
+        assert!(!fixture.paths.backups_dir.exists());
+    }
+
+    #[test]
+    fn planning_an_unknown_label_lists_the_known_ones() {
+        let fixture = fixture();
+        let error = plan_switch(&fixture.paths, "nope", SwitchOpts::default()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("here"), "{message}");
+        assert!(message.contains("claude-acc"), "{message}");
+    }
+
+    #[test]
+    fn the_archive_skips_the_session_tree_by_default() {
+        let fixture = fixture();
+
+        let plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+        assert!(plan.archive_members.contains(&CONFIG_JSON.to_string()));
+        assert!(plan.archive_members.contains(&DEVICE_REGISTRY.to_string()));
+        assert!(!plan.archive_members.contains(&SESSIONS_DIR.to_string()));
+        assert!(
+            plan.archive_members
+                .iter()
+                .any(|member| member.ends_with("scheduled-tasks.json"))
+        );
+
+        let full = plan_switch(
+            &fixture.paths,
+            "there",
+            SwitchOpts {
+                backup_sessions: true,
+                ..SwitchOpts::default()
+            },
+        )
+        .unwrap();
+        assert!(full.archive_members.contains(&SESSIONS_DIR.to_string()));
+    }
+
+    #[test]
+    fn applying_a_switch_archives_then_quits_then_relaunches() {
+        let fixture = fixture();
+        let plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+        let recorder = Recorder::default();
+
+        apply_switch(&fixture.paths, &plan, &recorder).unwrap();
+
+        let steps = recorder.steps();
+        assert!(steps[0].starts_with("archive "), "{steps:?}");
+        assert_eq!(steps[1], "quit");
+        assert_eq!(steps[2], "relaunch");
+    }
+
+    #[test]
+    fn applying_a_switch_swaps_the_credential_and_carries_history() {
+        let fixture = fixture();
+        let plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+
+        apply_switch(&fixture.paths, &plan, &Recorder::default()).unwrap();
+
+        let config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture.paths.config_json()).unwrap()).unwrap();
+        assert_eq!(config["oauth:tokenCache"], "saved-a");
+        assert_eq!(config["oauth:tokenCacheV2"], "saved-b");
+        assert_eq!(config["lastKnownAccountUuid"], "uuid-there");
+        assert_eq!(config["dxt:allowlistEnabled:org-1"], true);
+
+        // History followed the switch, and the browser state came back.
+        assert!(
+            fixture
+                .paths
+                .sessions_root()
+                .join("uuid-there/org-2/local_x.json")
+                .is_file()
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.paths.data_dir.join("Cookies")).unwrap(),
+            "there-cookies"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.paths.data_dir.join("Local Storage/leveldb/CURRENT"))
+                .unwrap(),
+            "there-ldb"
+        );
+        // The volatile remote-control bridge is cleared, never restored.
+        assert!(!fixture.paths.data_dir.join(BRIDGE_FILE).exists());
+    }
+
+    #[test]
+    fn the_outgoing_account_is_snapshotted_before_the_swap() {
+        let fixture = fixture();
+        let plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+
+        apply_switch(&fixture.paths, &plan, &Recorder::default()).unwrap();
+
+        // `here` must have captured the credential that was live *before* the
+        // swap. Reading it back as "saved-a" would mean we filed the incoming
+        // account's tokens under the outgoing label.
+        let here = fixture.paths.profile_dir("here");
+        assert_eq!(
+            std::fs::read_to_string(here.join(TOKEN_CACHE)).unwrap(),
+            "live-a"
+        );
+        assert_eq!(
+            std::fs::read_to_string(here.join(TOKEN_CACHE_V2)).unwrap(),
+            "live-b"
+        );
+        assert_eq!(
+            std::fs::read_to_string(here.join(DESKTOP_STATE).join("Cookies")).unwrap(),
+            "live-cookies"
+        );
+        // meta.json belongs to claude-acc; we must never rewrite it.
+        let meta = std::fs::read_to_string(here.join(META_JSON)).unwrap();
+        assert!(meta.contains("here@example.com"), "{meta}");
+    }
+
+    #[test]
+    fn the_app_is_relaunched_even_without_a_saved_credential() {
+        let fixture = fixture();
+        std::fs::remove_file(fixture.paths.profile_dir("there").join(TOKEN_CACHE)).unwrap();
+        std::fs::remove_dir_all(fixture.paths.profile_dir("there").join(DESKTOP_STATE)).unwrap();
+        let plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+        assert!(plan.tokens.is_none());
+        let recorder = Recorder::default();
+
+        let notes = apply_switch(&fixture.paths, &plan, &recorder).unwrap();
+
+        assert_eq!(recorder.steps().last().unwrap(), "relaunch");
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("no saved Desktop credential")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn keeping_the_bridge_leaves_it_in_place() {
+        let fixture = fixture();
+        let plan = plan_switch(
+            &fixture.paths,
+            "there",
+            SwitchOpts {
+                keep_bridge: true,
+                ..SwitchOpts::default()
+            },
+        )
+        .unwrap();
+
+        apply_switch(&fixture.paths, &plan, &Recorder::default()).unwrap();
+        assert!(fixture.paths.data_dir.join(BRIDGE_FILE).is_file());
+    }
+
+    #[test]
+    fn archives_are_pruned_oldest_first() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for stamp in ["20260101-000000", "20260102-000000", "20260103-000000"] {
+            std::fs::write(dir.path().join(format!("switch-{stamp}-x.tar.gz")), "z").unwrap();
+        }
+        std::fs::write(dir.path().join("unrelated.txt"), "keep me").unwrap();
+        let mut notes = Vec::new();
+
+        prune_archives(dir.path(), 2, &mut notes);
+
+        assert!(notes.is_empty(), "{notes:?}");
+        assert!(!dir.path().join("switch-20260101-000000-x.tar.gz").exists());
+        assert!(dir.path().join("switch-20260102-000000-x.tar.gz").exists());
+        assert!(dir.path().join("switch-20260103-000000-x.tar.gz").exists());
+        assert!(dir.path().join("unrelated.txt").exists());
+    }
+}

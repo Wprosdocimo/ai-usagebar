@@ -1,7 +1,10 @@
 //! Administrative commands for named Claude accounts.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::anthropic::cli_account::{self, CliSwitchOpts, CliSwitchOutcome, KeychainStore};
+use crate::claude_desktop::{self, Paths, SwitchOpts, SwitchPlan};
 use crate::config::Config;
 use crate::error::{AppError, Result};
 use crate::widget::cli::AccountAction;
@@ -29,7 +32,415 @@ impl Registered {
 pub fn run(action: &AccountAction) -> i32 {
     match action {
         AccountAction::Add { label, no_login } => add(label, !no_login),
+        AccountAction::Status { json } => status(*json),
+        AccountAction::Switch {
+            label,
+            desktop,
+            cli,
+            dry_run,
+            yes,
+            force,
+            keep_bridge,
+            backup_sessions,
+            keep_backups,
+        } => switch(&SwitchArgs {
+            label,
+            desktop: *desktop,
+            cli: *cli,
+            dry_run: *dry_run,
+            yes: *yes,
+            force: *force,
+            opts: SwitchOpts {
+                keep_bridge: *keep_bridge,
+                backup_sessions: *backup_sessions,
+                keep_backups: *keep_backups,
+            },
+        }),
     }
+}
+
+/// A config that fails to parse must not blank out the account report: the
+/// menu bar polls `account status` while the file is being edited, and the
+/// Desktop half does not depend on config at all.
+fn config_or_default() -> Config {
+    Config::load().unwrap_or_else(|error| {
+        eprintln!("ai-usagebar account: using defaults, config.toml did not parse: {error}");
+        Config::default()
+    })
+}
+
+fn status(json: bool) -> i32 {
+    let config = config_or_default();
+    let accounts = config.anthropic.all_accounts();
+    let paths = Paths::resolve(&config.anthropic)
+        .ok()
+        .filter(Paths::available);
+
+    // A Desktop profile captured without an e-mail can still be named: the
+    // same account signed into the CLI records one, keyed by the same UUID.
+    let emails_by_uuid: Vec<(String, String)> = accounts
+        .iter()
+        .filter_map(|account| {
+            let marker = cli_account::marker_path(&account.config_dir());
+            Some((
+                cli_account::account_uuid_in(&marker)?,
+                cli_account::account_email_in(&marker)?,
+            ))
+        })
+        .collect();
+    let email_for = |uuid: &str| -> Option<&str> {
+        emails_by_uuid
+            .iter()
+            .find(|(known, _)| known == uuid)
+            .map(|(_, email)| email.as_str())
+    };
+
+    let desktop = paths.as_ref().map(|paths| {
+        let profiles = claude_desktop::load_profiles(&paths.profiles_dir);
+        let sessions_root = paths.sessions_root();
+        let active_uuid = claude_desktop::active_account_uuid(&paths.config_json());
+        let active_label = active_uuid
+            .as_deref()
+            .and_then(|uuid| claude_desktop::label_for_uuid(&profiles, uuid))
+            .map(str::to_string);
+        let rows: Vec<serde_json::Value> = profiles
+            .iter()
+            .map(|profile| {
+                serde_json::json!({
+                    "label": profile.label,
+                    "email": profile
+                        .email
+                        .as_deref()
+                        .or_else(|| email_for(&profile.account_uuid)),
+                    "account_uuid": profile.account_uuid,
+                    "org_uuid": profile.org_uuid,
+                    "has_credentials": profile.has_credentials,
+                    "has_desktop_state": profile.has_desktop_state,
+                    "sessions": claude_desktop::session_count(&sessions_root, profile),
+                    "active": Some(&profile.label) == active_label.as_ref(),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "available": true,
+            "data_dir": paths.data_dir,
+            "profiles_dir": paths.profiles_dir,
+            "active_label": active_label,
+            "active_account_uuid": active_uuid,
+            "profiles": rows,
+        })
+    });
+
+    let home = cli_account::home_claude_json().ok();
+    let cli_active = home
+        .as_deref()
+        .and_then(|home| cli_account::resolve_active_label(home, &accounts));
+    let cli_rows: Vec<serde_json::Value> = accounts
+        .iter()
+        .map(|account| {
+            let marker = cli_account::marker_path(&account.config_dir());
+            serde_json::json!({
+                "label": account.label,
+                "email": cli_account::account_email_in(&marker),
+                "account_uuid": cli_account::account_uuid_in(&marker),
+                "config_dir": account.config_dir(),
+                "active": Some(&account.label) == cli_active.as_ref(),
+            })
+        })
+        .collect();
+    let cli = serde_json::json!({
+        "active_label": cli_active,
+        "active_account_uuid": home.as_deref().and_then(cli_account::account_uuid_in),
+        "accounts": cli_rows,
+    });
+
+    let report = serde_json::json!({ "desktop": desktop, "cli": cli });
+    if json {
+        println!("{report}");
+        return 0;
+    }
+    print_status(&report);
+    0
+}
+
+fn print_status(report: &serde_json::Value) {
+    match &report["desktop"] {
+        serde_json::Value::Null => {
+            println!("Claude Desktop   not found (macOS only)");
+        }
+        desktop => {
+            println!(
+                "Claude Desktop   {}",
+                desktop["data_dir"].as_str().unwrap_or("?")
+            );
+            let profiles = desktop["profiles"]
+                .as_array()
+                .map_or(&[][..], Vec::as_slice);
+            if profiles.is_empty() {
+                println!(
+                    "  no saved accounts in {} — capture one with `claude-acc add <label>`",
+                    desktop["profiles_dir"].as_str().unwrap_or("?")
+                );
+            }
+            for profile in profiles {
+                println!(
+                    "  {:<12} {:<28} sessions={:<5} creds={:<4} state={:<4}{}",
+                    profile["label"].as_str().unwrap_or("?"),
+                    profile["email"].as_str().unwrap_or("(email unknown)"),
+                    profile["sessions"].as_u64().unwrap_or(0),
+                    yes_no(&profile["has_credentials"]),
+                    yes_no(&profile["has_desktop_state"]),
+                    active_tag(&profile["active"]),
+                );
+            }
+        }
+    }
+
+    println!();
+    println!("Claude Code      the `claude` CLI's default login");
+    let accounts = report["cli"]["accounts"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    if accounts.is_empty() {
+        println!("  no named accounts — add one with `ai-usagebar account add <label>`");
+    }
+    for account in accounts {
+        println!(
+            "  {:<12} {:<28}{}",
+            account["label"].as_str().unwrap_or("?"),
+            account["email"].as_str().unwrap_or("(email unknown)"),
+            active_tag(&account["active"]),
+        );
+    }
+    if report["cli"]["active_label"].is_null() && !accounts.is_empty() {
+        println!(
+            "  note: the live CLI login belongs to no account listed here, so its \
+             saved copies may be stale."
+        );
+    }
+}
+
+fn yes_no(value: &serde_json::Value) -> &'static str {
+    if value.as_bool().unwrap_or(false) {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn active_tag(value: &serde_json::Value) -> &'static str {
+    if value.as_bool().unwrap_or(false) {
+        "  [active]"
+    } else {
+        ""
+    }
+}
+
+struct SwitchArgs<'a> {
+    label: &'a str,
+    desktop: bool,
+    cli: bool,
+    dry_run: bool,
+    yes: bool,
+    force: bool,
+    opts: SwitchOpts,
+}
+
+fn switch(args: &SwitchArgs) -> i32 {
+    let config = config_or_default();
+    // Neither flag means both surfaces. A label that only exists on one side is
+    // then a skip, not a failure: the two namespaces are independent and may
+    // legitimately hold different sets of accounts.
+    let both = !args.desktop && !args.cli;
+    let mut failed = false;
+    let mut acted = false;
+
+    if args.desktop || both {
+        match switch_desktop(&config, args, both) {
+            Ok(true) => acted = true,
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("ai-usagebar account switch: {error}");
+                failed = true;
+            }
+        }
+    }
+    if args.cli || both {
+        if acted {
+            println!();
+        }
+        match switch_cli(&config, args, both) {
+            Ok(true) => acted = true,
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("ai-usagebar account switch: {error}");
+                failed = true;
+            }
+        }
+    }
+
+    if !acted && !failed {
+        eprintln!(
+            "ai-usagebar account switch: nothing to do for {:?}. \
+             Run `ai-usagebar account status` to see the known accounts.",
+            args.label
+        );
+        return 1;
+    }
+    i32::from(failed)
+}
+
+/// `Ok(false)` means "this surface does not know that label, and the other one
+/// might" — reported as a note rather than an error.
+fn switch_desktop(config: &Config, args: &SwitchArgs, tolerant: bool) -> Result<bool> {
+    let paths = Paths::resolve(&config.anthropic)?;
+    if !paths.available() {
+        if !tolerant {
+            return Err(AppError::Other(format!(
+                "no Claude Desktop app data at {} (macOS only)",
+                paths.data_dir.display()
+            )));
+        }
+        return Ok(false);
+    }
+
+    let plan = match claude_desktop::plan_switch(&paths, args.label, args.opts.clone()) {
+        Ok(plan) => plan,
+        Err(error) if tolerant => {
+            println!("Claude Desktop   skipped: {error}");
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    print_plan(&plan);
+
+    if args.dry_run {
+        println!("  (dry run — nothing was changed)");
+        return Ok(true);
+    }
+    if !args.yes
+        && !confirm(&format!(
+            "  Quit and relaunch the Claude Desktop app as {:?}?",
+            plan.target.label
+        ))
+    {
+        println!("  aborted (pass -y to skip this prompt)");
+        return Ok(false);
+    }
+
+    let notes = claude_desktop::apply_switch(&paths, &plan, &claude_desktop::app::DesktopApp)?;
+    for note in &notes {
+        println!("  note: {note}");
+    }
+    println!(
+        "  switched — the app is reopening as {:?}.",
+        plan.target.label
+    );
+    Ok(true)
+}
+
+fn print_plan(plan: &SwitchPlan) {
+    let email = plan.target.email.as_deref().unwrap_or("email unknown");
+    println!("Claude Desktop   → {} ({email})", plan.target.label);
+    if let Some(outgoing) = &plan.outgoing {
+        println!("  saving          {outgoing}'s credential and browser state first");
+    }
+    match plan.target.org_uuid {
+        Some(_) => {
+            let routines = plan.scheduled.as_ref().map_or(0, |merge| merge.added);
+            println!(
+                "  history         {} new + {} refreshed session(s), {routines} routine(s)",
+                plan.sessions.copied.len(),
+                plan.sessions.updated.len(),
+            );
+        }
+        None => println!("  history         skipped (no org recorded for this account yet)"),
+    }
+    println!(
+        "  credential      {}",
+        if plan.tokens.is_some() {
+            "swap to the saved Desktop login"
+        } else {
+            "none saved yet — the app stays signed in as it is"
+        }
+    );
+    println!(
+        "  browser state   {}",
+        if plan.restores_desktop_state {
+            "restore this account's cookies and local storage"
+        } else {
+            "none saved yet"
+        }
+    );
+    if !plan.opts.keep_bridge {
+        println!("  remote bridge   clear (a stale session id breaks /remote-control)");
+    }
+    if !plan.archive_members.is_empty() {
+        println!("  rollback        {}", plan.archive.display());
+    }
+}
+
+fn switch_cli(config: &Config, args: &SwitchArgs, tolerant: bool) -> Result<bool> {
+    let accounts = config.anthropic.all_accounts();
+    if tolerant && !accounts.iter().any(|a| a.label == args.label) {
+        println!(
+            "Claude Code      skipped: no account {:?} configured",
+            args.label
+        );
+        return Ok(false);
+    }
+    let home = cli_account::home_claude_json()?;
+    let outcome = cli_account::switch_cli_account(
+        &home,
+        &accounts,
+        args.label,
+        CliSwitchOpts {
+            force: args.force,
+            dry_run: args.dry_run,
+        },
+        &KeychainStore,
+    )?;
+
+    println!("Claude Code      → {}", args.label);
+    match outcome {
+        CliSwitchOutcome::AlreadyActive => {
+            println!("  already the CLI's default login; nothing to do");
+        }
+        CliSwitchOutcome::WouldSwitch { outgoing } => {
+            print_cli_capture(outgoing.as_deref());
+            println!("  (dry run — nothing was changed)");
+        }
+        CliSwitchOutcome::Switched { outgoing } => {
+            print_cli_capture(outgoing.as_deref());
+            println!(
+                "  switched — plain `claude` now signs in as {:?}.",
+                args.label
+            );
+        }
+    }
+    Ok(true)
+}
+
+fn print_cli_capture(outgoing: Option<&str>) {
+    match outgoing {
+        Some(label) => println!("  saving          {label}'s credential back into its own account"),
+        None => println!("  saving          nothing to save (--force discarded the live login)"),
+    }
+}
+
+fn confirm(prompt: &str) -> bool {
+    use std::io::IsTerminal;
+
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    print!("{prompt} [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 fn add(label: &str, login: bool) -> i32 {
