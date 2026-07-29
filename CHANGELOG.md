@@ -42,12 +42,36 @@ Each release is also published at
   the two copies within hours. A CLI login that belongs to no configured
   account is never silently discarded: the switch refuses unless `--force`.
 
-  Desktop accounts are read from (and written back to) the profile store
-  created by [claude-acc](https://github.com/ohmaseclaro/claude-acc), whose
-  reverse-engineering of the Claude Desktop internals this builds on and whose
-  `switch` command it ports; `[anthropic] desktop_profiles_dir` overrides the
-  location. Capturing (`add`), forgetting (`remove`), and chat filtering
-  (`only`/`reset`) stay with claude-acc. Nothing here affects the Linux build:
+- **`ai-usagebar account add <label> --desktop` captures a Claude Desktop
+  account**, so a machine can build its account list from nothing. The CLI half
+  of `add` is easy — `CLAUDE_CONFIG_DIR` gives `claude` as many isolated logins
+  as you want — but the Desktop app has a single login slot and no way to ask
+  for a second, so the only way to obtain another account's credential is to
+  sign the app out, wait for you to sign in as that account, and keep what it
+  writes. That is what this does: it saves the current account into its own
+  profile, copies the live login aside, clears it, reopens the app at its login
+  screen, polls until the sign-in completes, then captures the credential,
+  browser state and organisation, and seeds the new account with the history
+  this machine already has so its first login is not an empty sidebar. Cancel
+  it — or let the five-minute window lapse — and your previous login is put
+  back exactly as it was.
+
+- **Claude Desktop ▸ and Claude Code ▸ submenus in the macOS menu bar.** Each
+  lists the accounts that surface knows, checkmarks the active one, and
+  switches on click; **Adicionar conta…** captures a new one (in Terminal,
+  since it is interactive). A dim line under the header shows both active
+  accounts at a glance. The Desktop switch confirms first, because it quits and
+  reopens Claude.app. The submenus refresh on launch, on a `config.toml` change,
+  and when the menu opens (debounced), so a switch made in a terminal shows up
+  without restarting anything.
+
+  Desktop accounts are stored in [claude-acc](https://github.com/ohmaseclaro/claude-acc)'s
+  profile format, so existing claude-acc users' profiles work here untouched and
+  either tool can capture or switch them; `[anthropic] desktop_profiles_dir`
+  overrides the location. That project's reverse-engineering of the Claude
+  Desktop internals is what this builds on, and the Desktop halves of `add` and
+  `switch` are ports of its commands. Removing an account and chat filtering
+  (`only`/`reset`) are not implemented here. Nothing affects the Linux build:
   the modules compile and are tested everywhere, and simply find no Claude
   Desktop installation.
 

@@ -296,7 +296,7 @@ impl AnthropicConfig {
 /// account's cache dir — so path separators, control characters, or reserved
 /// cache sidecar names would escape, spoof terminal output, or collide with the
 /// cache layout (`usage.json`, `.stale`, …).
-fn validate_account_label(label: &str) -> Result<()> {
+pub fn validate_account_label(label: &str) -> Result<()> {
     const RESERVED: [&str; 4] = ["usage.json", ".stale", ".last_error", ".fetch.lock"];
     let bad = label.is_empty()
         || label == "."

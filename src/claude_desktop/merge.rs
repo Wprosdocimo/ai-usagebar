@@ -174,6 +174,58 @@ pub fn swap_config_tokens(
     Ok(serde_json::to_vec(&document)?)
 }
 
+/// Strip everything the Desktop app uses to remember an account, so it reopens
+/// at the login screen. Only the identity keys go: the dxt allowlists, window
+/// state and feature flags are the user's settings, not their session.
+pub fn clear_config_tokens(existing: &[u8]) -> Result<Vec<u8>> {
+    let mut document: Value = serde_json::from_slice(existing)?;
+    let object = document
+        .as_object_mut()
+        .ok_or_else(|| AppError::Other("Claude Desktop config.json is not a JSON object".into()))?;
+    for key in [
+        "oauth:tokenCache",
+        "oauth:tokenCacheV2",
+        "lastKnownAccountUuid",
+    ] {
+        object.remove(key);
+    }
+    Ok(serde_json::to_vec(&document)?)
+}
+
+/// The account the app has finished signing in as, or `None` while the login
+/// is still in progress. Both fields matter: `lastKnownAccountUuid` appears
+/// before the token cache is written, so keying on it alone captures a
+/// half-finished login.
+pub fn logged_in_account(config: &[u8]) -> Option<String> {
+    let document: Value = serde_json::from_slice(config).ok()?;
+    let has_token = document
+        .get("oauth:tokenCacheV2")
+        .and_then(Value::as_str)
+        .is_some_and(|token| !token.is_empty());
+    if !has_token {
+        return None;
+    }
+    document
+        .get("lastKnownAccountUuid")?
+        .as_str()
+        .filter(|uuid| !uuid.is_empty())
+        .map(str::to_string)
+}
+
+/// An organisation this machine has not seen before, recovered from the dxt
+/// allowlist keys the app writes per org (`dxt:allowlistEnabled:<org>`). The
+/// fallback for when the account's session folder has not appeared yet.
+pub fn new_org_in_config(config: &[u8], known: &[String]) -> Option<String> {
+    const PREFIX: &str = "dxt:allowlistEnabled:";
+    let document: Value = serde_json::from_slice(config).ok()?;
+    document
+        .as_object()?
+        .keys()
+        .filter_map(|key| key.strip_prefix(PREFIX))
+        .find(|org| !org.is_empty() && !known.iter().any(|seen| seen == org))
+        .map(str::to_string)
+}
+
 /// Fold a per-profile snapshot of `ant-device-registry.json` back into the live
 /// one. The file is a map of account UUID → device registration and already
 /// holds every account, so this is purely additive: **the live value wins every
@@ -427,6 +479,56 @@ mod tests {
     #[test]
     fn config_swap_rejects_a_non_object_document() {
         assert!(swap_config_tokens(b"[]", "a", "b", "u").is_err());
+    }
+
+    #[test]
+    fn clearing_tokens_keeps_the_users_settings() {
+        let existing = br#"{"lastKnownAccountUuid":"u","oauth:tokenCache":"a",
+            "oauth:tokenCacheV2":"b","dxt:allowlistEnabled:org-1":true,"autoUpdates":true}"#;
+
+        let bytes = clear_config_tokens(existing).unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(value.get("oauth:tokenCache").is_none());
+        assert!(value.get("oauth:tokenCacheV2").is_none());
+        assert!(value.get("lastKnownAccountUuid").is_none());
+        assert_eq!(value["dxt:allowlistEnabled:org-1"], true);
+        assert_eq!(value["autoUpdates"], true);
+    }
+
+    #[test]
+    fn a_login_counts_only_once_both_fields_are_written() {
+        assert_eq!(
+            logged_in_account(&clear_config_tokens(b"{}").unwrap()),
+            None
+        );
+        // The uuid lands before the token cache does; capturing here would
+        // save a profile with no credential in it.
+        assert_eq!(logged_in_account(br#"{"lastKnownAccountUuid":"u"}"#), None);
+        assert_eq!(
+            logged_in_account(br#"{"lastKnownAccountUuid":"u","oauth:tokenCacheV2":""}"#),
+            None
+        );
+        assert_eq!(
+            logged_in_account(br#"{"lastKnownAccountUuid":"u","oauth:tokenCacheV2":"t"}"#),
+            Some("u".into())
+        );
+        assert_eq!(logged_in_account(b"not json"), None);
+    }
+
+    #[test]
+    fn a_new_org_is_recovered_from_the_allowlist_keys() {
+        let config = br#"{"dxt:allowlistEnabled:org-old":true,
+            "dxt:allowlistEnabled:org-new":true,"unrelated":1}"#;
+
+        assert_eq!(
+            new_org_in_config(config, &["org-old".into()]),
+            Some("org-new".into())
+        );
+        assert_eq!(
+            new_org_in_config(config, &["org-old".into(), "org-new".into()]),
+            None
+        );
+        assert_eq!(new_org_in_config(b"{}", &[]), None);
     }
 
     #[test]

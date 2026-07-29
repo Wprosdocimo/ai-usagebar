@@ -31,7 +31,19 @@ impl Registered {
 #[must_use]
 pub fn run(action: &AccountAction) -> i32 {
     match action {
-        AccountAction::Add { label, no_login } => add(label, !no_login),
+        AccountAction::Add {
+            label,
+            no_login,
+            desktop,
+            email,
+            yes,
+        } => {
+            if *desktop {
+                add_desktop(label, email.as_deref(), *yes)
+            } else {
+                add(label, !no_login)
+            }
+        }
         AccountAction::Status { json } => status(*json),
         AccountAction::Switch {
             label,
@@ -236,6 +248,99 @@ fn active_tag(value: &serde_json::Value) -> &'static str {
     }
 }
 
+/// Capture a Claude Desktop account. Unlike the CLI half, this cannot happen
+/// quietly in the background: the app has one login slot, so the only way to
+/// obtain a second account's credential is to sign it out and have the user
+/// sign back in as the account being saved.
+fn add_desktop(label: &str, email: Option<&str>, assume_yes: bool) -> i32 {
+    let config = config_or_default();
+    let paths = match Paths::resolve(&config.anthropic) {
+        Ok(paths) if paths.available() => paths,
+        Ok(paths) => {
+            eprintln!(
+                "ai-usagebar account add: no Claude Desktop app data at {} (macOS only)",
+                paths.data_dir.display()
+            );
+            return 1;
+        }
+        Err(error) => {
+            eprintln!("ai-usagebar account add: {error}");
+            return 1;
+        }
+    };
+
+    let profiles = claude_desktop::load_profiles(&paths.profiles_dir);
+    let active = claude_desktop::active_account_uuid(&paths.config_json())
+        .and_then(|uuid| claude_desktop::label_for_uuid(&profiles, &uuid).map(str::to_string));
+
+    println!("Capturing a Claude Desktop account as {label:?}.");
+    println!("  The app will close and reopen at its login screen, where you sign in as the");
+    println!("  account you want to save. Nothing else on this machine is touched.");
+    match &active {
+        Some(previous) => println!(
+            "  Your current account ({previous:?}) is saved first, so switching back is intact."
+        ),
+        None => println!(
+            "  Your current login is copied to {} first and restored if you cancel.",
+            paths.prelogin_dir().display()
+        ),
+    }
+    if !assume_yes && !confirm("  Close Claude and start the login?") {
+        println!("Aborted (pass -y to skip this prompt).");
+        return 1;
+    }
+    // Cosmetic, and the only chance to ask: once the app is signed out this
+    // process is polling, not reading stdin.
+    let email = email
+        .map(str::to_string)
+        .or_else(|| ask("  E-mail for this account (optional, for display): "));
+
+    let mut notes = Vec::new();
+    let outcome = claude_desktop::capture::capture_profile(
+        &paths,
+        label,
+        email.as_deref(),
+        &claude_desktop::app::DesktopApp,
+        claude_desktop::capture::WaitOpts::default(),
+        &mut notes,
+    );
+    for note in &notes {
+        println!("  note: {note}");
+    }
+    match outcome {
+        Err(error) => {
+            eprintln!("ai-usagebar account add: {error}");
+            1
+        }
+        Ok(claude_desktop::capture::CaptureOutcome::TimedOut) => {
+            eprintln!(
+                "No login detected in time — your previous account was restored. \
+                 Re-run when you are ready to sign in."
+            );
+            1
+        }
+        Ok(claude_desktop::capture::CaptureOutcome::AlreadySaved(existing)) => {
+            println!(
+                "That account is already saved as {existing:?} — nothing new to add. \
+                 You are left signed into it."
+            );
+            0
+        }
+        Ok(claude_desktop::capture::CaptureOutcome::Captured(captured)) => {
+            println!(
+                "  seeded         {} session(s) and {} routine(s) from your other accounts",
+                captured.seeded_sessions, captured.seeded_routines
+            );
+            println!();
+            println!(
+                "Added Claude Desktop account {label:?}. Switch to it with:\n\
+                 \n  ai-usagebar account switch {label} --desktop\n"
+            );
+            0
+        }
+    }
+}
+
 struct SwitchArgs<'a> {
     label: &'a str,
     desktop: bool,
@@ -429,18 +534,29 @@ fn print_cli_capture(outgoing: Option<&str>) {
 }
 
 fn confirm(prompt: &str) -> bool {
+    matches!(
+        ask(&format!("{prompt} [y/N] "))
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "y" | "yes"
+    )
+}
+
+/// One line from the terminal, or `None` when there isn't one — piped input and
+/// the menu bar's subprocess both land here, and neither can answer.
+fn ask(prompt: &str) -> Option<String> {
     use std::io::IsTerminal;
 
     if !std::io::stdin().is_terminal() {
-        return false;
+        return None;
     }
-    print!("{prompt} [y/N] ");
+    print!("{prompt}");
     let _ = std::io::stdout().flush();
     let mut answer = String::new();
-    if std::io::stdin().read_line(&mut answer).is_err() {
-        return false;
-    }
-    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    std::io::stdin().read_line(&mut answer).ok()?;
+    let answer = answer.trim().to_string();
+    (!answer.is_empty()).then_some(answer)
 }
 
 fn add(label: &str, login: bool) -> i32 {
