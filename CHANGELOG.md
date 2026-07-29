@@ -51,6 +51,11 @@ Each release is also published at
   the modules compile and are tested everywhere, and simply find no Claude
   Desktop installation.
 
+- **Configurable TUI vendor navigation.** Set `[ui] vendor_box` to `sidebar`
+  (the responsive existing default), `navbar` (always use the horizontal top
+  strip), or `none` (hide the navigation and give the active panel the full
+  terminal width). Live config reload applies the layout immediately.
+
 ## [0.19.0] — 2026-07-27
 
 ### Added
