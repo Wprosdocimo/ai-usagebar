@@ -522,14 +522,14 @@ session tree). The volatile `bridge-state.json` is cleared on every switch —
 a stale cloud-session id makes `/remote-control` fail to disconnect —
 which `--keep-bridge` turns off if you want to test that.
 
-**Switching the CLI** copies the account's stored credential into the single
-default slot that plain `claude` reads. The outgoing account's credential is
-saved back into its own slot *first*, and while a label is the live CLI login
-ai-usagebar reads it from that default slot — so the same rotating refresh
-token is never live in two places, which is what would otherwise 401 one of
-them within hours. If the CLI is signed into an account ai-usagebar doesn't
-manage, the switch refuses rather than discarding a login it cannot save
-(`--force` overrides, and genuinely discards it).
+**Switching the CLI** moves the account's stored credential into the single
+default slot that plain `claude` reads, removing its named copy. The outgoing
+account's credential is saved back into its own slot *first*, and while a label
+is the live CLI login ai-usagebar reads it from that default slot — so the same
+rotating refresh token is never live in two places, which is what would
+otherwise 401 one copy within hours. If the CLI is signed into an account
+ai-usagebar doesn't manage, the switch refuses rather than discarding a login
+it cannot save (`--force` overrides, and genuinely discards it).
 
 **Prerequisites.** Desktop accounts come from
 [**claude-acc**](https://github.com/ohmaseclaro/claude-acc)'s profile store

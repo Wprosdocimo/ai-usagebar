@@ -9,14 +9,15 @@
 //! on Linux, the login-Keychain item `Claude Code-credentials` on macOS. A
 //! named account instead lives under its own `CLAUDE_CONFIG_DIR`, in the
 //! per-directory Keychain item [`crate::anthropic::keychain`] resolves. Making
-//! a named account "the one plain `claude` uses" therefore means copying its
+//! a named account "the one plain `claude` uses" therefore means moving its
 //! credential into that single default slot.
 //!
-//! Both slots then hold the same *rotating* refresh token, and whichever
-//! client refreshes first invalidates the other's copy — the failure
-//! [`crate::anthropic::creds`] documents. Two things keep that from happening:
-//! the switch captures the outgoing credential back into its own account
-//! first, so the freshest lineage is never dropped; and
+//! Copying would leave both slots holding the same *rotating* refresh token,
+//! and whichever client refreshed first would invalidate the other — the
+//! failure [`crate::anthropic::creds`] documents. The switch therefore moves
+//! the credential: it captures the outgoing default credential back into its
+//! named slot first, installs the target in the default slot, and removes the
+//! target's named copy. In addition,
 //! [`crate::config::AnthropicConfig::account_target_with`] routes reads for
 //! whichever label is *currently* active to the default slot, so only one copy
 //! is ever live.
@@ -25,6 +26,7 @@
 //! against a fake store, so the logic stays under CI's linter on Linux.
 
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::{Map, Value};
 
@@ -40,8 +42,10 @@ const CLAUDE_JSON: &str = ".claude.json";
 pub trait CredentialStore {
     fn read_default(&self) -> Result<Option<String>>;
     fn write_default(&self, blob: &str) -> Result<()>;
+    fn delete_default(&self) -> Result<()>;
     fn read_named(&self, config_dir: &Path) -> Result<Option<String>>;
     fn write_named(&self, config_dir: &Path, blob: &str) -> Result<()>;
+    fn delete_named(&self, config_dir: &Path) -> Result<()>;
 }
 
 /// The real store. The `#[cfg]` pairs are confined here so no other logic in
@@ -133,6 +137,14 @@ pub struct CliSwitchOpts {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliSwitchOutcome {
     AlreadyActive,
+    /// The account was already active, and a redundant named Keychain copy was
+    /// removed so the rotating token again has one live lineage.
+    RemovedDuplicate,
+    /// Dry-run counterpart of [`Self::RemovedDuplicate`].
+    WouldRemoveDuplicate,
+    /// The identity marker named this account but the default credential slot
+    /// was empty; its named credential was moved into the default slot.
+    RepairedActive,
     /// `outgoing` is the label whose credential was captured back first, when
     /// there was one.
     Switched {
@@ -158,6 +170,12 @@ pub fn switch_cli_account(
     opts: CliSwitchOpts,
     store: &dyn CredentialStore,
 ) -> Result<CliSwitchOutcome> {
+    let lock_path = home_claude_json
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".ai-usagebar-account-switch.lock");
+    let _lock = crate::cache::acquire_lock(&lock_path, Duration::from_secs(2))?;
+
     let target = accounts
         .iter()
         .find(|account| account.label == label)
@@ -170,10 +188,22 @@ pub fn switch_cli_account(
         })?;
 
     let active = resolve_active_label(home_claude_json, accounts);
-    if active.as_deref() == Some(label) {
-        return Ok(CliSwitchOutcome::AlreadyActive);
+
+    // Read every piece needed for both the move and its rollback before the
+    // first write. An empty default slot is safe to populate without --force;
+    // an unrecognised *existing* login is the destructive case.
+    let original_default = store.read_default()?;
+    if active.as_deref() == Some(label) && original_default.is_some() {
+        if store.read_named(&target.config_dir())?.is_none() {
+            return Ok(CliSwitchOutcome::AlreadyActive);
+        }
+        if opts.dry_run {
+            return Ok(CliSwitchOutcome::WouldRemoveDuplicate);
+        }
+        store.delete_named(&target.config_dir())?;
+        return Ok(CliSwitchOutcome::RemovedDuplicate);
     }
-    if active.is_none() && !opts.force {
+    if active.is_none() && original_default.is_some() && !opts.force {
         return Err(AppError::Credentials(format!(
             "the `claude` CLI is signed into an account that is not managed here, so \
              switching to {label:?} would overwrite a login that cannot be saved first. \
@@ -189,28 +219,141 @@ pub fn switch_cli_account(
              `ai-usagebar account add {label}`"
         ))
     })?;
-    let oauth_account = oauth_account_in(&target.config_dir().join(CLAUDE_JSON));
+    let oauth_account =
+        oauth_account_in(&target.config_dir().join(CLAUDE_JSON)).ok_or_else(|| {
+            AppError::Credentials(format!(
+                "the identity marker for {label:?} is missing or invalid; sign it in again with \
+             `ai-usagebar account add {label}` before switching"
+            ))
+        })?;
+    let original_marker = read_optional(home_claude_json)?;
+    let merged_marker = merge_oauth_account(
+        original_marker.as_deref().unwrap_or_default(),
+        Some(&oauth_account),
+    )?;
+
+    let outgoing_account = active
+        .as_deref()
+        .and_then(|outgoing| accounts.iter().find(|account| account.label == outgoing));
+    let original_outgoing_named = match outgoing_account {
+        Some(account) => store.read_named(&account.config_dir())?,
+        None => None,
+    };
 
     if opts.dry_run {
         return Ok(CliSwitchOutcome::WouldSwitch { outgoing: active });
     }
 
-    if let Some(outgoing) = &active {
-        let outgoing_dir = accounts
-            .iter()
-            .find(|account| &account.label == outgoing)
-            .map(AnthropicAccount::config_dir);
-        if let (Some(dir), Some(blob)) = (outgoing_dir, store.read_default()?) {
-            store.write_named(&dir, &blob)?;
+    let rollback = RollbackState {
+        target,
+        target_blob: &target_blob,
+        outgoing: outgoing_account,
+        original_outgoing_named: original_outgoing_named.as_deref(),
+        original_default: original_default.as_deref(),
+        marker_path: home_claude_json,
+        original_marker: original_marker.as_deref(),
+    };
+
+    if let (Some(account), Some(blob)) = (outgoing_account, original_default.as_deref())
+        && let Err(error) = store.write_named(&account.config_dir(), blob)
+    {
+        return Err(with_rollback(error, rollback_switch(store, &rollback)));
+    }
+    if let Err(error) = store.write_default(&target_blob) {
+        return Err(with_rollback(error, rollback_switch(store, &rollback)));
+    }
+
+    if let Err(error) = crate::cache::atomic_write(home_claude_json, &merged_marker) {
+        return Err(with_rollback(error, rollback_switch(store, &rollback)));
+    }
+    if let Err(error) = store.delete_named(&target.config_dir()) {
+        return Err(with_rollback(error, rollback_switch(store, &rollback)));
+    }
+
+    if active.as_deref() == Some(label) {
+        Ok(CliSwitchOutcome::RepairedActive)
+    } else {
+        Ok(CliSwitchOutcome::Switched { outgoing: active })
+    }
+}
+
+struct RollbackState<'a> {
+    target: &'a AnthropicAccount,
+    target_blob: &'a str,
+    outgoing: Option<&'a AnthropicAccount>,
+    original_outgoing_named: Option<&'a str>,
+    original_default: Option<&'a str>,
+    marker_path: &'a Path,
+    original_marker: Option<&'a [u8]>,
+}
+
+fn rollback_switch(store: &dyn CredentialStore, state: &RollbackState<'_>) -> Result<()> {
+    let mut failures = Vec::new();
+    if let Err(error) = restore_default(store, state.original_default) {
+        failures.push(format!("default credential: {error}"));
+    }
+    // Recreate it unconditionally: a failed Keychain delete can still have
+    // removed the item before returning its error.
+    if let Err(error) = store.write_named(&state.target.config_dir(), state.target_blob) {
+        failures.push(format!("target credential: {error}"));
+    }
+    if let Some(account) = state.outgoing
+        && let Err(error) =
+            restore_named(store, &account.config_dir(), state.original_outgoing_named)
+    {
+        failures.push(format!("outgoing credential: {error}"));
+    }
+    if let Err(error) = restore_marker(state.marker_path, state.original_marker) {
+        failures.push(format!("identity marker: {error}"));
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::Other(failures.join("; ")))
+    }
+}
+
+fn restore_default(store: &dyn CredentialStore, original: Option<&str>) -> Result<()> {
+    match original {
+        Some(blob) => store.write_default(blob),
+        None => store.delete_default(),
+    }
+}
+
+fn restore_named(store: &dyn CredentialStore, path: &Path, original: Option<&str>) -> Result<()> {
+    match original {
+        Some(blob) => store.write_named(path, blob),
+        None => store.delete_named(path),
+    }
+}
+
+fn restore_marker(path: &Path, original: Option<&[u8]>) -> Result<()> {
+    if let Some(bytes) = original {
+        crate::cache::atomic_write(path, bytes)
+    } else {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(AppError::io_at(path, error)),
         }
     }
-    store.write_default(&target_blob)?;
+}
 
-    let existing = std::fs::read(home_claude_json).unwrap_or_default();
-    let merged = merge_oauth_account(&existing, oauth_account.as_ref())?;
-    crate::cache::atomic_write(home_claude_json, &merged)?;
+fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AppError::io_at(path, error)),
+    }
+}
 
-    Ok(CliSwitchOutcome::Switched { outgoing: active })
+fn with_rollback(error: AppError, rollback: Result<()>) -> AppError {
+    match rollback {
+        Ok(()) => error,
+        Err(rollback) => AppError::Other(format!(
+            "{error}; automatic rollback was incomplete: {rollback}"
+        )),
+    }
 }
 
 fn oauth_account_in(claude_json: &Path) -> Option<Value> {
@@ -249,6 +392,13 @@ impl CredentialStore for KeychainStore {
         }
     }
 
+    fn delete_default(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return super::keychain::delete_raw();
+        #[cfg(not(target_os = "macos"))]
+        Err(unsupported())
+    }
+
     fn read_named(&self, config_dir: &Path) -> Result<Option<String>> {
         #[cfg(target_os = "macos")]
         return super::keychain::read_raw_for(config_dir);
@@ -268,6 +418,16 @@ impl CredentialStore for KeychainStore {
             Err(unsupported())
         }
     }
+
+    fn delete_named(&self, config_dir: &Path) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return super::keychain::delete_raw_for(config_dir);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = config_dir;
+            Err(unsupported())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -281,6 +441,7 @@ mod tests {
     struct FakeStore {
         default: RefCell<Option<String>>,
         named: RefCell<BTreeMap<PathBuf, String>>,
+        fail_delete_named: RefCell<Option<PathBuf>>,
     }
 
     impl CredentialStore for FakeStore {
@@ -291,6 +452,10 @@ mod tests {
             *self.default.borrow_mut() = Some(blob.to_string());
             Ok(())
         }
+        fn delete_default(&self) -> Result<()> {
+            *self.default.borrow_mut() = None;
+            Ok(())
+        }
         fn read_named(&self, config_dir: &Path) -> Result<Option<String>> {
             Ok(self.named.borrow().get(config_dir).cloned())
         }
@@ -299,6 +464,14 @@ mod tests {
                 .borrow_mut()
                 .insert(config_dir.to_path_buf(), blob.to_string());
             Ok(())
+        }
+        fn delete_named(&self, config_dir: &Path) -> Result<()> {
+            self.named.borrow_mut().remove(config_dir);
+            if self.fail_delete_named.borrow().as_deref() == Some(config_dir) {
+                Err(AppError::Other("injected delete failure".into()))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -417,6 +590,13 @@ mod tests {
             "personal-live"
         );
         assert_eq!(f.store.default.borrow().as_deref(), Some("work-saved"));
+        assert!(
+            !f.store
+                .named
+                .borrow()
+                .contains_key(&f.accounts[0].config_dir()),
+            "the active credential must be moved, not left as a rotating-token copy"
+        );
         assert_eq!(
             resolve_active_label(&f.home, &f.accounts).as_deref(),
             Some("work")
@@ -434,8 +614,48 @@ mod tests {
             &f.store,
         )
         .unwrap();
-        assert_eq!(outcome, CliSwitchOutcome::AlreadyActive);
+        assert_eq!(outcome, CliSwitchOutcome::RemovedDuplicate);
         assert_eq!(f.store.default.borrow().as_deref(), Some("personal-live"));
+        assert!(
+            !f.store
+                .named
+                .borrow()
+                .contains_key(&f.accounts[1].config_dir())
+        );
+
+        let second = switch_cli_account(
+            &f.home,
+            &f.accounts,
+            "personal",
+            CliSwitchOpts::default(),
+            &f.store,
+        )
+        .unwrap();
+        assert_eq!(second, CliSwitchOutcome::AlreadyActive);
+    }
+
+    #[test]
+    fn an_active_marker_with_an_empty_default_slot_is_repaired() {
+        let f = fixture();
+        *f.store.default.borrow_mut() = None;
+
+        let outcome = switch_cli_account(
+            &f.home,
+            &f.accounts,
+            "personal",
+            CliSwitchOpts::default(),
+            &f.store,
+        )
+        .unwrap();
+
+        assert_eq!(outcome, CliSwitchOutcome::RepairedActive);
+        assert_eq!(f.store.default.borrow().as_deref(), Some("personal-stale"));
+        assert!(
+            !f.store
+                .named
+                .borrow()
+                .contains_key(&f.accounts[1].config_dir())
+        );
     }
 
     #[test]
@@ -493,6 +713,85 @@ mod tests {
         )
         .unwrap();
         assert_eq!(f.store.default.borrow().as_deref(), Some("work-saved"));
+        assert!(
+            !f.store
+                .named
+                .borrow()
+                .contains_key(&f.accounts[0].config_dir())
+        );
+    }
+
+    #[test]
+    fn an_empty_default_slot_does_not_require_force() {
+        let f = fixture();
+        *f.store.default.borrow_mut() = None;
+        std::fs::remove_file(&f.home).unwrap();
+
+        switch_cli_account(
+            &f.home,
+            &f.accounts,
+            "work",
+            CliSwitchOpts::default(),
+            &f.store,
+        )
+        .unwrap();
+
+        assert_eq!(f.store.default.borrow().as_deref(), Some("work-saved"));
+        assert_eq!(
+            resolve_active_label(&f.home, &f.accounts).as_deref(),
+            Some("work")
+        );
+    }
+
+    #[test]
+    fn a_target_without_an_identity_marker_changes_nothing() {
+        let f = fixture();
+        std::fs::remove_file(f.accounts[0].config_dir().join(CLAUDE_JSON)).unwrap();
+        let before = std::fs::read(&f.home).unwrap();
+
+        let error = switch_cli_account(
+            &f.home,
+            &f.accounts,
+            "work",
+            CliSwitchOpts::default(),
+            &f.store,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("identity marker"), "{error}");
+        assert_eq!(f.store.default.borrow().as_deref(), Some("personal-live"));
+        assert_eq!(std::fs::read(&f.home).unwrap(), before);
+    }
+
+    #[test]
+    fn a_late_failure_restores_every_credential_slot_and_marker() {
+        let f = fixture();
+        let before_marker = std::fs::read(&f.home).unwrap();
+        *f.store.fail_delete_named.borrow_mut() = Some(f.accounts[0].config_dir());
+
+        let error = switch_cli_account(
+            &f.home,
+            &f.accounts,
+            "work",
+            CliSwitchOpts::default(),
+            &f.store,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("injected delete failure"),
+            "{error}"
+        );
+        assert_eq!(f.store.default.borrow().as_deref(), Some("personal-live"));
+        assert_eq!(
+            f.store.named.borrow()[&f.accounts[0].config_dir()],
+            "work-saved"
+        );
+        assert_eq!(
+            f.store.named.borrow()[&f.accounts[1].config_dir()],
+            "personal-stale"
+        );
+        assert_eq!(std::fs::read(&f.home).unwrap(), before_marker);
     }
 
     #[test]

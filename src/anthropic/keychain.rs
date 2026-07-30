@@ -149,6 +149,19 @@ pub fn write_raw_for(config_dir: &Path, json: &str) -> Result<()> {
     write_raw_service(&service_name_for(config_dir)?, json)
 }
 
+/// Remove the default Claude Code credential. Used only while rolling back an
+/// account switch that started from an empty default slot.
+pub fn delete_raw() -> Result<()> {
+    delete_raw_service(SERVICE)
+}
+
+/// Remove a named account's config-dir-scoped credential after moving it into
+/// the default slot. Keeping both copies would let two Claude processes rotate
+/// the same refresh-token lineage independently.
+pub fn delete_raw_for(config_dir: &Path) -> Result<()> {
+    delete_raw_service(&service_name_for(config_dir)?)
+}
+
 fn write_raw_service(service: &str, json: &str) -> Result<()> {
     let mut cmd = Command::new("/usr/bin/security");
     cmd.args(["add-generic-password", "-U", "-s", service]);
@@ -177,5 +190,27 @@ fn write_raw_service(service: &str, json: &str) -> Result<()> {
         } else {
             detail
         }
+    )))
+}
+
+fn delete_raw_service(service: &str) -> Result<()> {
+    let mut cmd = Command::new("/usr/bin/security");
+    cmd.args(["delete-generic-password", "-s", service]);
+    if let Some(acct) = account() {
+        cmd.args(["-a", &acct]);
+    }
+
+    let out = cmd
+        .output()
+        .map_err(|e| AppError::Other(format!("could not run `security`: {e}")))?;
+    if out.status.success() || out.status.code() == Some(ERR_SEC_ITEM_NOT_FOUND) {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&out.stderr);
+    Err(AppError::Credentials(format!(
+        "failed to remove the Claude credentials from the macOS Keychain \
+         (security exited {}): {}",
+        out.status.code().unwrap_or(-1),
+        detail.trim()
     )))
 }

@@ -1582,6 +1582,22 @@ enabled = false
     }
 
     #[test]
+    fn desktop_profiles_dir_is_tilde_expanded_on_load() {
+        let f = write_toml(
+            r#"
+            [anthropic]
+            desktop_profiles_dir = "~/.claude-acc/profiles"
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        let home = crate::cache::home_dir().unwrap();
+        assert_eq!(
+            c.anthropic.desktop_profiles_dir,
+            Some(home.join(".claude-acc/profiles"))
+        );
+    }
+
+    #[test]
     fn the_live_cli_account_is_read_from_the_default_credential_slot() {
         let cfg = AnthropicConfig {
             accounts: vec![
