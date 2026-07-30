@@ -9,6 +9,21 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- **`ai-usagebar usage` — quota and time-to-reset for everything in the config,
+  in one command.** The widget answers "how is *this* vendor doing" one process
+  at a time, which is what a status bar needs and what a person checking on four
+  Claude accounts does not. This walks the same set the TUI builds — every
+  enabled vendor plus one entry per named Claude account — and prints each
+  window's percentage next to when it resets. `--json` gives the same thing with
+  the percentage as a number, keyed by a stable id (`anthropic@work`), for
+  scripting and logging. A vendor that fails to fetch reports inline instead of
+  hiding the rest, and the exit code is non-zero only when every entry failed.
+
+  Thin by construction: it reuses the TUI's existing tab enumeration, fetch, and
+  snapshot-to-metrics projection, so no vendor needs to know it exists.
+
 ## [0.20.1] — 2026-07-30
 
 ### Security

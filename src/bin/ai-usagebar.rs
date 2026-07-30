@@ -23,6 +23,12 @@ fn main() {
             std::process::exit(0);
         }
     };
+    // An administrative report, not the widget: it needs the runtime but must
+    // not go through the always-exit-0 Waybar contract — a script piping this
+    // deserves a real exit code.
+    if let Some(Command::Usage { json }) = &cli.command {
+        std::process::exit(rt.block_on(ai_usagebar::report::run(*json)));
+    }
     let code = rt.block_on(run(cli));
     std::process::exit(code);
 }

@@ -135,6 +135,13 @@ pub enum Command {
         #[command(subcommand)]
         action: AccountAction,
     },
+
+    /// Quota and time-to-reset for every configured vendor and account.
+    Usage {
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(clap::Subcommand, Debug, Clone)]

@@ -251,6 +251,11 @@ ai-usagebar --vendor kimi
 # Force Waybar JSON (e.g. piping into jq).
 ai-usagebar --json
 
+# Everything at once: quota + time-to-reset for every configured vendor,
+# with one entry per named Claude account.
+ai-usagebar usage
+ai-usagebar usage --json | jq '.entries[] | {id, metrics}'
+
 # Live preview while iterating on --format / --tooltip-format.
 ai-usagebar --vendor openrouter --watch 5
 

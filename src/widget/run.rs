@@ -625,7 +625,7 @@ fn render_with_theme(outcome: &FetchOutcome, theme: &Theme, cli: &Cli) -> Waybar
     render_anthropic(&input)
 }
 
-fn http_client() -> Result<Client> {
+pub fn http_client() -> Result<Client> {
     Client::builder()
         .timeout(HTTP_CLIENT_TIMEOUT)
         .redirect(crate::vendor::same_origin_redirect_policy())
