@@ -9,6 +9,8 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-07-29
+
 ### Added
 
 - **MiniMax Token Plan vendor** (`--vendor minimax`, `[minimax]`, opt-in). Reads
@@ -100,6 +102,13 @@ Each release is also published at
   (the responsive existing default), `navbar` (always use the horizontal top
   strip), or `none` (hide the navigation and give the active panel the full
   terminal width). Live config reload applies the layout immediately.
+
+### Security
+
+- Updated `quinn-proto` to 0.11.15 to prevent remote memory exhaustion from
+  unbounded out-of-order stream reassembly (RUSTSEC-2026-0185), and `anyhow` to
+  1.0.104 to fix unsound mutable error downcasting (RUSTSEC-2026-0190).
+
 ## [0.19.0] — 2026-07-27
 
 ### Added
@@ -1219,7 +1228,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/akitaonrails/ai-usagebar/compare/v0.17.1...v0.17.2
