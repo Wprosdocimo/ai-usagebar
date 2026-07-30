@@ -284,12 +284,12 @@ impl AnthropicConfig {
     /// with "which account the `claude` CLI is signed into" injected — the same
     /// shape as `Cli::resolve_vendor_with`.
     ///
-    /// When `label` *is* the live CLI login, its credential lives in the
-    /// default slot as well as its own, and both hold the same rotating
-    /// refresh token. Reading the default one keeps exactly one live lineage,
-    /// so a refresh here can never invalidate the copy `claude` is using (or
-    /// the other way round). The cache directory is unchanged either way, so
-    /// the tab keeps its identity and its cached usage across a switch.
+    /// When `label` *is* the live CLI login, its credential has been moved into
+    /// the default slot and removed from its named slot. Reading the default
+    /// one keeps exactly one live lineage, so a refresh here cannot invalidate
+    /// the credential `claude` is using (or the other way round). The cache directory
+    /// is unchanged either way, so the tab keeps its identity and its cached
+    /// usage across a switch.
     pub fn account_target_with(
         &self,
         label: &str,

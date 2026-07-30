@@ -73,12 +73,23 @@ pub fn run(action: &AccountAction) -> i32 {
 }
 
 /// A config that fails to parse must not blank out the account report: the
-/// menu bar polls `account status` while the file is being edited, and the
-/// Desktop half does not depend on config at all.
+/// menu bar polls `account status` while the file is being edited. Read-only
+/// status can safely fall back to the conventional account locations.
 fn config_or_default() -> Config {
     Config::load().unwrap_or_else(|error| {
         eprintln!("ai-usagebar account: using defaults, config.toml did not parse: {error}");
         Config::default()
+    })
+}
+
+/// Read-only status can degrade while a config is mid-edit; commands that
+/// change credentials or Desktop state cannot. Falling back there could select
+/// the default profile store instead of the user's configured one.
+fn config_for_mutation(loaded: Result<Config>) -> Result<Config> {
+    loaded.map_err(|error| {
+        AppError::Other(format!(
+            "refusing to change account state because config.toml did not parse: {error}"
+        ))
     })
 }
 
@@ -259,7 +270,13 @@ fn add_desktop(label: &str, email: Option<&str>, assume_yes: bool) -> i32 {
         eprintln!("ai-usagebar account add: {error}");
         return 1;
     }
-    let config = config_or_default();
+    let config = match config_for_mutation(Config::load()) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("ai-usagebar account add: {error}");
+            return 1;
+        }
+    };
     let paths = match Paths::resolve(&config.anthropic) {
         Ok(paths) if paths.available() => paths,
         Ok(paths) => {
@@ -363,7 +380,13 @@ struct SwitchArgs<'a> {
 }
 
 fn switch(args: &SwitchArgs) -> i32 {
-    let config = config_or_default();
+    let config = match config_for_mutation(Config::load()) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("ai-usagebar account switch: {error}");
+            return 1;
+        }
+    };
     // Neither flag means both surfaces. A label that only exists on one side is
     // then a skip, not a failure: the two namespaces are independent and may
     // legitimately hold different sets of accounts.
@@ -828,6 +851,18 @@ fn shell_login_command(account_dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mutation_commands_never_fall_back_after_a_config_error() {
+        let error = config_for_mutation(Err(AppError::Other("broken config".into())))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("refusing to change account state"),
+            "{error}"
+        );
+        assert!(error.contains("broken config"), "{error}");
+    }
 
     #[test]
     fn registration_uses_isolated_standard_layout() {
