@@ -883,6 +883,75 @@ func entryDisplayName(_ id: String) -> String {
     return VENDOR_AUTH.first { $0.id == id }?.name ?? id
 }
 
+// MARK: - Which account each surface is signed in as
+//
+// Separate from the vendor entries above: those decide whose usage is *shown*,
+// these are who the Claude Desktop app and the `claude` CLI are actually signed
+// in as. Both come from `ai-usagebar account status --json`; the binary owns
+// every path and credential detail, so this side only parses and displays.
+
+struct AccountStatus: Equatable {
+    /// False when there is no Claude Desktop app on this machine. Distinct from
+    /// "no accounts saved yet": with the app present but nothing captured, the
+    /// submenu still has to appear so the user can add the first one.
+    var desktopAvailable = false
+    var desktopActive: String?
+    var cliActive: String?
+    var desktopLabels: [String] = []
+    var cliLabels: [String] = []
+}
+
+/// Parse `account status --json`. Every field is optional on purpose: a Mac
+/// with no Claude Desktop app reports `"desktop": null`, and an older binary
+/// may not know the subcommand at all — both must degrade to "no submenus"
+/// rather than crash.
+func parseAccountStatus(_ data: Data) -> AccountStatus? {
+    guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return nil
+    }
+    func labels(_ side: Any?, _ key: String) -> [String] {
+        guard let side = side as? [String: Any], let rows = side[key] as? [[String: Any]] else {
+            return []
+        }
+        return rows.compactMap { $0["label"] as? String }
+    }
+    func active(_ side: Any?) -> String? {
+        (side as? [String: Any])?["active_label"] as? String
+    }
+    let desktop = root["desktop"], cli = root["cli"]
+    return AccountStatus(desktopAvailable: desktop is [String: Any],
+                         desktopActive: active(desktop),
+                         cliActive: active(cli),
+                         desktopLabels: labels(desktop, "profiles"),
+                         cliLabels: labels(cli, "accounts"))
+}
+
+/// The one dim line under the header. Empty when neither surface resolved, so
+/// the caller can hide the row entirely rather than show a bare label.
+func accountsSummaryLine(_ s: AccountStatus) -> String {
+    var parts: [String] = []
+    if !s.desktopLabels.isEmpty { parts.append("Desktop: \(s.desktopActive ?? "?")") }
+    if !s.cliLabels.isEmpty { parts.append("Code: \(s.cliActive ?? "?")") }
+    return parts.joined(separator: "   ·   ")
+}
+
+/// `-y` because the menu has already asked; without it the binary would prompt
+/// on a stdin that is not a terminal and abort.
+func switchArgs(label: String, desktop: Bool) -> [String] {
+    ["account", "switch", label, desktop ? "--desktop" : "--cli", "-y"]
+}
+
+/// Adding an account is interactive — a Desktop capture waits for you to sign
+/// in, and a CLI one runs `claude` — so it goes to Terminal rather than being
+/// swallowed by a background subprocess. Single-quoted with `'` doubled out,
+/// so a label with a quote in it can't break out of the command.
+func addAccountScript(binary: String, label: String, desktop: Bool) -> String {
+    func quote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+    return "#!/usr/bin/env bash\n"
+        + "\(quote(binary)) account add \(quote(label))\(desktop ? " --desktop" : "")\n"
+        + "echo; read -n 1 -s -r -p 'Pressione qualquer tecla para fechar…'\n"
+}
+
 /// Rust defaults (`src/config.rs`): the OAuth/api-key vendors that ship enabled,
 /// versus the opt-in balance vendors that default to disabled. An omitted
 /// `[vendor].enabled` must reproduce these, not silently enable everything.
@@ -962,7 +1031,7 @@ func cliInstalled(_ cli: String) -> Bool {
 
 // Write a script to a temp file and run it in Terminal.app (no AppleScript quoting hell).
 func runInTerminal(_ script: String) {
-    let tmp = NSTemporaryDirectory() + "ai-usagebar-vendor.sh"
+    let tmp = NSTemporaryDirectory() + "ai-usagebar-\(UUID().uuidString).sh"
     try? script.write(toFile: tmp, atomically: true, encoding: .utf8)
     try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmp)
     let osa = "tell application \"Terminal\" to do script \"bash '\(tmp)'; rm -f '\(tmp)'\"\n" +
@@ -1340,7 +1409,7 @@ func hotKeyRegistrationSucceeded(_ status: OSStatus) -> Bool {
     status == noErr
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var swapHotKeyRef: EventHotKeyRef?
     var compactHotKeyRef: EventHotKeyRef?
@@ -1395,6 +1464,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Overview-only: forces the status-bar title into the compact %-text mode
     /// ("Compactar"); while compact it reads "Expandir" and turns it back off.
     let compactItem = NSMenuItem(title: "Compactar", action: nil, keyEquivalent: "")
+    /// Which account each surface is signed in as. One dim line under the
+    /// header, plus a submenu per surface. All three stay hidden until
+    /// `account status --json` answers, so an older binary that doesn't know
+    /// the subcommand simply shows the menu it always did.
+    let accountsInfoItem = NSMenuItem()
+    let desktopAccountSubmenu = NSMenu()
+    let desktopAccountItem = NSMenuItem(title: "Claude Desktop", action: nil, keyEquivalent: "")
+    let cliAccountSubmenu = NSMenu()
+    let cliAccountItem = NSMenuItem(title: "Claude Code", action: nil, keyEquivalent: "")
+    var lastAccountStatus: AccountStatus?
+    var accountStatusFetchedAt = Date.distantPast
+    var accountStatusGeneration = 0
+    /// A switch runs a subprocess that quits and reopens another app; both
+    /// submenus grey out until it returns so it cannot be fired twice.
+    var accountSwitchInFlight = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DEF.register(defaults: ["swapShortcutEnabled": true, "compactShortcutEnabled": true])
@@ -1418,6 +1502,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         installSwapHotKey()
         installCompactHotKey()
         installConfigWatch()
+        fetchAccountStatus()
     }
 
     /// Watch config.toml and hot-reload the vendor list when it changes on disk.
@@ -1480,6 +1565,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// from disk (nothing caches config.toml), so no invalidation is needed.
     @objc func configFileChanged() {
         rebuildVendorSubmenu()
+        // A new [[anthropic.accounts]] entry changes the Claude Code list.
+        fetchAccountStatus()
         if VENDOR == "overview" {
             if let ov = lastOverview { renderOverview(ov) }
         } else if let s = lastSnapshot {
@@ -1670,6 +1757,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
 
         menu.addItem(headerItem)
+        // Reads as a sub-line of the header, so it sits above the usage rows.
+        accountsInfoItem.isEnabled = false
+        accountsInfoItem.isHidden = true
+        menu.addItem(accountsInfoItem)
         // One hidden slot per built-in vendor for Overview mode. Named accounts
         // can take the total higher; renderOverview grows the pool on demand.
         for _ in 0..<VENDOR_AUTH.count {
@@ -1694,11 +1785,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         addAction(menu, "Abrir TUI", #selector(openTui), "t")
         vendorSubmenuItem.submenu = vendorSubmenu
         menu.addItem(vendorSubmenuItem)
+        for (item, submenu) in [(desktopAccountItem, desktopAccountSubmenu),
+                                (cliAccountItem, cliAccountSubmenu)] {
+            item.submenu = submenu
+            item.isHidden = true
+            menu.addItem(item)
+        }
         addAction(menu, "Preferências…", #selector(openPrefs), ",")
         menu.addItem(.separator())
         addAction(menu, "Sair", #selector(quit), "q")
 
+        // Catches a switch made elsewhere (a terminal, claude-acc) without
+        // polling for state that changes at most a few times a day.
+        menu.delegate = self
         statusItem.menu = menu
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        if Date().timeIntervalSince(accountStatusFetchedAt) >= 5 { fetchAccountStatus() }
     }
 
     func addAction(_ menu: NSMenu, _ title: String, _ sel: Selector, _ key: String) {
@@ -2250,6 +2354,190 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DEF.set(id, forKey: "vendor")
     }
 
+    /// Ask the binary who each surface is signed in as. Same off-main shape as
+    /// `refresh()`; failures leave `lastAccountStatus` alone so a transient
+    /// hiccup doesn't blank a working menu.
+    func fetchAccountStatus() {
+        guard let bin = resolveBinary("ai-usagebar") else { return }
+        accountStatusFetchedAt = Date()
+        accountStatusGeneration += 1
+        let generation = accountStatusGeneration
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: bin)
+            p.arguments = ["account", "status", "--json"]
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = FileHandle.nullDevice
+
+            let watchdog = DispatchWorkItem { if p.isRunning { p.terminate() } }
+            DispatchQueue.global(qos: .utility)
+                .asyncAfter(deadline: .now() + REFRESH_TIMEOUT, execute: watchdog)
+            var data = Data()
+            do {
+                try p.run()
+                data = pipe.fileHandleForReading.readDataToEndOfFile()  // read before wait
+                p.waitUntilExit()
+            } catch {
+                watchdog.cancel()
+                return
+            }
+            watchdog.cancel()
+            guard let status = parseAccountStatus(data) else { return }
+            DispatchQueue.main.async {
+                guard let me = self, generation == me.accountStatusGeneration else { return }
+                me.applyAccountStatus(status)
+            }
+        }
+    }
+
+    func applyAccountStatus(_ status: AccountStatus) {
+        lastAccountStatus = status
+        renderAccountMenus()
+    }
+
+    func renderAccountMenus() {
+        // Nil means the binary predates the subcommand: leave the menu exactly
+        // as it was before this feature existed.
+        guard let status = lastAccountStatus else {
+            accountsInfoItem.isHidden = true
+            desktopAccountItem.isHidden = true
+            cliAccountItem.isHidden = true
+            return
+        }
+        let line = accountsSummaryLine(status)
+        accountsInfoItem.isHidden = line.isEmpty
+        accountsInfoItem.attributedTitle = run(line, .secondaryLabelColor)
+
+        fill(desktopAccountSubmenu, status.desktopLabels, status.desktopActive,
+             #selector(switchDesktopAccount(_:)))
+        fill(cliAccountSubmenu, status.cliLabels, status.cliActive,
+             #selector(switchCliAccount(_:)))
+        // Both stay visible with an empty list — that is when "Adicionar
+        // conta…" matters most. Only a machine with no Claude Desktop app at
+        // all loses its submenu.
+        desktopAccountItem.isHidden = !status.desktopAvailable
+        cliAccountItem.isHidden = false
+        desktopAccountItem.isEnabled = !accountSwitchInFlight
+        cliAccountItem.isEnabled = !accountSwitchInFlight
+    }
+
+    private func fill(_ submenu: NSMenu, _ labels: [String], _ active: String?, _ action: Selector) {
+        submenu.removeAllItems()
+        for label in labels {
+            let it = NSMenuItem(title: label, action: action, keyEquivalent: "")
+            it.target = self
+            it.representedObject = label
+            it.state = (label == active) ? .on : .off
+            it.isEnabled = !accountSwitchInFlight && label != active
+            submenu.addItem(it)
+        }
+        submenu.addItem(.separator())
+        let add = NSMenuItem(title: "Adicionar conta…",
+                             action: #selector(addAccount(_:)), keyEquivalent: "")
+        add.target = self
+        add.representedObject = (submenu === desktopAccountSubmenu)
+        add.isEnabled = !accountSwitchInFlight
+        submenu.addItem(add)
+    }
+
+    /// Ask for a label, then hand the interactive part to Terminal: a Desktop
+    /// capture waits for a browser sign-in, a CLI one runs `claude`. Neither
+    /// belongs in a background subprocess the user cannot see or answer.
+    @objc func addAccount(_ sender: NSMenuItem) {
+        guard let desktop = sender.representedObject as? Bool,
+              let bin = resolveBinary("ai-usagebar") else { return }
+        let alert = NSAlert()
+        alert.messageText = desktop ? "Adicionar conta do Claude Desktop"
+                                    : "Adicionar conta do Claude Code"
+        alert.informativeText = desktop
+            ? "Escolha um nome. O app será fechado e reaberto na tela de login para você "
+                + "entrar com a conta nova; a atual é restaurada se você cancelar."
+            : "Escolha um nome. O `claude` abrirá no Terminal para você entrar; seu login "
+                + "padrão não é alterado."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.placeholderString = "trabalho"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Continuar")
+        alert.addButton(withTitle: "Cancelar")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let label = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { return }
+        runInTerminal(addAccountScript(binary: bin, label: label, desktop: desktop))
+    }
+
+    /// Quits and reopens Claude.app, so confirm first — an unsent message or an
+    /// in-flight Cowork run would go with it. The CLI switch has no visible
+    /// side effect and needs no prompt.
+    @objc func switchDesktopAccount(_ sender: NSMenuItem) {
+        guard let label = sender.representedObject as? String else { return }
+        let alert = NSAlert()
+        alert.messageText = "Trocar a conta do Claude Desktop para «\(label)»?"
+        alert.informativeText = "O app será fechado e reaberto. Seu histórico local é "
+            + "mesclado nessa conta antes da troca, e uma cópia de segurança é gravada."
+        alert.addButton(withTitle: "Trocar e reiniciar")
+        alert.addButton(withTitle: "Cancelar")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        runAccountSwitch(label: label, desktop: true)
+    }
+
+    @objc func switchCliAccount(_ sender: NSMenuItem) {
+        guard let label = sender.representedObject as? String else { return }
+        runAccountSwitch(label: label, desktop: false)
+    }
+
+    private func runAccountSwitch(label: String, desktop: Bool) {
+        guard let bin = resolveBinary("ai-usagebar"), !accountSwitchInFlight else { return }
+        accountSwitchInFlight = true
+        renderAccountMenus()
+        let args = switchArgs(label: label, desktop: desktop)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: bin)
+            p.arguments = args
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = pipe
+            let failure: String?
+            do {
+                try p.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                if p.terminationStatus != 0 {
+                    let detail = String(decoding: data, as: UTF8.self)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    failure = detail.isEmpty
+                        ? "ai-usagebar terminou com status \(p.terminationStatus)."
+                        : String(detail.prefix(2_000))
+                } else {
+                    failure = nil
+                }
+            } catch {
+                failure = "Não foi possível iniciar ai-usagebar: \(error.localizedDescription)"
+            }
+            DispatchQueue.main.async {
+                guard let me = self else { return }
+                me.accountSwitchInFlight = false
+                me.fetchAccountStatus()
+                if let failure {
+                    let alert = NSAlert()
+                    alert.alertStyle = .warning
+                    alert.messageText = "Não foi possível trocar a conta"
+                    alert.informativeText = failure
+                    alert.addButton(withTitle: "OK")
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                } else {
+                    // The usage numbers belong to whoever is signed in now.
+                    me.refresh()
+                }
+            }
+        }
+    }
+
     /// Toggle whether a provider appears in the Overview top-bar summary, from
     /// its dropdown row. The UserDefaults observer re-renders from the last
     /// fetch and consumes this presentation-only change without re-fetching.
@@ -2267,6 +2555,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for (_, it) in rows { it.isHidden = true }
         for it in overviewRows { it.isHidden = true }
         compactItem.isHidden = true
+        accountsInfoItem.isHidden = true
     }
 }
 

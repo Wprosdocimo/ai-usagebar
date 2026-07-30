@@ -145,8 +145,24 @@ pub enum AccountAction {
         label: String,
 
         /// Only register the account; do not launch interactive login.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "desktop")]
         no_login: bool,
+
+        /// Capture a Claude **Desktop app** account under this label instead
+        /// of a `claude` CLI one (macOS). The app has a single login slot, so
+        /// this signs it out, waits for you to sign in as the new account, and
+        /// saves what it writes. Your current login is restored if you cancel.
+        #[arg(long)]
+        desktop: bool,
+
+        /// E-mail to label a `--desktop` account with. Asked for at the prompt
+        /// if omitted; purely cosmetic, and skipped when not interactive.
+        #[arg(long, requires = "desktop")]
+        email: Option<String>,
+
+        /// Skip the confirmation before signing the Desktop app out.
+        #[arg(short = 'y', long, requires = "desktop")]
+        yes: bool,
     },
 
     /// Show which Claude account the Desktop app and the `claude` CLI use.
@@ -374,7 +390,73 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Account {
-                action: AccountAction::Add { ref label, no_login: true }
+                action: AccountAction::Add {
+                    ref label,
+                    no_login: true,
+                    desktop: false,
+                    ..
+                }
+            }) if label == "work"
+        ));
+    }
+
+    /// The two halves of `add` capture different things and cannot be combined:
+    /// `--no-login` skips a `claude` login the Desktop capture never runs.
+    #[test]
+    fn account_add_desktop_takes_an_email_and_rejects_no_login() {
+        let cli = Cli::parse_from([
+            "ai-usagebar",
+            "account",
+            "add",
+            "work",
+            "--desktop",
+            "--email",
+            "a@b.test",
+            "-y",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Account {
+                action: AccountAction::Add {
+                    desktop: true,
+                    yes: true,
+                    email: Some(ref email),
+                    ..
+                }
+            }) if email == "a@b.test"
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "ai-usagebar",
+                "account",
+                "add",
+                "w",
+                "--desktop",
+                "--no-login"
+            ])
+            .is_err()
+        );
+        // --email / -y only mean something for the Desktop capture.
+        assert!(
+            Cli::try_parse_from(["ai-usagebar", "account", "add", "w", "--email", "a@b.test"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn account_switch_defaults_to_both_surfaces() {
+        let cli = Cli::parse_from(["ai-usagebar", "account", "switch", "work", "--dry-run"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Account {
+                action: AccountAction::Switch {
+                    ref label,
+                    desktop: false,
+                    cli: false,
+                    dry_run: true,
+                    keep_backups: 10,
+                    ..
+                }
             }) if label == "work"
         ));
     }

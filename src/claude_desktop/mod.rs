@@ -20,6 +20,7 @@
 //! everywhere.
 
 pub mod app;
+pub mod capture;
 pub mod merge;
 
 use std::path::{Path, PathBuf};
@@ -111,6 +112,12 @@ impl Paths {
 
     pub fn profile_dir(&self, label: &str) -> PathBuf {
         self.profiles_dir.join(label)
+    }
+
+    /// Where [`capture`] parks the live login before clearing it, so a
+    /// cancelled capture can put the account back. Sits beside the archives.
+    pub fn prelogin_dir(&self) -> PathBuf {
+        self.backups_dir.with_file_name("prelogin-backup")
     }
 }
 
@@ -432,6 +439,43 @@ fn apply_switch_while_stopped(
     restore_device_registry(paths, &plan.target.label, notes);
 
     Ok(())
+}
+
+/// Copy every other account's history into this one's folder, so it shows the
+/// union of everything. Used when capturing a brand-new account, whose first
+/// login would otherwise open on an empty sidebar; a switch uses the
+/// pre-computed plan instead so `--dry-run` can report it.
+///
+/// Returns `(session indexes, routines)` brought in.
+fn merge_history_into(
+    paths: &Paths,
+    account_uuid: &str,
+    org_uuid: &str,
+    notes: &mut Vec<String>,
+) -> (usize, usize) {
+    let sessions_root = paths.sessions_root();
+    let sessions = merge::plan_session_merge(&sessions_root, account_uuid, org_uuid);
+    let mut copied = 0;
+    for (source, destination) in sessions.copied.iter().chain(&sessions.updated) {
+        match copy_file(source, destination) {
+            Ok(()) => copied += 1,
+            Err(error) => notes.push(format!("could not seed {}: {error}", destination.display())),
+        }
+    }
+    let routines = match merge::plan_scheduled_merge(&sessions_root, account_uuid, org_uuid) {
+        Ok(scheduled) => match crate::cache::atomic_write(&scheduled.target, &scheduled.bytes) {
+            Ok(()) => scheduled.added,
+            Err(error) => {
+                notes.push(format!("schedule seed skipped: {error}"));
+                0
+            }
+        },
+        Err(error) => {
+            notes.push(format!("schedule seed skipped: {error}"));
+            0
+        }
+    };
+    (copied, routines)
 }
 
 /// Save the outgoing account's live credential and browser state back into its

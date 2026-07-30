@@ -497,6 +497,73 @@ func testSystemIntegrations() {
                 "nonzero OSStatus is registration failure")
 }
 
+/// `account status --json` parsing and the two strings built from it. Every
+/// field is optional in the schema, so the interesting cases are the missing
+/// ones: a Mac with no Claude Desktop app, and an older binary that doesn't
+/// know the subcommand at all.
+func testAccountStatus() {
+    let full = """
+    {"desktop":{"available":true,"data_dir":"/d","profiles_dir":"/p",
+      "active_label":"toptal","active_account_uuid":"u1",
+      "profiles":[{"label":"gmail","active":false},{"label":"toptal","active":true}]},
+     "cli":{"active_label":"struct","active_account_uuid":"u2",
+      "accounts":[{"label":"struct","active":true},{"label":"toptal","active":false}]}}
+    """
+    let s = parseAccountStatus(Data(full.utf8))
+    assertEqual(s?.desktopActive, "toptal", "desktop active label")
+    assertEqual(s?.cliActive, "struct", "cli active label")
+    assertEqual(s?.desktopLabels ?? [], ["gmail", "toptal"], "desktop labels keep file order")
+    assertEqual(s?.cliLabels ?? [], ["struct", "toptal"], "cli labels keep file order")
+    assertEqual(accountsSummaryLine(s!), "Desktop: toptal   ·   Code: struct", "summary line")
+
+    // No Claude Desktop app: the whole half is null, the CLI half still shows.
+    let linux = parseAccountStatus(Data("""
+        {"desktop":null,"cli":{"active_label":"work","accounts":[{"label":"work"}]}}
+        """.utf8))
+    assertNil(linux?.desktopActive, "null desktop has no active label")
+    assertEqual(linux?.desktopLabels ?? ["x"], [], "null desktop has no labels")
+    assertEqual(accountsSummaryLine(linux!), "Code: work", "summary drops the absent half")
+
+    // An account list with nobody active still renders, marked unknown.
+    let orphan = parseAccountStatus(Data(#"{"cli":{"accounts":[{"label":"work"}]}}"#.utf8))
+    assertEqual(accountsSummaryLine(orphan!), "Code: ?", "unknown active is shown, not hidden")
+    assertEqual(orphan?.cliLabels ?? [], ["work"], "an unmatched active still lists its accounts")
+
+    // A Mac with the app installed but nothing captured yet: no summary line,
+    // but `desktopAvailable` keeps the submenu (and "Adicionar conta…") alive.
+    let fresh = parseAccountStatus(Data(#"{"desktop":{"available":true,"profiles":[]}}"#.utf8))
+    assertEqual(fresh?.desktopAvailable, true, "an empty profile list is still available")
+    assertEqual(accountsSummaryLine(fresh!), "", "nothing captured renders no line")
+    assertEqual(linux?.desktopAvailable, false, "null desktop is unavailable")
+
+    // Nothing at all: no summary line, and no Desktop submenu.
+    let bare = parseAccountStatus(Data("{}".utf8))
+    assertEqual(bare?.desktopAvailable, false, "absent desktop key is unavailable")
+    assertEqual(accountsSummaryLine(bare!), "", "empty status renders no line")
+
+    // An older binary rejects the subcommand and prints usage on stderr, so
+    // stdout is empty or not JSON — must be nil, never a crash.
+    assertNil(parseAccountStatus(Data()), "empty output")
+    assertNil(parseAccountStatus(Data("error: unrecognized subcommand".utf8)), "non-JSON output")
+    assertNil(parseAccountStatus(Data("[1,2,3]".utf8)), "JSON that is not an object")
+
+    assertEqual(switchArgs(label: "work", desktop: true),
+                ["account", "switch", "work", "--desktop", "-y"], "desktop switch args")
+    assertEqual(switchArgs(label: "work", desktop: false),
+                ["account", "switch", "work", "--cli", "-y"], "cli switch args")
+
+    // The add script is shell text, so a label from a free-text field must not
+    // be able to end the quoted argument and run something else.
+    let script = addAccountScript(binary: "/usr/local/bin/ai-usagebar", label: "work", desktop: true)
+    assertEqual(script.contains("'/usr/local/bin/ai-usagebar' account add 'work' --desktop"), true,
+                "desktop add command")
+    assertEqual(addAccountScript(binary: "/b", label: "w", desktop: false)
+                    .contains("'/b' account add 'w'\n"), true, "cli add command has no --desktop")
+    let nasty = addAccountScript(binary: "/b", label: "a'; rm -rf ~; echo '", desktop: false)
+    assertEqual(nasty.contains("rm -rf ~;\n"), false, "injected command stays inside the quotes")
+    assertEqual(nasty.contains(#"'a'\''; rm -rf ~; echo '\'''"#), true, "label is escaped")
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -510,6 +577,7 @@ struct TestRunner {
         testCompactToggle()
         testShortReset()
         testOverviewProviderToggle()
+        testAccountStatus()
         testSystemIntegrations()
         if failures > 0 {
             print("\n\(failures) test(s) FAILED")
