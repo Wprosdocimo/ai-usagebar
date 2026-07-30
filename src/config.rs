@@ -840,6 +840,14 @@ impl Config {
                     .into(),
             ));
         }
+        if !self.minimax.region.eq_ignore_ascii_case("global")
+            && !self.minimax.region.eq_ignore_ascii_case("cn")
+        {
+            return Err(AppError::Other(format!(
+                "[minimax] region must be \"global\" or \"cn\", got {:?}",
+                self.minimax.region
+            )));
+        }
         let mut labels = HashSet::new();
         for account in &self.anthropic.accounts {
             validate_account_label(&account.label)?;
@@ -956,6 +964,7 @@ mod tests {
             VendorId::Moonshot,
             VendorId::Grok,
             VendorId::Cursor,
+            VendorId::Minimax,
         ] {
             assert!(!c.is_enabled(opt_in), "{opt_in:?}");
         }
@@ -1035,6 +1044,23 @@ enabled = false
                 .monthly_limit,
             Some(1000.0)
         );
+    }
+
+    #[test]
+    fn minimax_region_accepts_only_known_instances() {
+        for region in ["global", "GLOBAL", "cn", "CN"] {
+            let file = write_toml(&format!("[minimax]\nregion = {region:?}\n"));
+            assert_eq!(
+                Config::load_from(file.path()).unwrap().minimax.region,
+                region
+            );
+        }
+
+        for region in ["", "china", "us"] {
+            let file = write_toml(&format!("[minimax]\nregion = {region:?}\n"));
+            let error = Config::load_from(file.path()).unwrap_err().to_string();
+            assert!(error.contains("[minimax] region"), "{error}");
+        }
     }
 
     #[test]
@@ -1695,6 +1721,7 @@ enabled = false
         assert!(!c.is_enabled(VendorId::Moonshot));
         assert!(!c.is_enabled(VendorId::Grok));
         assert!(!c.is_enabled(VendorId::Cursor));
+        assert!(!c.is_enabled(VendorId::Minimax));
     }
 
     #[test]

@@ -331,8 +331,16 @@ mod tests {
             },
             now(),
         );
-        assert!(out.text.contains("&lt;b&gt;&amp;&lt;/b&gt;"), "{:?}", out.text);
-        assert!(!out.text.contains("&amp;lt;"), "double-escaped: {:?}", out.text);
+        assert!(
+            out.text.contains("&lt;b&gt;&amp;&lt;/b&gt;"),
+            "{:?}",
+            out.text
+        );
+        assert!(
+            !out.text.contains("&amp;lt;"),
+            "double-escaped: {:?}",
+            out.text
+        );
     }
 
     #[test]

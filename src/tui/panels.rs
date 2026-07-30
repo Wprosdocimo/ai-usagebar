@@ -176,9 +176,7 @@ pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
             Some(s.session.utilization_pct.max(s.weekly.utilization_pct))
         }
         VendorSnapshot::Cursor(s) => (!s.unlimited).then_some(s.total_pct),
-        VendorSnapshot::Minimax(s) => {
-            Some(s.session.utilization_pct.max(s.weekly.utilization_pct))
-        }
+        VendorSnapshot::Minimax(s) => Some(s.session.utilization_pct.max(s.weekly.utilization_pct)),
         VendorSnapshot::Openrouter(_)
         | VendorSnapshot::Deepseek(_)
         | VendorSnapshot::Kilo(_)

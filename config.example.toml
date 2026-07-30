@@ -220,8 +220,8 @@ enabled = false
 # Saving a key in the Settings overlay writes the inline fallback AND flips
 # `enabled` to true; clearing the field removes the inline key again.
 # Token Plan subscription quota (rolling interval window + weekly) from the
-# undocumented /v1/token_plan/remains endpoint. Needs the Token Plan
-# SUBSCRIPTION key — a pay-as-you-go key has no plan quota to report.
+# official /v1/token_plan/remains route. Needs the Token Plan SUBSCRIPTION key
+# — a pay-as-you-go key has no plan quota to report.
 enabled = false
 api_key_env = "MINIMAX_API_KEY"    # checked first; if set + non-empty, used
 # api_key = "..."                  # fallback; chmod 600 the file if you use it

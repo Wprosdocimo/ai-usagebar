@@ -11,7 +11,7 @@ use clap::{Parser, ValueEnum};
 #[command(
     name = "ai-usagebar",
     args_conflicts_with_subcommands = true,
-    about = "Waybar widget for AI plan usage (Anthropic / OpenAI / Z.AI / OpenRouter / DeepSeek / Kimi)",
+    about = "Waybar widget and terminal dashboard for multi-provider AI plan usage",
     long_about = "\
 Drop-in replacement for `claudebar` with multi-vendor support.
 

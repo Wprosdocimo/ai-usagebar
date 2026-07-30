@@ -430,6 +430,9 @@ async fn minimax_live() {
         out.snapshot.plan,
         out.snapshot.session.utilization_pct,
         out.snapshot.weekly.utilization_pct,
-        out.snapshot.video_session.as_ref().map(|w| w.utilization_pct),
+        out.snapshot
+            .video_session
+            .as_ref()
+            .map(|w| w.utilization_pct),
     );
 }

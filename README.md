@@ -608,7 +608,7 @@ Then `hyprctl reload` (no logout needed).
 | **OpenRouter** | `openrouter.ai/api/v1/{credits,key}` (documented) | Balance, today/week/month spend, free vs paid tier | Yes |
 | **DeepSeek** | `api.deepseek.com/user/balance` (documented) | Balance, granted, topped-up credits | Yes |
 | **Kimi** | `api.kimi.com/coding/v1/usages` (undocumented; community-confirmed) | Weekly subscription quota + 5h rolling rate-limit window | No — widget/TUI only; desktop protocol and marker parity are future work |
-| **MiniMax** | `api.minimax.io/v1/token_plan/remains` (undocumented) | Token Plan rolling interval window + weekly, per model bucket (text, video) | No — widget/TUI only |
+| **MiniMax** | `api.minimax.io/v1/token_plan/remains` (official Token Plan quota route) | Token Plan rolling interval window + weekly, per model bucket (text, video) | No — widget/TUI only |
 | **Kilo** | `api.kilo.ai/api/profile/balance` (undocumented; extension-internal) | Remaining credit balance ($) | No — widget/TUI only |
 | **Novita** | `api.novita.ai/openapi/v1/billing/balance/detail` (documented) | Remaining credit balance ($) | No — widget/TUI only |
 | **Moonshot** | `api.moonshot.ai\|.cn/v1/users/me/balance` (documented) | Account balance ($ on `.ai`, ¥ on `.cn`) | No — widget/TUI only |
@@ -618,7 +618,7 @@ Then `hyprctl reload` (no logout needed).
 
 ### Endpoint stability
 
-Four of the six endpoints are undocumented. The Anthropic and OpenAI endpoints are used by their official CLIs (`claude` and `codex`), so removing them would break those tools too. That makes them less shaky than scraped web endpoints. Z.AI's monitor endpoint is reverse-engineered from a third-party plugin; treat it as the most fragile one. Kimi's `/coding/v1/usages` is community-confirmed and used by third-party quota tools; treat it as drift-prone. Cursor's `/api/usage-summary` has no official docs and is the endpoint the dashboard's own frontend calls — treat it as drift-prone too (its shape tracks Cursor's pricing, which has changed before).
+Several endpoints are undocumented. The Anthropic and OpenAI endpoints are used by their official CLIs (`claude` and `codex`), so removing them would break those tools too. That makes them less shaky than scraped web endpoints. Z.AI's monitor endpoint is reverse-engineered from a third-party plugin; treat it as the most fragile one. Kimi's `/coding/v1/usages` is community-confirmed and used by third-party quota tools; treat it as drift-prone. Cursor's `/api/usage-summary` has no official docs and is the endpoint the dashboard's own frontend calls — treat it as drift-prone too (its shape tracks Cursor's pricing, which has changed before). MiniMax officially publishes its Token Plan quota route, but not a formal response schema, so the parser still treats its wire shape defensively.
 
 OpenAI's known 5-hour and 7-day windows are identified from each window's
 reported duration, not from `primary_window` / `secondary_window` position.
