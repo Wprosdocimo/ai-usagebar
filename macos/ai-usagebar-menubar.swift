@@ -48,9 +48,6 @@ var INTERVAL: Double { let v = DEF.double(forKey: "interval"); return v > 0 ? v 
 /// bound a hung run holds a worker indefinitely and the panel simply stops
 /// updating with no explanation. Matches the GNOME extension's own timeout.
 let REFRESH_TIMEOUT: Double = 45
-/// A Desktop account switch merges history, writes an archive, and quits and
-/// reopens Claude.app — minutes of work on a large history, not seconds.
-let ACCOUNT_SWITCH_TIMEOUT: Double = 300
 var BAR_WIDTH: Int { max(4, min(20, DEF.integer(forKey: "barWidth"))) }
 let MENU_BAR_W = 14
 var SHOW_SESSION: Bool { DEF.bool(forKey: "showSession") }
@@ -1034,7 +1031,7 @@ func cliInstalled(_ cli: String) -> Bool {
 
 // Write a script to a temp file and run it in Terminal.app (no AppleScript quoting hell).
 func runInTerminal(_ script: String) {
-    let tmp = NSTemporaryDirectory() + "ai-usagebar-vendor.sh"
+    let tmp = NSTemporaryDirectory() + "ai-usagebar-\(UUID().uuidString).sh"
     try? script.write(toFile: tmp, atomically: true, encoding: .utf8)
     try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmp)
     let osa = "tell application \"Terminal\" to do script \"bash '\(tmp)'; rm -f '\(tmp)'\"\n" +
@@ -1478,6 +1475,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let cliAccountItem = NSMenuItem(title: "Claude Code", action: nil, keyEquivalent: "")
     var lastAccountStatus: AccountStatus?
     var accountStatusFetchedAt = Date.distantPast
+    var accountStatusGeneration = 0
     /// A switch runs a subprocess that quits and reopens another app; both
     /// submenus grey out until it returns so it cannot be fired twice.
     var accountSwitchInFlight = false
@@ -2362,6 +2360,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func fetchAccountStatus() {
         guard let bin = resolveBinary("ai-usagebar") else { return }
         accountStatusFetchedAt = Date()
+        accountStatusGeneration += 1
+        let generation = accountStatusGeneration
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: bin)
@@ -2384,7 +2384,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             watchdog.cancel()
             guard let status = parseAccountStatus(data) else { return }
-            DispatchQueue.main.async { self?.applyAccountStatus(status) }
+            DispatchQueue.main.async {
+                guard let me = self, generation == me.accountStatusGeneration else { return }
+                me.applyAccountStatus(status)
+            }
         }
     }
 
@@ -2495,22 +2498,42 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: bin)
             p.arguments = args
-            p.standardOutput = FileHandle.nullDevice
-            p.standardError = FileHandle.nullDevice
-            // A Desktop switch merges history, archives, quits and relaunches an
-            // app — far longer than a usage fetch, so it gets its own bound.
-            let watchdog = DispatchWorkItem { if p.isRunning { p.terminate() } }
-            DispatchQueue.global(qos: .utility)
-                .asyncAfter(deadline: .now() + ACCOUNT_SWITCH_TIMEOUT, execute: watchdog)
-            try? p.run()
-            p.waitUntilExit()
-            watchdog.cancel()
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = pipe
+            let failure: String?
+            do {
+                try p.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                if p.terminationStatus != 0 {
+                    let detail = String(decoding: data, as: UTF8.self)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    failure = detail.isEmpty
+                        ? "ai-usagebar terminou com status \(p.terminationStatus)."
+                        : String(detail.prefix(2_000))
+                } else {
+                    failure = nil
+                }
+            } catch {
+                failure = "Não foi possível iniciar ai-usagebar: \(error.localizedDescription)"
+            }
             DispatchQueue.main.async {
                 guard let me = self else { return }
                 me.accountSwitchInFlight = false
                 me.fetchAccountStatus()
-                // The usage numbers belong to whoever is signed in now.
-                me.refresh()
+                if let failure {
+                    let alert = NSAlert()
+                    alert.alertStyle = .warning
+                    alert.messageText = "Não foi possível trocar a conta"
+                    alert.informativeText = failure
+                    alert.addButton(withTitle: "OK")
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                } else {
+                    // The usage numbers belong to whoever is signed in now.
+                    me.refresh()
+                }
             }
         }
     }

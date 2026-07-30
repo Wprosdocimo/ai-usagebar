@@ -53,9 +53,9 @@ Each release is also published at
   profile, copies the live login aside, clears it, reopens the app at its login
   screen, polls until the sign-in completes, then captures the credential,
   browser state and organisation, and seeds the new account with the history
-  this machine already has so its first login is not an empty sidebar. Cancel
-  it — or let the five-minute window lapse — and your previous login is put
-  back exactly as it was.
+  this machine already has so its first login is not an empty sidebar. Press
+  Ctrl-C to cancel — or let the five-minute window lapse — and your previous
+  login is put back exactly as it was.
 
 - **Claude Desktop ▸ and Claude Code ▸ submenus in the macOS menu bar.** Each
   lists the accounts that surface knows, checkmarks the active one, and

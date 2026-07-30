@@ -198,11 +198,15 @@ pub fn clear_config_tokens(existing: &[u8]) -> Result<Vec<u8>> {
 /// half-finished login.
 pub fn logged_in_account(config: &[u8]) -> Option<String> {
     let document: Value = serde_json::from_slice(config).ok()?;
-    let has_token = document
-        .get("oauth:tokenCacheV2")
-        .and_then(Value::as_str)
-        .is_some_and(|token| !token.is_empty());
-    if !has_token {
+    let has_both_tokens = ["oauth:tokenCache", "oauth:tokenCacheV2"]
+        .into_iter()
+        .all(|key| {
+            document
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|token| !token.is_empty())
+        });
+    if !has_both_tokens {
         return None;
     }
     document
@@ -216,14 +220,33 @@ pub fn logged_in_account(config: &[u8]) -> Option<String> {
 /// allowlist keys the app writes per org (`dxt:allowlistEnabled:<org>`). The
 /// fallback for when the account's session folder has not appeared yet.
 pub fn new_org_in_config(config: &[u8], known: &[String]) -> Option<String> {
+    let mut unseen = orgs_in_config(config)
+        .into_iter()
+        .filter(|org| !known.contains(org));
+    let candidate = unseen.next()?;
+    unseen.next().is_none().then_some(candidate)
+}
+
+/// Every organisation already represented by a dxt allowlist key. Capture
+/// records this baseline before clearing the login, so an old unmanaged
+/// account's key cannot be mistaken for the new account's organisation.
+pub fn orgs_in_config(config: &[u8]) -> Vec<String> {
     const PREFIX: &str = "dxt:allowlistEnabled:";
-    let document: Value = serde_json::from_slice(config).ok()?;
-    document
-        .as_object()?
+    let Ok(document) = serde_json::from_slice::<Value>(config) else {
+        return Vec::new();
+    };
+    let Some(object) = document.as_object() else {
+        return Vec::new();
+    };
+    let mut orgs: Vec<String> = object
         .keys()
         .filter_map(|key| key.strip_prefix(PREFIX))
-        .find(|org| !org.is_empty() && !known.iter().any(|seen| seen == org))
+        .filter(|org| !org.is_empty())
         .map(str::to_string)
+        .collect();
+    orgs.sort();
+    orgs.dedup();
+    orgs
 }
 
 /// Fold a per-profile snapshot of `ant-device-registry.json` back into the live
@@ -510,6 +533,12 @@ mod tests {
         );
         assert_eq!(
             logged_in_account(br#"{"lastKnownAccountUuid":"u","oauth:tokenCacheV2":"t"}"#),
+            None
+        );
+        assert_eq!(
+            logged_in_account(
+                br#"{"lastKnownAccountUuid":"u","oauth:tokenCache":"a","oauth:tokenCacheV2":"b"}"#
+            ),
             Some("u".into())
         );
         assert_eq!(logged_in_account(b"not json"), None);
@@ -529,6 +558,18 @@ mod tests {
             None
         );
         assert_eq!(new_org_in_config(b"{}", &[]), None);
+        assert_eq!(
+            new_org_in_config(
+                br#"{"dxt:allowlistEnabled:org-a":true,"dxt:allowlistEnabled:org-b":true}"#,
+                &[]
+            ),
+            None,
+            "multiple new orgs are ambiguous"
+        );
+        assert_eq!(
+            orgs_in_config(config),
+            ["org-new".to_string(), "org-old".to_string()]
+        );
     }
 
     #[test]

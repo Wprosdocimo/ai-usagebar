@@ -191,7 +191,8 @@ fn print_status(report: &serde_json::Value) {
                 .map_or(&[][..], Vec::as_slice);
             if profiles.is_empty() {
                 println!(
-                    "  no saved accounts in {} — capture one with `claude-acc add <label>`",
+                    "  no saved accounts in {} — capture one with \
+                     `ai-usagebar account add <label> --desktop`",
                     desktop["profiles_dir"].as_str().unwrap_or("?")
                 );
             }
@@ -254,6 +255,10 @@ fn active_tag(value: &serde_json::Value) -> &'static str {
 /// obtain a second account's credential is to sign it out and have the user
 /// sign back in as the account being saved.
 fn add_desktop(label: &str, email: Option<&str>, assume_yes: bool) -> i32 {
+    if let Err(error) = crate::config::validate_account_label(label) {
+        eprintln!("ai-usagebar account add: {error}");
+        return 1;
+    }
     let config = config_or_default();
     let paths = match Paths::resolve(&config.anthropic) {
         Ok(paths) if paths.available() => paths,
@@ -295,6 +300,7 @@ fn add_desktop(label: &str, email: Option<&str>, assume_yes: bool) -> i32 {
     let email = email
         .map(str::to_string)
         .or_else(|| ask("  E-mail for this account (optional, for display): "));
+    println!("  Waiting for sign-in (up to five minutes); press Ctrl-C to cancel and restore.");
 
     let mut notes = Vec::new();
     let outcome = claude_desktop::capture::capture_profile(
@@ -318,6 +324,10 @@ fn add_desktop(label: &str, email: Option<&str>, assume_yes: bool) -> i32 {
                 "No login detected in time — your previous account was restored. \
                  Re-run when you are ready to sign in."
             );
+            1
+        }
+        Ok(claude_desktop::capture::CaptureOutcome::Cancelled) => {
+            eprintln!("Capture cancelled — your previous account was restored.");
             1
         }
         Ok(claude_desktop::capture::CaptureOutcome::AlreadySaved(existing)) => {

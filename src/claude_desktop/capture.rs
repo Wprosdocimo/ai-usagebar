@@ -20,6 +20,8 @@
 //! folder or the dxt allowlist keys.
 
 use std::path::Path;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::app::AppControl;
@@ -35,6 +37,9 @@ const LOGIN_STATE_FILES: [&str; 4] = [
     "bridge-state.json",
 ];
 const LOGIN_STATE_DIRS: [&str; 3] = ["Local Storage", "Session Storage", "IndexedDB"];
+
+static CAPTURE_CANCELLED: AtomicBool = AtomicBool::new(false);
+static CANCEL_HANDLER: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 
 /// How long to wait for each interactive step.
 #[derive(Debug, Clone, Copy)]
@@ -73,6 +78,8 @@ pub enum CaptureOutcome {
     AlreadySaved(String),
     /// Nobody signed in within the timeout; the previous login was restored.
     TimedOut,
+    /// Ctrl-C was pressed while waiting; the previous login was restored.
+    Cancelled,
 }
 
 /// Sign the Desktop app out, wait for the user to sign in as a new account,
@@ -86,6 +93,12 @@ pub fn capture_profile(
     notes: &mut Vec<String>,
 ) -> Result<CaptureOutcome> {
     crate::config::validate_account_label(label)?;
+    install_cancel_handler()?;
+    CAPTURE_CANCELLED.store(false, Ordering::SeqCst);
+    let _lock = crate::cache::acquire_lock(
+        &paths.backups_dir.join(".account-switch.lock"),
+        Duration::from_secs(2),
+    )?;
     let profiles = super::load_profiles(&paths.profiles_dir);
     if profiles.iter().any(|profile| profile.label == label) {
         return Err(AppError::Credentials(format!(
@@ -94,29 +107,46 @@ pub fn capture_profile(
         )));
     }
     let known_accounts: Vec<String> = profiles.iter().map(|p| p.account_uuid.clone()).collect();
-    let known_orgs: Vec<String> = profiles.iter().filter_map(|p| p.org_uuid.clone()).collect();
+    let mut known_orgs: Vec<String> = profiles.iter().filter_map(|p| p.org_uuid.clone()).collect();
 
     let config_json = paths.config_json();
+    if let Ok(bytes) = std::fs::read(&config_json) {
+        known_orgs.extend(merge::orgs_in_config(&bytes));
+        known_orgs.sort();
+        known_orgs.dedup();
+    }
     let outgoing = super::active_account_uuid(&config_json)
         .and_then(|uuid| super::label_for_uuid(&profiles, &uuid).map(str::to_string));
 
-    app.quit();
+    app.quit()?;
     // Save the account we are about to sign out, so switching back to it later
     // restores its browser state rather than only its credential.
-    if let Some(previous) = &outgoing {
-        super::snapshot_profile(paths, previous, notes);
+    if let Some(previous) = &outgoing
+        && let Err(error) = super::snapshot_profile(paths, previous, notes)
+    {
+        return Err(relaunch_after_error(app, error));
     }
     // The safety net runs regardless: the live login may belong to no profile
     // at all, and it still has to survive a cancelled capture.
-    backup_login_state(paths, notes)?;
-    clear_login_state(paths, notes)?;
-    app.relaunch();
+    if let Err(error) = backup_login_state(paths, notes) {
+        return Err(relaunch_after_error(app, error));
+    }
+    if let Err(error) = clear_login_state(paths) {
+        return Err(restore_after_error(paths, app, error));
+    }
+    if let Err(error) = app.relaunch() {
+        return Err(restore_after_error(paths, app, error));
+    }
 
     let Some(account_uuid) = poll_for_login(&config_json, wait) else {
-        app.quit();
-        restore_login_state(paths, notes);
-        app.relaunch();
-        return Ok(CaptureOutcome::TimedOut);
+        app.quit()?;
+        restore_login_state(paths)?;
+        app.relaunch()?;
+        return Ok(if CAPTURE_CANCELLED.load(Ordering::SeqCst) {
+            CaptureOutcome::Cancelled
+        } else {
+            CaptureOutcome::TimedOut
+        });
     };
     if let Some(existing) = super::label_for_uuid(&profiles, &account_uuid) {
         return Ok(CaptureOutcome::AlreadySaved(existing.to_string()));
@@ -126,24 +156,53 @@ pub fn capture_profile(
     }
 
     let org_uuid = poll_for_org(paths, &account_uuid, &known_orgs, wait);
-    app.quit();
-    super::snapshot_profile(paths, label, notes);
-    write_meta(paths, label, email, &account_uuid, org_uuid.as_deref())?;
+    if CAPTURE_CANCELLED.load(Ordering::SeqCst) {
+        app.quit()?;
+        restore_login_state(paths)?;
+        app.relaunch()?;
+        return Ok(CaptureOutcome::Cancelled);
+    }
+    app.quit()?;
+    let capture_result = (|| {
+        super::snapshot_profile(paths, label, notes)?;
+        write_meta(paths, label, email, &account_uuid, org_uuid.as_deref())?;
 
-    // Seed the new account with everything this machine already has, so its
-    // first login is not an empty sidebar.
-    let (seeded_sessions, seeded_routines) = match &org_uuid {
-        Some(org) => super::merge_history_into(paths, &account_uuid, org, notes),
-        None => {
-            notes.push(
-                "no organisation recorded yet, so history was not seeded — open one chat in \
-                 the app, then run `ai-usagebar account switch <label> --desktop` to pull it in"
-                    .into(),
-            );
-            (0, 0)
+        // Seed the new account with everything this machine already has, so its
+        // first login is not an empty sidebar.
+        let seeded = match &org_uuid {
+            Some(org) => super::merge_history_into(paths, &account_uuid, org, notes),
+            None => {
+                notes.push(
+                    "no organisation recorded yet, so history was not seeded — open one chat in \
+                     the app, then run `ai-usagebar account switch <label> --desktop` to pull it in"
+                        .into(),
+                );
+                (0, 0)
+            }
+        };
+        Ok(seeded)
+    })();
+
+    let (seeded_sessions, seeded_routines) = match capture_result {
+        Ok(seeded) => seeded,
+        Err(error) => {
+            let partial = paths.profile_dir(label);
+            let cleanup = super::remove_if_present(&partial);
+            let mut error = restore_after_error(paths, app, error);
+            if let Err(cleanup) = cleanup {
+                error = AppError::Other(format!(
+                    "{error}; could not remove the partial profile {}: {cleanup}",
+                    partial.display()
+                ));
+            }
+            return Err(error);
         }
     };
-    app.relaunch();
+    if let Err(error) = app.relaunch() {
+        notes.push(format!(
+            "account captured, but Claude Desktop could not be relaunched: {error}"
+        ));
+    }
 
     Ok(CaptureOutcome::Captured(Box::new(Captured {
         label: label.to_string(),
@@ -154,9 +213,53 @@ pub fn capture_profile(
     })))
 }
 
+fn install_cancel_handler() -> Result<()> {
+    let installed = CANCEL_HANDLER.get_or_init(|| {
+        ctrlc::set_handler(|| CAPTURE_CANCELLED.store(true, Ordering::SeqCst))
+            .map_err(|error| error.to_string())
+    });
+    match installed {
+        Ok(()) => Ok(()),
+        Err(error) => Err(AppError::Other(format!(
+            "could not install the capture cancel handler: {error}"
+        ))),
+    }
+}
+
+fn relaunch_after_error(app: &dyn AppControl, error: AppError) -> AppError {
+    match app.relaunch() {
+        Ok(()) => error,
+        Err(relaunch) => AppError::Other(format!(
+            "{error}; Claude Desktop also could not be relaunched: {relaunch}"
+        )),
+    }
+}
+
+/// The app is stopped and the live login may have been cleared or replaced.
+/// Put the pre-login state back before attempting to reopen it.
+fn restore_after_error(paths: &Paths, app: &dyn AppControl, error: AppError) -> AppError {
+    let restore = restore_login_state(paths);
+    let relaunch = app.relaunch();
+    match (restore, relaunch) {
+        (Ok(()), Ok(())) => error,
+        (Err(restore), Ok(())) => AppError::Other(format!(
+            "{error}; automatic pre-login restore was incomplete: {restore}"
+        )),
+        (Ok(()), Err(relaunch)) => AppError::Other(format!(
+            "{error}; the previous login was restored, but Claude Desktop could not be relaunched: {relaunch}"
+        )),
+        (Err(restore), Err(relaunch)) => AppError::Other(format!(
+            "{error}; automatic pre-login restore was incomplete: {restore}; Claude Desktop could not be relaunched: {relaunch}"
+        )),
+    }
+}
+
 fn poll_for_login(config_json: &Path, wait: WaitOpts) -> Option<String> {
     let deadline = Instant::now() + wait.login;
     while Instant::now() < deadline {
+        if CAPTURE_CANCELLED.load(Ordering::SeqCst) {
+            return None;
+        }
         if let Ok(bytes) = std::fs::read(config_json)
             && let Some(uuid) = merge::logged_in_account(&bytes)
         {
@@ -178,6 +281,9 @@ fn poll_for_org(
     let deadline = Instant::now() + wait.org;
     let account_dir = paths.sessions_root().join(account_uuid);
     while Instant::now() < deadline {
+        if CAPTURE_CANCELLED.load(Ordering::SeqCst) {
+            return None;
+        }
         if let Ok(entries) = std::fs::read_dir(&account_dir)
             && let Some(org) = entries
                 .flatten()
@@ -220,83 +326,106 @@ fn write_meta(
 
 fn backup_login_state(paths: &Paths, notes: &mut Vec<String>) -> Result<()> {
     let backup = paths.prelogin_dir();
-    if backup.exists() {
-        std::fs::remove_dir_all(&backup).map_err(|e| AppError::io_at(&backup, e))?;
-    }
-    std::fs::create_dir_all(&backup).map_err(|e| AppError::io_at(&backup, e))?;
-    super::restrict(&backup, 0o700, notes);
+    let parent = backup.parent().ok_or_else(|| {
+        AppError::Other(format!(
+            "pre-login backup has no parent: {}",
+            backup.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent).map_err(|e| AppError::io_at(parent, e))?;
+    let staged = tempfile::Builder::new()
+        .prefix(".prelogin-backup.pending-")
+        .tempdir_in(parent)
+        .map_err(|e| AppError::io_at(parent, e))?;
+    super::restrict(staged.path(), 0o700, notes);
     for name in LOGIN_STATE_FILES {
         let source = paths.data_dir.join(name);
         if source.is_file() {
-            super::copy_file(&source, &backup.join(name))?;
+            super::copy_file(&source, &staged.path().join(name))?;
         }
     }
     for name in LOGIN_STATE_DIRS {
         let source = paths.data_dir.join(name);
         if source.is_dir() {
-            super::replace_dir(&source, &backup.join(name))?;
+            super::copy_dir(&source, &staged.path().join(name))?;
         }
+    }
+
+    let previous = backup.with_file_name("prelogin-backup.previous");
+    if previous.exists() && !backup.exists() {
+        std::fs::rename(&previous, &backup).map_err(|e| AppError::io_at(&previous, e))?;
+    } else {
+        super::remove_if_present(&previous)?;
+    }
+    let staged = staged.keep();
+    if backup.exists() {
+        std::fs::rename(&backup, &previous).map_err(|e| AppError::io_at(&backup, e))?;
+    }
+    if let Err(error) = std::fs::rename(&staged, &backup) {
+        let restore = if previous.exists() {
+            std::fs::rename(&previous, &backup)
+        } else {
+            Ok(())
+        };
+        let _ = super::remove_if_present(&staged);
+        return match restore {
+            Ok(()) => Err(AppError::io_at(&staged, error)),
+            Err(rollback) => Err(AppError::Other(format!(
+                "could not install the pre-login backup: {error}; could not restore the previous backup: {rollback}"
+            ))),
+        };
+    }
+    if let Err(error) = super::remove_if_present(&previous) {
+        notes.push(format!(
+            "could not remove the previous pre-login backup: {error}"
+        ));
     }
     Ok(())
 }
 
-/// Best-effort by design: this runs when the capture has already failed, and a
-/// partial restore reported plainly beats an error that hides what happened.
-fn restore_login_state(paths: &Paths, notes: &mut Vec<String>) {
+fn restore_login_state(paths: &Paths) -> Result<()> {
     let backup = paths.prelogin_dir();
     if !backup.is_dir() {
-        notes.push("no pre-login backup to restore".into());
-        return;
+        return Err(AppError::Other(format!(
+            "no pre-login backup at {} to restore",
+            backup.display()
+        )));
     }
     for name in LOGIN_STATE_FILES {
         let source = backup.join(name);
         let live = paths.data_dir.join(name);
         if source.is_file() {
-            if let Err(error) = super::copy_file(&source, &live) {
-                notes.push(format!("could not restore {name}: {error}"));
-            }
-        } else if live.is_file()
-            && let Err(error) = std::fs::remove_file(&live)
-        {
-            notes.push(format!("could not clear {name}: {error}"));
+            let bytes = std::fs::read(&source).map_err(|e| AppError::io_at(&source, e))?;
+            crate::cache::atomic_write(&live, &bytes)?;
+        } else {
+            super::remove_if_present(&live)?;
         }
     }
     for name in LOGIN_STATE_DIRS {
         let source = backup.join(name);
-        if source.is_dir()
-            && let Err(error) = super::replace_dir(&source, &paths.data_dir.join(name))
-        {
-            notes.push(format!("could not restore {name}: {error}"));
+        let live = paths.data_dir.join(name);
+        if source.is_dir() {
+            super::replace_dir(&source, &live)?;
+        } else {
+            super::remove_if_present(&live)?;
         }
     }
+    Ok(())
 }
 
-fn clear_login_state(paths: &Paths, notes: &mut Vec<String>) -> Result<()> {
+fn clear_login_state(paths: &Paths) -> Result<()> {
     let config_json = paths.config_json();
-    if let Ok(bytes) = std::fs::read(&config_json) {
-        match merge::clear_config_tokens(&bytes) {
-            Ok(cleared) => crate::cache::atomic_write(&config_json, &cleared)?,
-            Err(error) => notes.push(format!("could not clear the Desktop config: {error}")),
-        }
-    }
+    let bytes = std::fs::read(&config_json).map_err(|e| AppError::io_at(&config_json, e))?;
+    let cleared = merge::clear_config_tokens(&bytes)?;
+    crate::cache::atomic_write(&config_json, &cleared)?;
     for name in LOGIN_STATE_FILES
         .iter()
         .filter(|name| **name != "config.json")
     {
-        let live = paths.data_dir.join(name);
-        if live.is_file()
-            && let Err(error) = std::fs::remove_file(&live)
-        {
-            notes.push(format!("could not clear {name}: {error}"));
-        }
+        super::remove_if_present(&paths.data_dir.join(name))?;
     }
     for name in LOGIN_STATE_DIRS {
-        let live = paths.data_dir.join(name);
-        if live.is_dir()
-            && let Err(error) = std::fs::remove_dir_all(&live)
-        {
-            notes.push(format!("could not clear {name}: {error}"));
-        }
+        super::remove_if_present(&paths.data_dir.join(name))?;
     }
     Ok(())
 }
@@ -305,6 +434,7 @@ fn clear_login_state(paths: &Paths, notes: &mut Vec<String>) -> Result<()> {
 mod tests {
     use super::*;
     use crate::claude_desktop::app::Recorder;
+    use std::cell::{Cell, RefCell};
 
     fn write(path: &Path, contents: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -340,7 +470,7 @@ mod tests {
         let mut notes = Vec::new();
 
         backup_login_state(&paths, &mut notes).unwrap();
-        clear_login_state(&paths, &mut notes).unwrap();
+        clear_login_state(&paths).unwrap();
 
         let cleared: serde_json::Value =
             serde_json::from_slice(&std::fs::read(paths.config_json()).unwrap()).unwrap();
@@ -350,7 +480,7 @@ mod tests {
         assert!(!paths.data_dir.join("Cookies").exists());
         assert!(!paths.data_dir.join("Local Storage").exists());
 
-        restore_login_state(&paths, &mut notes);
+        restore_login_state(&paths).unwrap();
 
         assert!(notes.is_empty(), "{notes:?}");
         let restored: serde_json::Value =
@@ -377,9 +507,25 @@ mod tests {
 
         backup_login_state(&paths, &mut notes).unwrap();
         write(&paths.data_dir.join("Cookies"), "someone else's");
-        restore_login_state(&paths, &mut notes);
+        restore_login_state(&paths).unwrap();
 
         assert!(!paths.data_dir.join("Cookies").exists(), "{notes:?}");
+    }
+
+    #[test]
+    fn restoring_clears_directories_the_backup_does_not_have() {
+        let (_root, paths) = fixture();
+        let mut notes = Vec::new();
+        std::fs::remove_dir_all(paths.data_dir.join("Local Storage")).unwrap();
+
+        backup_login_state(&paths, &mut notes).unwrap();
+        write(
+            &paths.data_dir.join("Local Storage/leveldb/CURRENT"),
+            "someone else's",
+        );
+        restore_login_state(&paths).unwrap();
+
+        assert!(!paths.data_dir.join("Local Storage").exists(), "{notes:?}");
     }
 
     #[test]
@@ -408,6 +554,109 @@ mod tests {
         assert!(!paths.profile_dir("work").exists(), "nothing was saved");
         // Quit, reopen at the login screen, quit again, reopen restored.
         assert_eq!(recorder.steps(), ["quit", "relaunch", "quit", "relaunch"]);
+    }
+
+    #[test]
+    fn a_clear_failure_after_quit_restores_and_relaunches() {
+        let (_root, paths) = fixture();
+        write(&paths.config_json(), "{ not json");
+        let recorder = Recorder::default();
+
+        let error = capture_profile(
+            &paths,
+            "work",
+            None,
+            &recorder,
+            WaitOpts::default(),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("json"), "{error}");
+        assert_eq!(recorder.steps(), ["quit", "relaunch"]);
+        assert_eq!(
+            std::fs::read_to_string(paths.config_json()).unwrap(),
+            "{ not json"
+        );
+    }
+
+    struct IncompleteLogin {
+        config_json: std::path::PathBuf,
+        relaunches: Cell<usize>,
+        steps: RefCell<Vec<String>>,
+    }
+
+    impl IncompleteLogin {
+        fn new(config_json: std::path::PathBuf) -> Self {
+            Self {
+                config_json,
+                relaunches: Cell::new(0),
+                steps: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl AppControl for IncompleteLogin {
+        fn quit(&self) -> Result<()> {
+            self.steps.borrow_mut().push("quit".into());
+            if self.relaunches.get() == 1 {
+                write(
+                    &self.config_json,
+                    r#"{"lastKnownAccountUuid":"uuid-new","oauth:tokenCacheV2":"half-login"}"#,
+                );
+            }
+            Ok(())
+        }
+
+        fn relaunch(&self) -> Result<()> {
+            self.steps.borrow_mut().push("relaunch".into());
+            let count = self.relaunches.get();
+            self.relaunches.set(count + 1);
+            if count == 0 {
+                write(
+                    &self.config_json,
+                    r#"{"lastKnownAccountUuid":"uuid-new","oauth:tokenCache":"new-a","oauth:tokenCacheV2":"new-b"}"#,
+                );
+            }
+            Ok(())
+        }
+
+        fn archive(&self, _archive: &Path, _root: &Path, _members: &[&str]) -> Result<()> {
+            unreachable!()
+        }
+
+        fn restore(&self, _archive: &Path, _root: &Path, _cleanup_members: &[&str]) -> Result<()> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_post_login_capture_failure_removes_the_partial_profile_and_restores_the_previous_login() {
+        let (_root, paths) = fixture();
+        let before = std::fs::read(paths.config_json()).unwrap();
+        let app = IncompleteLogin::new(paths.config_json());
+
+        let error = capture_profile(
+            &paths,
+            "work",
+            None,
+            &app,
+            WaitOpts {
+                login: Duration::from_millis(10),
+                org: Duration::from_millis(1),
+                poll: Duration::from_millis(1),
+            },
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("oauth:tokenCache"), "{error}");
+        assert_eq!(std::fs::read(paths.config_json()).unwrap(), before);
+        assert!(!paths.profile_dir("work").exists());
+        assert_eq!(
+            app.steps.borrow().as_slice(),
+            ["quit", "relaunch", "quit", "relaunch"]
+        );
     }
 
     #[test]

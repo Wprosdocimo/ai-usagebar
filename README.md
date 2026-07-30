@@ -523,10 +523,10 @@ disturbing anything. The Desktop app has a *single* login slot and no way to
 ask for a second, so `account add <label> --desktop` has to sign it out, wait
 for you to sign in as the account being saved, and keep what the app then
 writes. Before it clears anything it copies the live login aside and saves the
-current account into its own profile — cancel, or walk away past the five-minute
-window, and you are put back exactly where you were. The new account is seeded
-with the history this machine already has, so its first login is not an empty
-sidebar.
+current account into its own profile — press Ctrl-C to cancel, or walk away
+past the five-minute window, and you are put back exactly where you were. The
+new account is seeded with the history this machine already has, so its first
+login is not an empty sidebar.
 
 A Claude Code login cannot seed a Desktop one or vice versa — they are
 different OAuth clients — so each surface is captured once, on its own.
