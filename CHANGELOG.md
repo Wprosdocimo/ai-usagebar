@@ -34,9 +34,10 @@ Each release is also published at
   cloud-session id makes `/remote-control` fail to disconnect; `--keep-bridge`
   turns that off for diagnosing browser-connection issues.
 
-  Switching the **CLI** copies the account's stored credential into the one
-  default slot plain `claude` reads. The outgoing account's credential is saved
-  back into its own slot first, and while a label is the live CLI login
+  Switching the **CLI** moves the account's stored credential into the one
+  default slot plain `claude` reads and removes its named copy. The outgoing
+  account's credential is saved back into its own slot first, and while a label
+  is the live CLI login
   ai-usagebar reads that label from the default slot — so one rotating refresh
   token is never live in two places, which is what would otherwise 401 one of
   the two copies within hours. A CLI login that belongs to no configured
@@ -74,6 +75,11 @@ Each release is also published at
   (`only`/`reset`) are not implemented here. Nothing affects the Linux build:
   the modules compile and are tested everywhere, and simply find no Claude
   Desktop installation.
+
+- **Configurable TUI vendor navigation.** Set `[ui] vendor_box` to `sidebar`
+  (the responsive existing default), `navbar` (always use the horizontal top
+  strip), or `none` (hide the navigation and give the active panel the full
+  terminal width). Live config reload applies the layout immediately.
 
 ## [0.19.0] — 2026-07-27
 

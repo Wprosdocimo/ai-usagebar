@@ -167,20 +167,37 @@ fn header_refresh_text(app: &App) -> String {
 }
 
 fn draw_main(f: &mut Frame, app: &App, area: Rect) {
-    if area.width >= WIDE_LAYOUT_MIN_WIDTH {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)])
-            .split(area);
-        draw_sidebar(f, app, chunks[0]);
-        draw_detail(f, app, chunks[1]);
-    } else {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(1)])
-            .split(area);
-        draw_top_nav(f, app, chunks[0]);
-        draw_detail(f, app, chunks[1]);
+    use crate::config::VendorBoxStyle;
+
+    match app.vendor_box {
+        VendorBoxStyle::Sidebar => {
+            if area.width >= WIDE_LAYOUT_MIN_WIDTH {
+                let chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)])
+                    .split(area);
+                draw_sidebar(f, app, chunks[0]);
+                draw_detail(f, app, chunks[1]);
+            } else {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(3), Constraint::Min(1)])
+                    .split(area);
+                draw_top_nav(f, app, chunks[0]);
+                draw_detail(f, app, chunks[1]);
+            }
+        }
+        VendorBoxStyle::Navbar => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(1)])
+                .split(area);
+            draw_top_nav(f, app, chunks[0]);
+            draw_detail(f, app, chunks[1]);
+        }
+        VendorBoxStyle::None => {
+            draw_detail(f, app, area);
+        }
     }
 }
 
@@ -530,5 +547,80 @@ mod tests {
 
         let enabled = rendered(app_with(vec![TabState::Loading, TabState::Loading]), true);
         assert!(enabled.contains("context"));
+    }
+
+    /// Renders `draw_main` alone (no header/footer) into `width x height` and
+    /// returns it as one string per row, so a test can inspect which titled
+    /// blocks landed on which row — that's what tells a horizontal sidebar
+    /// split (both titles on row 0) apart from a stacked navbar (nav title on
+    /// row 0, detail title only once the 3-row nav strip ends).
+    fn main_rows(app: &App, width: u16, height: u16) -> Vec<String> {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| draw_main(frame, app, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|col| buffer[(col, row)].symbol())
+                    .collect::<Vec<_>>()
+                    .concat()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn vendor_box_sidebar_splits_horizontally_on_wide_terminals() {
+        let mut app = app_with(vec![TabState::Loading, TabState::Loading]);
+        app.overview = true;
+        let rows = main_rows(&app, 160, 24);
+        // Sidebar and detail panel sit side by side, so their titles share row 0.
+        assert!(rows[0].contains("vendors"), "{:?}", rows[0]);
+        assert!(rows[0].contains("Overview"), "{:?}", rows[0]);
+    }
+
+    #[test]
+    fn vendor_box_sidebar_falls_back_to_top_nav_on_narrow_terminals() {
+        let mut app = app_with(vec![TabState::Loading, TabState::Loading]);
+        app.overview = true;
+        let rows = main_rows(&app, 60, 24);
+        assert!(rows[0].contains("vendors"), "{:?}", rows[0]);
+        // Stacked layout: the detail panel's own title lands below the 3-row
+        // nav strip, not sharing row 0 with it.
+        assert!(!rows[0].contains(" Overview "), "{:?}", rows[0]);
+        assert!(
+            rows.iter().any(|r| r.contains(" Overview ")),
+            "detail title missing entirely: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn vendor_box_navbar_forces_top_nav_even_on_wide_terminals() {
+        let mut app = app_with(vec![TabState::Loading, TabState::Loading]);
+        app.overview = true;
+        app.vendor_box = crate::config::VendorBoxStyle::Navbar;
+        let rows = main_rows(&app, 160, 24);
+        assert!(rows[0].contains("vendors"), "{:?}", rows[0]);
+        assert!(
+            !rows[0].contains(" Overview "),
+            "navbar must stack, not sit beside the detail panel: {:?}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn vendor_box_none_hides_navigation_and_uses_full_width() {
+        let mut app = app_with(vec![TabState::Loading, TabState::Loading]);
+        app.overview = true;
+        app.vendor_box = crate::config::VendorBoxStyle::None;
+        let rows = main_rows(&app, 160, 24);
+        assert!(
+            !rows.iter().any(|r| r.contains("vendors")),
+            "vendor nav must be fully hidden: {rows:?}"
+        );
+        assert!(rows[0].contains(" Overview "), "{:?}", rows[0]);
     }
 }

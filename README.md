@@ -9,7 +9,7 @@ This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar)
 ## Features
 
 - **Per-vendor Waybar modules** with the same JSON shape as claudebar.
-- **Tabbed TUI** (`ai-usagebar-tui`) with Tab/h/l switching, per-tab refresh, and 60-second auto-refresh. Native ratatui widgets fill the available terminal width and keep the vendor tabs visually consistent. Opens on an **Overview** tab summarizing every vendor at once (one compact row each); `[ui] overview_vendors` picks which vendors it lists.
+- **Tabbed TUI** (`ai-usagebar-tui`) with Tab/h/l switching, per-tab refresh, and 60-second auto-refresh. Native ratatui widgets fill the available terminal width and keep the vendor tabs visually consistent. Opens on an **Overview** tab summarizing every vendor at once (one compact row each); `[ui] overview_vendors` picks which vendors it lists, while `[ui] vendor_box = "sidebar" | "navbar" | "none"` controls the navigation layout.
 - **Optional local Claude Code context monitor** in the TUI, with a bounded,
   compaction-aware view of recent session input-context usage.
 - **Native desktop integrations** for GNOME Shell and the macOS menu bar. The macOS app supports twelve vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok, Anthropic API, Cursor); the GNOME extension covers Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, and Google Antigravity. (Antigravity is Linux-only; Cursor isn't in the GNOME extension yet.)
@@ -541,14 +541,14 @@ session tree). The volatile `bridge-state.json` is cleared on every switch —
 a stale cloud-session id makes `/remote-control` fail to disconnect —
 which `--keep-bridge` turns off if you want to test that.
 
-**Switching the CLI** copies the account's stored credential into the single
-default slot that plain `claude` reads. The outgoing account's credential is
-saved back into its own slot *first*, and while a label is the live CLI login
-ai-usagebar reads it from that default slot — so the same rotating refresh
-token is never live in two places, which is what would otherwise 401 one of
-them within hours. If the CLI is signed into an account ai-usagebar doesn't
-manage, the switch refuses rather than discarding a login it cannot save
-(`--force` overrides, and genuinely discards it).
+**Switching the CLI** moves the account's stored credential into the single
+default slot that plain `claude` reads, removing its named copy. The outgoing
+account's credential is saved back into its own slot *first*, and while a label
+is the live CLI login ai-usagebar reads it from that default slot — so the same
+rotating refresh token is never live in two places, which is what would
+otherwise 401 one copy within hours. If the CLI is signed into an account
+ai-usagebar doesn't manage, the switch refuses rather than discarding a login
+it cannot save (`--force` overrides, and genuinely discards it).
 
 **Where accounts are stored.** CLI accounts are ordinary
 `[[anthropic.accounts]]` / `accounts_dir` entries. Desktop accounts live in

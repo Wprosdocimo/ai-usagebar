@@ -18,11 +18,14 @@ use crate::error::{AppError, Result};
 pub trait AppControl {
     /// Stop the Claude Desktop app. Must return only once it is really gone —
     /// its SQLite and LevelDB stores cannot be copied while it is writing them.
-    fn quit(&self);
+    fn quit(&self) -> Result<()>;
     /// Start it again.
-    fn relaunch(&self);
+    fn relaunch(&self) -> Result<()>;
     /// Write `members` (relative to `root`) into a gzipped tar at `archive`.
     fn archive(&self, archive: &Path, root: &Path, members: &[&str]) -> Result<()>;
+    /// Restore a rollback archive after removing every path the attempted
+    /// identity swap could have created.
+    fn restore(&self, archive: &Path, root: &Path, cleanup_members: &[&str]) -> Result<()>;
 }
 
 /// The real thing. Every command is a macOS system binary at a fixed path, the
@@ -34,9 +37,28 @@ pub struct DesktopApp;
 
 /// How long to give the app to shut down cleanly before insisting.
 const QUIT_GRACE: Duration = Duration::from_secs(2);
+const QUIT_POLL: Duration = Duration::from_millis(100);
+const QUIT_POLLS: usize = 20;
+
+fn is_running() -> bool {
+    Command::new("/usr/bin/pgrep")
+        .args(["-x", "Claude"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn wait_until_stopped() -> bool {
+    for _ in 0..QUIT_POLLS {
+        if !is_running() {
+            return true;
+        }
+        std::thread::sleep(QUIT_POLL);
+    }
+    !is_running()
+}
 
 impl AppControl for DesktopApp {
-    fn quit(&self) {
+    fn quit(&self) -> Result<()> {
         // Graceful first so the app tears down its own child processes; the
         // signal is the fallback. Neither touches a `claude` CLI process —
         // `-x` matches the executable name exactly.
@@ -44,15 +66,40 @@ impl AppControl for DesktopApp {
             .args(["-e", "tell application \"Claude\" to quit"])
             .output();
         std::thread::sleep(QUIT_GRACE);
+        if wait_until_stopped() {
+            return Ok(());
+        }
         let _ = Command::new("/usr/bin/pkill")
             .args(["-x", "Claude"])
             .output();
+        if wait_until_stopped() {
+            return Ok(());
+        }
+        let _ = Command::new("/usr/bin/pkill")
+            .args(["-KILL", "-x", "Claude"])
+            .output();
+        if wait_until_stopped() {
+            Ok(())
+        } else {
+            Err(AppError::Other(
+                "Claude Desktop did not stop; no account data was changed".into(),
+            ))
+        }
     }
 
-    fn relaunch(&self) {
-        let _ = Command::new("/usr/bin/open")
+    fn relaunch(&self) -> Result<()> {
+        let output = Command::new("/usr/bin/open")
             .args(["-a", "Claude"])
-            .output();
+            .output()
+            .map_err(|e| AppError::Other(format!("could not relaunch Claude Desktop: {e}")))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(AppError::Other(format!(
+                "could not relaunch Claude Desktop (open exited {})",
+                output.status.code().unwrap_or(-1)
+            )))
+        }
     }
 
     fn archive(&self, archive: &Path, root: &Path, members: &[&str]) -> Result<()> {
@@ -64,6 +111,7 @@ impl AppControl for DesktopApp {
             .arg(archive)
             .arg("-C")
             .arg(root)
+            .arg("--")
             .args(members)
             .output()
             .map_err(|e| AppError::Other(format!("could not run `tar`: {e}")))?;
@@ -77,6 +125,38 @@ impl AppControl for DesktopApp {
             output.status.code().unwrap_or(-1),
             detail.trim()
         )))
+    }
+
+    fn restore(&self, archive: &Path, root: &Path, cleanup_members: &[&str]) -> Result<()> {
+        for member in cleanup_members {
+            let path = root.join(member);
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => {
+                    std::fs::remove_dir_all(&path).map_err(|e| AppError::io_at(&path, e))?;
+                }
+                Ok(_) => {
+                    std::fs::remove_file(&path).map_err(|e| AppError::io_at(&path, e))?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(AppError::io_at(&path, error)),
+            }
+        }
+        let output = Command::new("/usr/bin/tar")
+            .arg("-xzf")
+            .arg(archive)
+            .arg("-C")
+            .arg(root)
+            .output()
+            .map_err(|e| AppError::Other(format!("could not run `tar` for rollback: {e}")))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(AppError::Other(format!(
+                "could not restore {} (tar exited {})",
+                archive.display(),
+                output.status.code().unwrap_or(-1)
+            )))
+        }
     }
 }
 
@@ -98,17 +178,28 @@ impl Recorder {
 }
 
 impl AppControl for Recorder {
-    fn quit(&self) {
+    fn quit(&self) -> Result<()> {
         self.record("quit");
+        Ok(())
     }
 
-    fn relaunch(&self) {
+    fn relaunch(&self) -> Result<()> {
         self.record("relaunch");
+        Ok(())
     }
 
     fn archive(&self, archive: &Path, _root: &Path, members: &[&str]) -> Result<()> {
         self.record(format!(
             "archive {} [{}]",
+            archive.display(),
+            members.join(", ")
+        ));
+        Ok(())
+    }
+
+    fn restore(&self, archive: &Path, _root: &Path, members: &[&str]) -> Result<()> {
+        self.record(format!(
+            "restore {} [{}]",
             archive.display(),
             members.join(", ")
         ));

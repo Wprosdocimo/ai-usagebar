@@ -15,6 +15,9 @@
 # Which vendors the Overview lists (the TUI's first tab / the macOS menu-bar's
 # top section), in this order. Omit for every enabled vendor.
 # overview_vendors = ["anthropic", "cursor", "openai"]
+# Presentation of vendor tab navigation: sidebar (vertical box) | navbar (top strip) | none (hidden).
+# Default sidebar (falls back to navbar on narrow terminals).
+# vendor_box = "sidebar"
 
 # Optional, TUI-only monitor for local Claude Code session context. When
 # enabled, press `c` in ai-usagebar-tui. The scanner reads only bounded tails

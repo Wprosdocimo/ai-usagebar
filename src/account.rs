@@ -2,6 +2,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::anthropic::cli_account::{self, CliSwitchOpts, CliSwitchOutcome, KeychainStore};
 use crate::claude_desktop::{self, Paths, SwitchOpts, SwitchPlan};
@@ -409,6 +410,13 @@ fn switch_desktop(config: &Config, args: &SwitchArgs, tolerant: bool) -> Result<
         return Ok(false);
     }
 
+    // Keep planning and mutation in one process-wide transaction. Two menu or
+    // terminal switches planned against the same live identity must not race.
+    let _lock = crate::cache::acquire_lock(
+        &paths.backups_dir.join(".account-switch.lock"),
+        Duration::from_secs(2),
+    )?;
+
     let plan = match claude_desktop::plan_switch(&paths, args.label, args.opts.clone()) {
         Ok(plan) => plan,
         Err(error) if tolerant => {
@@ -461,14 +469,7 @@ fn print_plan(plan: &SwitchPlan) {
         }
         None => println!("  history         skipped (no org recorded for this account yet)"),
     }
-    println!(
-        "  credential      {}",
-        if plan.tokens.is_some() {
-            "swap to the saved Desktop login"
-        } else {
-            "none saved yet — the app stays signed in as it is"
-        }
-    );
+    println!("  credential      swap to the saved Desktop login");
     println!(
         "  browser state   {}",
         if plan.restores_desktop_state {
@@ -510,6 +511,16 @@ fn switch_cli(config: &Config, args: &SwitchArgs, tolerant: bool) -> Result<bool
     match outcome {
         CliSwitchOutcome::AlreadyActive => {
             println!("  already the CLI's default login; nothing to do");
+        }
+        CliSwitchOutcome::RemovedDuplicate => {
+            println!("  already active; removed its redundant named credential copy");
+        }
+        CliSwitchOutcome::WouldRemoveDuplicate => {
+            println!("  would remove its redundant named credential copy");
+            println!("  (dry run — nothing was changed)");
+        }
+        CliSwitchOutcome::RepairedActive => {
+            println!("  repaired the empty default credential slot from its saved login");
         }
         CliSwitchOutcome::WouldSwitch { outgoing } => {
             print_cli_capture(outgoing.as_deref());
@@ -604,6 +615,20 @@ fn add(label: &str, login: bool) -> i32 {
         return 0;
     }
 
+    // After a CLI account has been moved into the default Keychain slot, a
+    // scoped login for that same active label would recreate a second copy of
+    // its rotating refresh-token lineage. Reauthenticate it in the one live
+    // slot instead, or switch away before recreating its named slot.
+    #[cfg(target_os = "macos")]
+    if cli_label_is_active(&registration.config_path, label) {
+        eprintln!(
+            "Cannot open an isolated login for {label:?} while it is the active plain `claude` \
+             login; that would duplicate its rotating credential. Run plain `claude` to \
+             reauthenticate it, or switch the CLI to another account first."
+        );
+        return 1;
+    }
+
     println!(
         "Opening `claude` for {label:?} with an isolated CLAUDE_CONFIG_DIR; your \
          default Claude login is untouched."
@@ -637,6 +662,18 @@ fn add(label: &str, login: bool) -> i32 {
             0
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn cli_label_is_active(config_path: &Path, label: &str) -> bool {
+    let Ok(config) = Config::load_from(config_path) else {
+        return false;
+    };
+    let Ok(home) = cli_account::home_claude_json() else {
+        return false;
+    };
+    cli_account::resolve_active_label(&home, &config.anthropic.all_accounts()).as_deref()
+        == Some(label)
 }
 
 enum LoginOutcome {

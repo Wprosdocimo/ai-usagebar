@@ -114,6 +114,8 @@ pub struct App {
     pub context_generation: u64,
     /// When `Some`, the local Claude Code context overlay owns keyboard input.
     pub context: Option<crate::tui::context::ContextState>,
+    /// Presentation style for the vendor navigation box (`[ui] vendor_box`).
+    pub vendor_box: crate::config::VendorBoxStyle,
 }
 
 impl App {
@@ -143,6 +145,7 @@ impl App {
             context_enabled: false,
             context_generation: 0,
             context: None,
+            vendor_box: crate::config::VendorBoxStyle::Sidebar,
         }
     }
 
