@@ -9,7 +9,7 @@ This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar)
 ## Features
 
 - **Per-vendor Waybar modules** with the same JSON shape as claudebar.
-- **Tabbed TUI** (`ai-usagebar-tui`) with Tab/h/l switching, per-tab refresh, and 60-second auto-refresh. Native ratatui widgets fill the available terminal width and keep the vendor tabs visually consistent. Opens on an **Overview** tab summarizing every vendor at once (one compact row each); `[ui] overview_vendors` picks which vendors it lists.
+- **Tabbed TUI** (`ai-usagebar-tui`) with Tab/h/l switching, per-tab refresh, and 60-second auto-refresh. Native ratatui widgets fill the available terminal width and keep the vendor tabs visually consistent. Opens on an **Overview** tab summarizing every vendor at once (one compact row each); `[ui] overview_vendors` picks which vendors it lists, while `[ui] vendor_box = "sidebar" | "navbar" | "none"` controls the navigation layout.
 - **Optional local Claude Code context monitor** in the TUI, with a bounded,
   compaction-aware view of recent session input-context usage.
 - **Native desktop integrations** for GNOME Shell and the macOS menu bar. The macOS app supports twelve vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok, Anthropic API, Cursor); the GNOME extension covers Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, and Google Antigravity. (Antigravity is Linux-only; Cursor isn't in the GNOME extension yet.)
@@ -497,6 +497,87 @@ discovery uses only the standard Claude Code layout, *any* tool or script
 that manages multiple Claude Code logins (not just one specific account
 switcher) works with it; a rotating account manager just needs to drop or
 refresh each login under this directory.
+
+#### Switching the active Claude account (macOS)
+
+Reading usage for several accounts is one thing; being signed in as one of them
+is another. There are **two separate identities**, and they drift apart:
+
+- the **Claude Desktop app**, signed in through its own `config.json`;
+- the **`claude` CLI**, whose one default login lives in the login Keychain.
+
+`account add` captures each, `account status` reports both, and `account switch`
+moves either one:
+
+```bash
+ai-usagebar account add work                   # a `claude` CLI account (runs `claude` to sign in)
+ai-usagebar account add work --desktop         # a Claude Desktop account (see below)
+ai-usagebar account status                     # who is each surface signed in as?
+ai-usagebar account status --json              # same, for scripts and the menu bar
+ai-usagebar account switch work --dry-run      # what would change, changing nothing
+ai-usagebar account switch work --desktop      # Desktop app only (quits + reopens it)
+ai-usagebar account switch work --cli          # the `claude` CLI's default login only
+```
+
+Passing neither `--desktop` nor `--cli` does both; a label that only exists on
+one side is skipped with a note rather than failing. Use the same label on both
+sides and one name refers to the whole account.
+
+**Capturing a Desktop account** works differently from a CLI one, and the
+reason is worth knowing. `CLAUDE_CONFIG_DIR=<dir> claude` gives the CLI as many
+isolated logins as you like, so `account add <label>` just signs one in without
+disturbing anything. The Desktop app has a *single* login slot and no way to
+ask for a second, so `account add <label> --desktop` has to sign it out, wait
+for you to sign in as the account being saved, and keep what the app then
+writes. Before it clears anything it copies the live login aside and saves the
+current account into its own profile — press Ctrl-C to cancel, or walk away
+past the five-minute window, and you are put back exactly where you were. The
+new account is seeded with the history this machine already has, so its first
+login is not an empty sidebar.
+
+A Claude Code login cannot seed a Desktop one or vice versa — they are
+different OAuth clients — so each surface is captured once, on its own.
+
+**Switching the Desktop app** merges your local history into the target account
+first (session indexes newest-wins, routines/schedules unioned by id) so the
+account you land on shows the union of everything, then quits the app, swaps its
+credential and browser state, and reopens it. A rollback archive of everything
+the switch can destroy is written to `~/.claude-acc/backups/` beforehand
+(`--keep-backups N`, default 10; `--backup-sessions` also archives the whole
+session tree). The volatile `bridge-state.json` is cleared on every switch —
+a stale cloud-session id makes `/remote-control` fail to disconnect —
+which `--keep-bridge` turns off if you want to test that.
+
+**Switching the CLI** moves the account's stored credential into the single
+default slot that plain `claude` reads, removing its named copy. The outgoing
+account's credential is saved back into its own slot *first*, and while a label
+is the live CLI login ai-usagebar reads it from that default slot — so the same
+rotating refresh token is never live in two places, which is what would
+otherwise 401 one copy within hours. If the CLI is signed into an account
+ai-usagebar doesn't manage, the switch refuses rather than discarding a login
+it cannot save (`--force` overrides, and genuinely discards it).
+
+**Where accounts are stored.** CLI accounts are ordinary
+`[[anthropic.accounts]]` / `accounts_dir` entries. Desktop accounts live in
+`~/.claude-acc/profiles` (override with `[anthropic] desktop_profiles_dir`) in
+claude-acc's format, so if you already use that tool your existing profiles work
+here untouched, and either tool can capture or switch them.
+
+**What this does not do.** Forgetting an account (`remove`) and chat filtering
+(`only` / `reset`) are not implemented — delete a profile directory by hand, or
+use claude-acc. Cowork (agent-mode) sessions are not migrated by a switch and
+stay with the account that created them: their transcript lives at a path that
+embeds the owning account's UUID, so a copy renders empty. Switch back to that
+account to read one.
+
+**Credits.** The Claude Desktop internals used here — the data-directory
+layout, the `oauth:tokenCache` / `lastKnownAccountUuid` fields, which cookie
+and LevelDB stores carry the app's identity, the newest-wins history rule, the
+sign-out-and-poll capture sequence, and the `bridge-state.json` behaviour —
+were reverse-engineered by
+[claude-acc](https://github.com/ohmaseclaro/claude-acc) (MIT). The Desktop half
+of `add` and `switch` are ports of its `add` and `switch` commands, sharing the
+same profile store.
 
 ## Hyprland: float the TUI window
 

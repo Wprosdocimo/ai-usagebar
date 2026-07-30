@@ -145,8 +145,73 @@ pub enum AccountAction {
         label: String,
 
         /// Only register the account; do not launch interactive login.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "desktop")]
         no_login: bool,
+
+        /// Capture a Claude **Desktop app** account under this label instead
+        /// of a `claude` CLI one (macOS). The app has a single login slot, so
+        /// this signs it out, waits for you to sign in as the new account, and
+        /// saves what it writes. Your current login is restored if you cancel.
+        #[arg(long)]
+        desktop: bool,
+
+        /// E-mail to label a `--desktop` account with. Asked for at the prompt
+        /// if omitted; purely cosmetic, and skipped when not interactive.
+        #[arg(long, requires = "desktop")]
+        email: Option<String>,
+
+        /// Skip the confirmation before signing the Desktop app out.
+        #[arg(short = 'y', long, requires = "desktop")]
+        yes: bool,
+    },
+
+    /// Show which Claude account the Desktop app and the `claude` CLI use.
+    Status {
+        /// Machine-readable output, consumed by the macOS menu bar.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Make <LABEL> the active Claude account (macOS).
+    Switch {
+        /// Account to switch to. Desktop profiles come from claude-acc's store;
+        /// CLI accounts from `[[anthropic.accounts]]` / `accounts_dir`.
+        label: String,
+
+        /// Only switch the Claude Desktop app. Neither flag switches both.
+        #[arg(long)]
+        desktop: bool,
+
+        /// Only switch the `claude` CLI's default login.
+        #[arg(long)]
+        cli: bool,
+
+        /// Report what would change and exit without touching anything.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip the confirmation before quitting the Claude Desktop app.
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Overwrite a `claude` CLI login that belongs to no managed account.
+        /// That login cannot be saved first, so this discards it.
+        #[arg(long)]
+        force: bool,
+
+        /// Keep `bridge-state.json` rather than clearing it. Diagnostic only:
+        /// a stale remote-control session id breaks `/remote-control`.
+        #[arg(long)]
+        keep_bridge: bool,
+
+        /// Also archive the whole session tree, as claude-acc does. Off by
+        /// default because the history merge is additive.
+        #[arg(long)]
+        backup_sessions: bool,
+
+        /// Rollback archives to retain.
+        #[arg(long, default_value_t = 10)]
+        keep_backups: usize,
     },
 }
 
@@ -328,7 +393,73 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Account {
-                action: AccountAction::Add { ref label, no_login: true }
+                action: AccountAction::Add {
+                    ref label,
+                    no_login: true,
+                    desktop: false,
+                    ..
+                }
+            }) if label == "work"
+        ));
+    }
+
+    /// The two halves of `add` capture different things and cannot be combined:
+    /// `--no-login` skips a `claude` login the Desktop capture never runs.
+    #[test]
+    fn account_add_desktop_takes_an_email_and_rejects_no_login() {
+        let cli = Cli::parse_from([
+            "ai-usagebar",
+            "account",
+            "add",
+            "work",
+            "--desktop",
+            "--email",
+            "a@b.test",
+            "-y",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Account {
+                action: AccountAction::Add {
+                    desktop: true,
+                    yes: true,
+                    email: Some(ref email),
+                    ..
+                }
+            }) if email == "a@b.test"
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "ai-usagebar",
+                "account",
+                "add",
+                "w",
+                "--desktop",
+                "--no-login"
+            ])
+            .is_err()
+        );
+        // --email / -y only mean something for the Desktop capture.
+        assert!(
+            Cli::try_parse_from(["ai-usagebar", "account", "add", "w", "--email", "a@b.test"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn account_switch_defaults_to_both_surfaces() {
+        let cli = Cli::parse_from(["ai-usagebar", "account", "switch", "work", "--dry-run"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Account {
+                action: AccountAction::Switch {
+                    ref label,
+                    desktop: false,
+                    cli: false,
+                    dry_run: true,
+                    keep_backups: 10,
+                    ..
+                }
             }) if label == "work"
         ));
     }

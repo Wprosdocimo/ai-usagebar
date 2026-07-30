@@ -68,6 +68,7 @@ async fn run() -> io::Result<()> {
     let mut app = App::new_with_primary(tabs, config.ui.primary);
     app.context_enabled = config.context.enabled;
     app.overview_vendors = config.ui.overview_vendors.clone();
+    app.vendor_box = config.ui.vendor_box();
 
     // RAII: restoring the terminal must survive an error or a panic in the
     // loop below. Doing it inline left the user in raw mode on the alternate
@@ -163,6 +164,7 @@ fn reload_config(
     *config = reloaded;
     app.context_enabled = config.context.enabled;
     app.overview_vendors = config.ui.overview_vendors.clone();
+    app.vendor_box = config.ui.vendor_box();
     app.set_tabs(tabs_from_config(config));
     if reselect_primary {
         app.select_primary(config.ui.primary);

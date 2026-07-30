@@ -29,7 +29,75 @@ Each release is also published at
   the global and CN deployments issue separate keys and reject each other's, so
   the endpoint is recorded in the cache payload and a mismatched cache is
   discarded instead of being shown against the wrong account.
+- **`ai-usagebar account status` and `account switch <label>` — see and change
+  which Claude account you are actually signed in as (macOS).** There are two
+  separate identities on a Mac and they drift apart constantly: the **Claude
+  Desktop app** (signed in through its own `config.json`) and the **`claude`
+  CLI** (one default login in the login Keychain). `account status` reports both
+  — with each account's e-mail, session count, and whether its credential and
+  browser state have been captured — and `--json` makes that available to
+  scripts and the menu bar. `account switch` moves either one: `--desktop`,
+  `--cli`, or neither for both, with `--dry-run` to see exactly what would
+  happen first.
 
+  Switching the **Desktop app** merges your local history into the target
+  account first — session indexes newest-wins, routines/schedules unioned by
+  task id — so the account you land on shows the union of everything rather
+  than only its own chats; then it quits the app, swaps the credential and the
+  cookie/LevelDB state, and reopens it. Before any of that it writes a rollback
+  archive of everything a switch can destroy (`--keep-backups`, default 10;
+  `--backup-sessions` for a full session-tree archive), and it writes
+  `config.json` atomically so a crash mid-switch cannot strand every account's
+  tokens. The volatile `bridge-state.json` is cleared each time, since a stale
+  cloud-session id makes `/remote-control` fail to disconnect; `--keep-bridge`
+  turns that off for diagnosing browser-connection issues.
+
+  Switching the **CLI** moves the account's stored credential into the one
+  default slot plain `claude` reads and removes its named copy. The outgoing
+  account's credential is saved back into its own slot first, and while a label
+  is the live CLI login
+  ai-usagebar reads that label from the default slot — so one rotating refresh
+  token is never live in two places, which is what would otherwise 401 one of
+  the two copies within hours. A CLI login that belongs to no configured
+  account is never silently discarded: the switch refuses unless `--force`.
+
+- **`ai-usagebar account add <label> --desktop` captures a Claude Desktop
+  account**, so a machine can build its account list from nothing. The CLI half
+  of `add` is easy — `CLAUDE_CONFIG_DIR` gives `claude` as many isolated logins
+  as you want — but the Desktop app has a single login slot and no way to ask
+  for a second, so the only way to obtain another account's credential is to
+  sign the app out, wait for you to sign in as that account, and keep what it
+  writes. That is what this does: it saves the current account into its own
+  profile, copies the live login aside, clears it, reopens the app at its login
+  screen, polls until the sign-in completes, then captures the credential,
+  browser state and organisation, and seeds the new account with the history
+  this machine already has so its first login is not an empty sidebar. Press
+  Ctrl-C to cancel — or let the five-minute window lapse — and your previous
+  login is put back exactly as it was.
+
+- **Claude Desktop ▸ and Claude Code ▸ submenus in the macOS menu bar.** Each
+  lists the accounts that surface knows, checkmarks the active one, and
+  switches on click; **Adicionar conta…** captures a new one (in Terminal,
+  since it is interactive). A dim line under the header shows both active
+  accounts at a glance. The Desktop switch confirms first, because it quits and
+  reopens Claude.app. The submenus refresh on launch, on a `config.toml` change,
+  and when the menu opens (debounced), so a switch made in a terminal shows up
+  without restarting anything.
+
+  Desktop accounts are stored in [claude-acc](https://github.com/ohmaseclaro/claude-acc)'s
+  profile format, so existing claude-acc users' profiles work here untouched and
+  either tool can capture or switch them; `[anthropic] desktop_profiles_dir`
+  overrides the location. That project's reverse-engineering of the Claude
+  Desktop internals is what this builds on, and the Desktop halves of `add` and
+  `switch` are ports of its commands. Removing an account and chat filtering
+  (`only`/`reset`) are not implemented here. Nothing affects the Linux build:
+  the modules compile and are tested everywhere, and simply find no Claude
+  Desktop installation.
+
+- **Configurable TUI vendor navigation.** Set `[ui] vendor_box` to `sidebar`
+  (the responsive existing default), `navbar` (always use the horizontal top
+  strip), or `none` (hide the navigation and give the active panel the full
+  terminal width). Live config reload applies the layout immediately.
 ## [0.19.0] — 2026-07-27
 
 ### Added

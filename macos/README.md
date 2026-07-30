@@ -142,6 +142,35 @@ default (unnamed) Claude entry when every account is managed explicitly.
 Every immediate `accounts_dir` subdirectory counts as an account; this includes
 macOS logins whose credentials exist only in a config-dir-scoped Keychain item.
 
+### Switching which account you are signed in as
+
+Those entries decide whose usage is *shown*. Which account you are actually
+signed in as is a separate thing — and there are two of them, the Claude
+Desktop app and the `claude` CLI, which drift apart.
+
+The dropdown gets a **Claude Desktop ▸** and a **Claude Code ▸** submenu, each
+listing the accounts it knows with a checkmark on the active one. Pick another
+to switch to it; pick **Adicionar conta…** to capture a new one (that part is
+interactive, so it opens in Terminal). A dim line under the header shows both
+active accounts at a glance — `Desktop: work · Code: personal`.
+
+Switching the Desktop app **quits and reopens Claude.app**, so the menu confirms
+first; your local history is merged into the target account and a rollback
+archive is written before anything changes. The Claude Code switch has no
+visible side effect and happens straight away. Both submenus grey out while a
+switch is running.
+
+The same thing from the shell:
+
+```bash
+ai-usagebar account status                  # who each surface is signed in as
+ai-usagebar account add work --desktop      # capture a Claude Desktop account
+ai-usagebar account switch work --dry-run   # what a switch would do
+ai-usagebar account switch work --desktop   # quits and reopens Claude.app
+```
+
+See the main README's *Switching the active Claude account* for the full story.
+
 ## Live config reload
 
 The app watches `config.toml` and reloads on any change — enable a vendor, add
