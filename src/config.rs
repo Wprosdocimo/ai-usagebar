@@ -173,6 +173,12 @@ pub struct AnthropicConfig {
     /// Keychain/`~/.claude` login doesn't add a redundant "Claude" tab. Ignored
     /// when there are no named accounts, so Anthropic never loses its only tab.
     pub show_default_account: bool,
+    /// Where the Claude **Desktop app**'s saved account profiles live. Defaults
+    /// to `~/.claude-acc/profiles`, the store claude-acc
+    /// (<https://github.com/ohmaseclaro/claude-acc>) creates — `account switch`
+    /// reads and writes that layout so the two tools stay interchangeable.
+    /// Unrelated to `accounts_dir`, which is the `claude` CLI's own accounts.
+    pub desktop_profiles_dir: Option<PathBuf>,
 }
 
 impl Default for AnthropicConfig {
@@ -183,6 +189,7 @@ impl Default for AnthropicConfig {
             accounts: Vec::new(),
             accounts_dir: None,
             show_default_account: true,
+            desktop_profiles_dir: None,
         }
     }
 }
@@ -205,6 +212,18 @@ pub struct AnthropicAccount {
     /// writes). Token refreshes are written back here, so each account keeps
     /// itself alive independently.
     pub credentials_path: PathBuf,
+}
+
+impl AnthropicAccount {
+    /// The `CLAUDE_CONFIG_DIR` this account occupies — the credential file's
+    /// own directory. Claude Code hashes exactly this path for the account's
+    /// Keychain item, so it is also the account's identity for
+    /// [`crate::anthropic::keychain`].
+    pub fn config_dir(&self) -> PathBuf {
+        self.credentials_path
+            .parent()
+            .map_or_else(|| self.credentials_path.clone(), Path::to_path_buf)
+    }
 }
 
 impl AnthropicConfig {
@@ -252,18 +271,43 @@ impl AnthropicConfig {
     /// accounts identically; the widget layers its `--cache-dir` override on
     /// top of the cache returned here.
     pub fn account_target(&self, label: &str) -> Result<(CredsTarget, Cache)> {
+        let active = crate::anthropic::cli_account::home_claude_json()
+            .ok()
+            .and_then(|path| {
+                crate::anthropic::cli_account::resolve_active_label(&path, &self.all_accounts())
+            });
+        self.account_target_with(label, active.as_deref())
+    }
+
+    /// The pure half of [`account_target`](AnthropicConfig::account_target),
+    /// with "which account the `claude` CLI is signed into" injected — the same
+    /// shape as `Cli::resolve_vendor_with`.
+    ///
+    /// When `label` *is* the live CLI login, its credential lives in the
+    /// default slot as well as its own, and both hold the same rotating
+    /// refresh token. Reading the default one keeps exactly one live lineage,
+    /// so a refresh here can never invalidate the copy `claude` is using (or
+    /// the other way round). The cache directory is unchanged either way, so
+    /// the tab keeps its identity and its cached usage across a switch.
+    pub fn account_target_with(
+        &self,
+        label: &str,
+        cli_active: Option<&str>,
+    ) -> Result<(CredsTarget, Cache)> {
         let account = self.account(label)?;
-        let config_dir = account
-            .credentials_path
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| account.credentials_path.clone());
+        let cache = Cache::for_vendor_account("anthropic", label)?;
+        if cli_active == Some(label) {
+            return Ok((
+                CredsTarget::Default(crate::anthropic::creds::default_path()?),
+                cache,
+            ));
+        }
         Ok((
             CredsTarget::Named {
+                config_dir: account.config_dir(),
                 path: account.credentials_path,
-                config_dir,
             },
-            Cache::for_vendor_account("anthropic", label)?,
+            cache,
         ))
     }
 }
@@ -704,6 +748,7 @@ impl Config {
         expand_tilde_opt(&mut self.context.projects_path);
         expand_tilde_opt(&mut self.anthropic.credentials_path);
         expand_tilde_opt(&mut self.anthropic.accounts_dir);
+        expand_tilde_opt(&mut self.anthropic.desktop_profiles_dir);
         expand_tilde_opt(&mut self.openai.codex_auth_path);
         expand_tilde_opt(&mut self.cursor.db_path);
         for account in &mut self.anthropic.accounts {
@@ -1534,6 +1579,67 @@ enabled = false
             c.anthropic.accounts_dir,
             Some(home.join(".config/ai-usagebar/accounts"))
         );
+    }
+
+    #[test]
+    fn desktop_profiles_dir_is_tilde_expanded_on_load() {
+        let f = write_toml(
+            r#"
+            [anthropic]
+            desktop_profiles_dir = "~/.claude-acc/profiles"
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        let home = crate::cache::home_dir().unwrap();
+        assert_eq!(
+            c.anthropic.desktop_profiles_dir,
+            Some(home.join(".claude-acc/profiles"))
+        );
+    }
+
+    #[test]
+    fn the_live_cli_account_is_read_from_the_default_credential_slot() {
+        let cfg = AnthropicConfig {
+            accounts: vec![
+                AnthropicAccount {
+                    label: "work".into(),
+                    credentials_path: "/tmp/accounts/work/.credentials.json".into(),
+                },
+                AnthropicAccount {
+                    label: "personal".into(),
+                    credentials_path: "/tmp/accounts/personal/.credentials.json".into(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let (idle, idle_cache) = cfg.account_target_with("work", Some("personal")).unwrap();
+        assert!(
+            matches!(&idle, CredsTarget::Named { config_dir, .. }
+                if config_dir == std::path::Path::new("/tmp/accounts/work")),
+            "{idle:?}"
+        );
+
+        // Same label, but it is the login `claude` itself is using: one lineage.
+        let (live, live_cache) = cfg.account_target_with("work", Some("work")).unwrap();
+        assert!(matches!(live, CredsTarget::Default(_)), "{live:?}");
+
+        // The cache must not move, or a switch would silently orphan the tab's
+        // usage history and show "Loading…" until the next fetch.
+        assert_eq!(idle_cache.dir(), live_cache.dir());
+    }
+
+    #[test]
+    fn no_live_cli_account_keeps_every_account_on_its_own_slot() {
+        let cfg = AnthropicConfig {
+            accounts: vec![AnthropicAccount {
+                label: "work".into(),
+                credentials_path: "/tmp/accounts/work/.credentials.json".into(),
+            }],
+            ..Default::default()
+        };
+        let (target, _) = cfg.account_target_with("work", None).unwrap();
+        assert!(matches!(target, CredsTarget::Named { .. }), "{target:?}");
     }
 
     /// The shipped example, which `make install` puts in

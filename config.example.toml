@@ -54,6 +54,10 @@ enabled = true
 # above — otherwise you get an extra tab for the ambient ~/.claude / Keychain
 # login. Default true; ignored when there are no named accounts.
 # show_default_account = false
+# Where the Claude *Desktop app*'s saved accounts live, for `account switch`.
+# Defaults to the store claude-acc creates (https://github.com/ohmaseclaro/claude-acc);
+# unrelated to accounts_dir above, which is the `claude` CLI's own accounts.
+# desktop_profiles_dir = "~/.claude-acc/profiles"
 # Or list accounts explicitly:
 # [[anthropic.accounts]]
 # label = "work"

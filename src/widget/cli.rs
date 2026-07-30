@@ -148,6 +148,55 @@ pub enum AccountAction {
         #[arg(long)]
         no_login: bool,
     },
+
+    /// Show which Claude account the Desktop app and the `claude` CLI use.
+    Status {
+        /// Machine-readable output, consumed by the macOS menu bar.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Make <LABEL> the active Claude account (macOS).
+    Switch {
+        /// Account to switch to. Desktop profiles come from claude-acc's store;
+        /// CLI accounts from `[[anthropic.accounts]]` / `accounts_dir`.
+        label: String,
+
+        /// Only switch the Claude Desktop app. Neither flag switches both.
+        #[arg(long)]
+        desktop: bool,
+
+        /// Only switch the `claude` CLI's default login.
+        #[arg(long)]
+        cli: bool,
+
+        /// Report what would change and exit without touching anything.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip the confirmation before quitting the Claude Desktop app.
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Overwrite a `claude` CLI login that belongs to no managed account.
+        /// That login cannot be saved first, so this discards it.
+        #[arg(long)]
+        force: bool,
+
+        /// Keep `bridge-state.json` rather than clearing it. Diagnostic only:
+        /// a stale remote-control session id breaks `/remote-control`.
+        #[arg(long)]
+        keep_bridge: bool,
+
+        /// Also archive the whole session tree, as claude-acc does. Off by
+        /// default because the history merge is additive.
+        #[arg(long)]
+        backup_sessions: bool,
+
+        /// Rollback archives to retain.
+        #[arg(long, default_value_t = 10)]
+        keep_backups: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
