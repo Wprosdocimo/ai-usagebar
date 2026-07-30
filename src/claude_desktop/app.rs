@@ -40,6 +40,19 @@ const QUIT_GRACE: Duration = Duration::from_secs(2);
 const QUIT_POLL: Duration = Duration::from_millis(100);
 const QUIT_POLLS: usize = 20;
 
+#[cfg(unix)]
+fn set_private_mode(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .map_err(|error| AppError::io_at(path, error))
+}
+
+#[cfg(not(unix))]
+fn set_private_mode(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
+}
+
 fn is_running() -> bool {
     Command::new("/usr/bin/pgrep")
         .args(["-x", "Claude"])
@@ -105,6 +118,10 @@ impl AppControl for DesktopApp {
     fn archive(&self, archive: &Path, root: &Path, members: &[&str]) -> Result<()> {
         if let Some(parent) = archive.parent() {
             std::fs::create_dir_all(parent).map_err(|e| AppError::io_at(parent, e))?;
+            // The archive contains cookies, credentials, and browser state.
+            // Restrict the directory before tar creates the file so even the
+            // brief pre-chmod window is contained on Unix hosts.
+            set_private_mode(parent, 0o700)?;
         }
         let output = Command::new("/usr/bin/tar")
             .arg("-czf")
@@ -116,6 +133,7 @@ impl AppControl for DesktopApp {
             .output()
             .map_err(|e| AppError::Other(format!("could not run `tar`: {e}")))?;
         if output.status.success() {
+            set_private_mode(archive, 0o600)?;
             return Ok(());
         }
         let detail = String::from_utf8_lossy(&output.stderr);
@@ -204,5 +222,30 @@ impl AppControl for Recorder {
             members.join(", ")
         ));
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn rollback_archives_and_their_directory_are_private() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("Claude");
+        let backup_dir = temp.path().join("backups");
+        let archive = backup_dir.join("rollback.tar.gz");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("config.json"), b"secret state").unwrap();
+
+        DesktopApp
+            .archive(&archive, &root, &["config.json"])
+            .unwrap();
+
+        let dir_mode = std::fs::metadata(&backup_dir).unwrap().permissions().mode() & 0o777;
+        let archive_mode = std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(archive_mode, 0o600);
     }
 }

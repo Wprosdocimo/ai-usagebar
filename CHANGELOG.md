@@ -9,6 +9,20 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [0.20.1] — 2026-07-30
+
+### Security
+
+- Redact successful-but-malformed OAuth token response bodies from diagnostics,
+  strip terminal control characters from vendor text and cached errors, and cap
+  untrusted display fields before they reach Pango, ANSI, or ratatui output.
+- Restrict vendor HTTP redirects to the original scheme, host, and port so
+  non-standard API-key headers cannot be forwarded cross-origin.
+- Create Claude Desktop rollback backup directories and archives with private
+  Unix permissions (`0700` and `0600`, respectively).
+- Pin every GitHub Action to an immutable commit, add automated pin updates,
+  and require release tags to be annotated and point to commits on `main`.
+
 ## [0.20.0] — 2026-07-29
 
 ### Added
@@ -1228,7 +1242,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.17.2...v0.18.0

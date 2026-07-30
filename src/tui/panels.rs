@@ -67,7 +67,7 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
         };
         (s, PaceSeverity::Low)
     };
-    match snapshot {
+    let (plan, mut cells) = match snapshot {
         VendorSnapshot::Anthropic(s) => {
             let mut cells = vec![
                 pct("S", s.session.utilization_pct),
@@ -139,7 +139,11 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
                 pct("W", s.weekly.utilization_pct),
             ],
         ),
+    };
+    for (text, _) in &mut cells {
+        *text = crate::display::sanitize_untrusted_field(text);
     }
+    (crate::display::sanitize_untrusted_field(&plan), cells)
 }
 
 /// The single most-relevant percentage for a vendor in the Overview — what its
@@ -188,7 +192,7 @@ pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
 
 /// Build the section list for the currently-active vendor's snapshot.
 pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> Vec<Section> {
-    match tab {
+    let mut sections = match tab {
         TabState::Loading => vec![
             Section::Spacer,
             Section::Text {
@@ -244,6 +248,47 @@ pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> 
             }
             sections
         }
+    };
+    for section in &mut sections {
+        sanitize_section(section);
+    }
+    sections
+}
+
+/// Sanitize at the final projection boundary so every vendor field, cached
+/// diagnostic, and fetch error is inert before ratatui writes it to a terminal.
+fn sanitize_section(section: &mut Section) {
+    let clean = |value: &mut String| {
+        *value = crate::display::sanitize_untrusted_field(value);
+    };
+    match section {
+        Section::Title { left, right } => {
+            clean(left);
+            if let Some(right) = right {
+                clean(right);
+            }
+        }
+        Section::Metric {
+            label,
+            value_label,
+            footnote,
+            ..
+        } => {
+            clean(label);
+            clean(value_label);
+            clean(footnote);
+        }
+        Section::Text { label, value } => {
+            clean(label);
+            clean(value);
+        }
+        Section::Block { label, body } => {
+            clean(label);
+            for line in body {
+                clean(line);
+            }
+        }
+        Section::Spacer => {}
     }
 }
 
@@ -1368,6 +1413,24 @@ mod tests {
         }));
         assert!(plan.is_empty());
         assert_eq!(cells, vec![("$8.42".to_string(), PaceSeverity::Low)]);
+    }
+
+    #[test]
+    fn terminal_controls_are_removed_from_detail_and_overview_fields() {
+        let error = TabState::Error("bad\x1b]52;c;Y2FuYXJ5\x07 value".into());
+        let sections = sections_for(&error, now(), 5);
+        assert!(matches!(
+            &sections[1],
+            Section::Text { value, .. }
+                if value == "bad]52;c;Y2FuYXJ5 value"
+                    && !value.chars().any(|ch| ch.is_control())
+        ));
+
+        let mut snapshot = cursor_snap();
+        snapshot.plan = "Ultra\x1b[2J\x07".into();
+        let (plan, _) = compact_cells(&VendorSnapshot::Cursor(snapshot));
+        assert_eq!(plan, "Ultra[2J");
+        assert!(!plan.chars().any(char::is_control));
     }
 
     #[test]

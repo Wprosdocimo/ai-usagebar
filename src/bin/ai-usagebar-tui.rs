@@ -62,6 +62,7 @@ async fn run() -> io::Result<()> {
 
     let client = Client::builder()
         .timeout(HTTP_CLIENT_TIMEOUT)
+        .redirect(ai_usagebar::vendor::same_origin_redirect_policy())
         .build()
         .map_err(io::Error::other)?;
 

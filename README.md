@@ -544,7 +544,9 @@ account you land on shows the union of everything, then quits the app, swaps its
 credential and browser state, and reopens it. A rollback archive of everything
 the switch can destroy is written to `~/.claude-acc/backups/` beforehand
 (`--keep-backups N`, default 10; `--backup-sessions` also archives the whole
-session tree). The volatile `bridge-state.json` is cleared on every switch —
+session tree). On Unix, that directory is kept at mode `0700` and each archive
+at `0600` because they contain credentials and browser state. The volatile
+`bridge-state.json` is cleared on every switch —
 a stale cloud-session id makes `/remote-control` fail to disconnect —
 which `--keep-bridge` turns off if you want to test that.
 

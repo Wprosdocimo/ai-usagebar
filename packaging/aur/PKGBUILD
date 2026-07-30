@@ -1,7 +1,7 @@
 # Maintainer: AkitaOnRails <boss@akitaonrails.com>
 
 pkgname=ai-usagebar
-pkgver=0.20.0
+pkgver=0.20.1
 pkgrel=1
 pkgdesc="Waybar widget + TUI for tracking AI plan usage across multiple providers"
 arch=('x86_64' 'aarch64')

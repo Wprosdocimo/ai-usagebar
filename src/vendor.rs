@@ -20,6 +20,30 @@ pub const HTTP_CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
 /// misbehaving proxy or a hijacked endpoint.
 pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// Follow ordinary vendor redirects without forwarding non-standard API-key
+/// headers to a different origin. Reqwest strips `Authorization` on sensitive
+/// redirects, but vendors also use headers such as `x-api-key`, which are not
+/// covered by that built-in list.
+pub fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 10 {
+            return attempt.error("too many redirects");
+        }
+        let Some(origin) = attempt.previous().first() else {
+            return attempt.stop();
+        };
+        let target = attempt.url();
+        if target.scheme() == origin.scheme()
+            && target.host_str() == origin.host_str()
+            && target.port_or_known_default() == origin.port_or_known_default()
+        {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
 /// Read a response body with an upper bound.
 ///
 /// Every vendor buffered the whole body with `resp.bytes()` *before* anything
@@ -209,6 +233,73 @@ mod tests {
         assert!(response.content_length().is_none());
         let error = read_body_capped(response, 1024).await.unwrap_err();
         assert!(error.to_string().contains("exceeds"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn same_origin_redirects_still_work_with_vendor_headers() {
+        let mut server = mockito::Server::new_async().await;
+        let redirect = server
+            .mock("GET", "/start")
+            .match_header("x-api-key", "secret")
+            .with_status(302)
+            .with_header("location", "/finish")
+            .create_async()
+            .await;
+        let finish = server
+            .mock("GET", "/finish")
+            .match_header("x-api-key", "secret")
+            .with_status(200)
+            .create_async()
+            .await;
+        let client = reqwest::Client::builder()
+            .redirect(same_origin_redirect_policy())
+            .build()
+            .unwrap();
+
+        let response = client
+            .get(format!("{}/start", server.url()))
+            .header("x-api-key", "secret")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        redirect.assert_async().await;
+        finish.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn cross_origin_redirects_are_not_followed_with_vendor_headers() {
+        let mut origin = mockito::Server::new_async().await;
+        let mut target = mockito::Server::new_async().await;
+        let target_url = format!("{}/capture", target.url());
+        let redirect = origin
+            .mock("GET", "/start")
+            .match_header("x-api-key", "secret")
+            .with_status(302)
+            .with_header("location", &target_url)
+            .create_async()
+            .await;
+        let capture = target
+            .mock("GET", "/capture")
+            .expect(0)
+            .create_async()
+            .await;
+        let client = reqwest::Client::builder()
+            .redirect(same_origin_redirect_policy())
+            .build()
+            .unwrap();
+
+        let response = client
+            .get(format!("{}/start", origin.url()))
+            .header("x-api-key", "secret")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        redirect.assert_async().await;
+        capture.assert_async().await;
     }
 
     #[test]

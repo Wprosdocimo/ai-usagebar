@@ -111,18 +111,20 @@ fn compact_vendor_label(id: VendorId) -> &'static str {
 /// (#14/#17) appends its label, e.g. `Claude · work`; a plain vendor tab is
 /// just the vendor name.
 fn tab_label(tab: &TabId) -> String {
-    match &tab.account {
+    let label = match &tab.account {
         Some(acct) => format!("{} · {}", vendor_label(tab.vendor), acct),
         None => vendor_label(tab.vendor).to_string(),
-    }
+    };
+    crate::display::sanitize_untrusted_field(&label)
 }
 
 /// Compact variant for the narrow top-nav strip.
 fn compact_tab_label(tab: &TabId) -> String {
-    match &tab.account {
+    let label = match &tab.account {
         Some(acct) => format!("{} · {}", compact_vendor_label(tab.vendor), acct),
         None => compact_vendor_label(tab.vendor).to_string(),
-    }
+    };
+    crate::display::sanitize_untrusted_field(&label)
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {

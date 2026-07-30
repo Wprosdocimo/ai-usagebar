@@ -86,9 +86,9 @@ where
                 ))
             }
         }
-        other => Err(serde::de::Error::custom(format!(
-            "expires_in must be a number or null, got {other:?}"
-        ))),
+        _ => Err(serde::de::Error::custom(
+            "expires_in must be a number or null",
+        )),
     }
 }
 
@@ -122,8 +122,7 @@ pub async fn refresh(
             body: msg,
         });
     }
-    serde_json::from_str(&body)
-        .map_err(|e| AppError::Schema(format!("openai token response: {e}; body: {body}")))
+    serde_json::from_str(&body).map_err(|e| AppError::Schema(format!("openai token response: {e}")))
 }
 
 pub fn needs_refresh(expires_at_secs: i64, now_secs: i64) -> bool {
@@ -195,6 +194,31 @@ mod tests {
         assert_eq!(r.refresh_token.as_deref(), Some("new-rt"));
         assert_eq!(r.id_token.as_deref(), Some("new-id"));
         assert_eq!(r.expires_in, Some(3600));
+    }
+
+    #[tokio::test]
+    async fn malformed_success_does_not_echo_tokens_in_the_error() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/oauth/token")
+            .with_status(200)
+            .with_body(
+                r#"{"access_token":"sensitive-access-token","refresh_token":"sensitive-refresh-token","id_token":"sensitive-id-token","expires_in":"sensitive-schema-value"}"#,
+            )
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let error = refresh(&client, &format!("{}/oauth/token", server.url()), "old")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("openai token response"));
+        assert!(!error.contains("sensitive-access-token"));
+        assert!(!error.contains("sensitive-refresh-token"));
+        assert!(!error.contains("sensitive-id-token"));
+        assert!(!error.contains("sensitive-schema-value"));
     }
 
     #[tokio::test]

@@ -20,6 +20,7 @@ pub mod context;
 pub mod countdown;
 pub mod cursor;
 pub mod deepseek;
+pub mod display;
 pub mod error;
 pub mod format;
 pub mod grok;

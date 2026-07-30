@@ -278,11 +278,13 @@ pub async fn refresh_one(client: &Client, config: &Config, tab: &TabId) -> TabSt
             TabState::Ready(Box::new(ReadyTab {
                 snapshot: outcome.snapshot,
                 stale: outcome.stale,
-                last_error: outcome.last_error,
+                last_error: outcome.last_error.map(|(code, message)| {
+                    (code, crate::display::sanitize_untrusted_field(&message))
+                }),
                 fetched_at,
             }))
         }
-        Err(e) => TabState::Error(e.to_string()),
+        Err(e) => TabState::Error(crate::display::sanitize_untrusted_field(&e.to_string())),
     }
 }
 

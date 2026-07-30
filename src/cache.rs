@@ -175,6 +175,7 @@ impl Cache {
     pub fn write_last_error(&self, code: u16, msg: &str) {
         let _ = self.ensure_dir();
         let path = self.last_error_path();
+        let msg = crate::display::sanitize_untrusted_field(msg);
         let body = format!("{code}\n{msg}");
         let _ = atomic_write(&path, body.as_bytes());
     }
@@ -451,6 +452,17 @@ mod tests {
             msg.contains("quota exhausted"),
             "message was truncated to its first line: {msg:?}"
         );
+    }
+
+    #[test]
+    fn last_error_strips_terminal_controls_before_persisting() {
+        let (_td, cache) = fixture();
+        cache.write_last_error(500, "bad\x1b]52;c;Y2FuYXJ5\x07\nnext\tfield");
+
+        let (code, msg) = cache.read_last_error().unwrap();
+        assert_eq!(code, 500);
+        assert_eq!(msg, "bad]52;c;Y2FuYXJ5\nnext field");
+        assert!(!msg.chars().any(|ch| ch.is_control() && ch != '\n'));
     }
 
     /// A user upgrades with a `.last_error` already on disk; it must still

@@ -28,7 +28,8 @@ pub fn color_span(color: &str, text: &str) -> String {
 
 /// Escape `&`, `<`, `>` for Pango markup (which is XML-ish).
 pub fn escape(s: &str) -> String {
-    s.replace('&', "&amp;")
+    crate::display::sanitize_untrusted_field(s)
+        .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
@@ -234,6 +235,11 @@ mod tests {
     fn escape_handles_markup_chars() {
         // `&` must come first so we don't double-escape produced `&` chars.
         assert_eq!(escape("a < b & c > d"), "a &lt; b &amp; c &gt; d");
+    }
+
+    #[test]
+    fn escape_removes_terminal_controls() {
+        assert_eq!(escape("safe\x1b[2J\x07text"), "safe[2Jtext");
     }
 
     #[test]

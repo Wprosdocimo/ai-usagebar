@@ -628,6 +628,7 @@ fn render_with_theme(outcome: &FetchOutcome, theme: &Theme, cli: &Cli) -> Waybar
 fn http_client() -> Result<Client> {
     Client::builder()
         .timeout(HTTP_CLIENT_TIMEOUT)
+        .redirect(crate::vendor::same_origin_redirect_policy())
         .build()
         .map_err(|e| AppError::Other(format!("http client init: {e}")))
 }
