@@ -88,6 +88,7 @@ Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth c
 | Novita | API key (`NOVITA_API_KEY` env or `[novita] api_key` in config) | Set either. Opt-in. |
 | Moonshot | API key (`MOONSHOT_API_KEY` env or `[moonshot] api_key` in config) | Set either. Opt-in. Set `[moonshot] region = "cn"` for `api.moonshot.cn` (balance in CNY); the default `"global"` uses `api.moonshot.ai` (USD). |
 | Grok (xAI) | **Management** key (`XAI_MANAGEMENT_KEY` env or `[grok] api_key` in config) | Set either. Opt-in. This is **not** the inference key — create it under xAI Console → Management keys. See the team note below. |
+| MiniMax | **Token Plan** key (`MINIMAX_API_KEY` env or `[minimax] api_key` in config) | Set either. Opt-in. Must be the Token Plan **subscription** key — a pay-as-you-go key has no plan quota to report. Set `[minimax] region = "cn"` for `api.minimaxi.com`; the default `"global"` uses `api.minimax.io`. The two are separate instances and reject each other's keys. |
 | Google Antigravity | None — read from the local Antigravity server | Opt-in. Quota is served only while Antigravity 2.0, the Antigravity IDE, or an interactive `agy` session is running; all three share one account-wide quota. |
 | Cursor | None — read from Cursor's local `state.vscdb` | Opt-in. Sign in to the Cursor IDE at least once; ai-usagebar reads the session token it already wrote there. No key of your own to create. |
 
@@ -110,7 +111,7 @@ rather than silently querying the wrong URL.
 ### Enabling a vendor
 
 `enabled = true` is what makes a vendor fetch. Anthropic (API), DeepSeek, Kimi,
-Kilo, Novita, Moonshot, Grok, Antigravity, and Cursor all default to **disabled** so that existing
+Kilo, Novita, Moonshot, Grok, Antigravity, Cursor, and MiniMax all default to **disabled** so that existing
 installs are unaffected until you opt in. Two ways to do it:
 
 - **Via the TUI Settings overlay** (`ai-usagebar-tui`, then `s`): saving a
@@ -194,6 +195,12 @@ api_key_env = "DEEPSEEK_API_KEY"
 enabled = true             # disabled by default; enable once you add an API key
 api_key_env = "KIMI_API_KEY"
 # api_key = "sk-..."       # used if KIMI_API_KEY is unset; chmod 600 the file!
+
+[minimax]
+enabled = true             # disabled by default; enable once you add an API key
+api_key_env = "MINIMAX_API_KEY"
+# api_key = "..."          # used if MINIMAX_API_KEY is unset; chmod 600 the file!
+# region = "global"        # global -> api.minimax.io | cn -> api.minimaxi.com
 
 # --- Account-balance vendors (all opt-in) ---
 
@@ -292,7 +299,7 @@ Use one bar item and scroll through your vendors. The TUI on-click still shows t
 }
 ```
 
-The `{vendor_short}` placeholder always expands to a 3-letter vendor ID (`cld` / `gpt` / `zai` / `opr` / `dsk` / `kmi` / `klo` / `nvt` / `msh` / `grk` / `aac` / `agy` / `cur`), so the bar text tells you which vendor is active. The other usage placeholders (`{session_pct}` for Anthropic, `{oai_session_pct}` for OpenAI, etc.) are vendor-specific. If you want one format string for every cycled vendor, prefer the generic aliases: `{session_pct}`, `{session_reset}`, `{weekly_pct}`, and `{weekly_reset}` are implemented by all eight usage vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Antigravity, and Cursor; OpenRouter and DeepSeek use `0` / `—` for the windows they don't expose). Cursor has no time windows but two usage *pools*, so it maps them onto the two generic slots: `session_pct` = **Cursor Models** (Auto + Composer), `weekly_pct` = **Other Models** (named / API), both resetting on the billing cycle. Anthropic and OpenAI add `*_elapsed`, `*_pace`, and `*_bar` families; Antigravity adds `*_elapsed` for all four of its windows, plus `{session_model}` / `{weekly_model}` / `{scoped_model}` / `{extra_model}`, which name the model group each row belongs to (vendors with a single quota pool leave them empty). The established API-backed vendors also expose their own `{oai_*}` / `{zai_*}` / `{or_*}` / `{ds_*}` / `{kimi_*}` families, which expand to empty strings for vendors that don't define them.
+The `{vendor_short}` placeholder always expands to a 3-letter vendor ID (`cld` / `gpt` / `zai` / `opr` / `dsk` / `kmi` / `klo` / `nvt` / `msh` / `grk` / `aac` / `agy` / `cur` / `mmx`), so the bar text tells you which vendor is active. The other usage placeholders (`{session_pct}` for Anthropic, `{oai_session_pct}` for OpenAI, etc.) are vendor-specific. If you want one format string for every cycled vendor, prefer the generic aliases: `{session_pct}`, `{session_reset}`, `{weekly_pct}`, and `{weekly_reset}` are implemented by all eight usage vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Antigravity, and Cursor; OpenRouter and DeepSeek use `0` / `—` for the windows they don't expose). Cursor has no time windows but two usage *pools*, so it maps them onto the two generic slots: `session_pct` = **Cursor Models** (Auto + Composer), `weekly_pct` = **Other Models** (named / API), both resetting on the billing cycle. Anthropic and OpenAI add `*_elapsed`, `*_pace`, and `*_bar` families; Antigravity adds `*_elapsed` for all four of its windows, plus `{session_model}` / `{weekly_model}` / `{scoped_model}` / `{extra_model}`, which name the model group each row belongs to (vendors with a single quota pool leave them empty). The established API-backed vendors also expose their own `{oai_*}` / `{zai_*}` / `{or_*}` / `{ds_*}` / `{kimi_*}` families, which expand to empty strings for vendors that don't define them.
 
 `signal: 13` lets the scroll-cycle commands refresh the bar instantly (via `SIGRTMIN+13`) instead of waiting for the next 300s interval.
 
@@ -601,6 +608,7 @@ Then `hyprctl reload` (no logout needed).
 | **OpenRouter** | `openrouter.ai/api/v1/{credits,key}` (documented) | Balance, today/week/month spend, free vs paid tier | Yes |
 | **DeepSeek** | `api.deepseek.com/user/balance` (documented) | Balance, granted, topped-up credits | Yes |
 | **Kimi** | `api.kimi.com/coding/v1/usages` (undocumented; community-confirmed) | Weekly subscription quota + 5h rolling rate-limit window | No — widget/TUI only; desktop protocol and marker parity are future work |
+| **MiniMax** | `api.minimax.io/v1/token_plan/remains` (official Token Plan quota route) | Token Plan rolling interval window + weekly, per model bucket (text, video) | No — widget/TUI only |
 | **Kilo** | `api.kilo.ai/api/profile/balance` (undocumented; extension-internal) | Remaining credit balance ($) | No — widget/TUI only |
 | **Novita** | `api.novita.ai/openapi/v1/billing/balance/detail` (documented) | Remaining credit balance ($) | No — widget/TUI only |
 | **Moonshot** | `api.moonshot.ai\|.cn/v1/users/me/balance` (documented) | Account balance ($ on `.ai`, ¥ on `.cn`) | No — widget/TUI only |
@@ -610,7 +618,7 @@ Then `hyprctl reload` (no logout needed).
 
 ### Endpoint stability
 
-Four of the six endpoints are undocumented. The Anthropic and OpenAI endpoints are used by their official CLIs (`claude` and `codex`), so removing them would break those tools too. That makes them less shaky than scraped web endpoints. Z.AI's monitor endpoint is reverse-engineered from a third-party plugin; treat it as the most fragile one. Kimi's `/coding/v1/usages` is community-confirmed and used by third-party quota tools; treat it as drift-prone. Cursor's `/api/usage-summary` has no official docs and is the endpoint the dashboard's own frontend calls — treat it as drift-prone too (its shape tracks Cursor's pricing, which has changed before).
+Several endpoints are undocumented. The Anthropic and OpenAI endpoints are used by their official CLIs (`claude` and `codex`), so removing them would break those tools too. That makes them less shaky than scraped web endpoints. Z.AI's monitor endpoint is reverse-engineered from a third-party plugin; treat it as the most fragile one. Kimi's `/coding/v1/usages` is community-confirmed and used by third-party quota tools; treat it as drift-prone. Cursor's `/api/usage-summary` has no official docs and is the endpoint the dashboard's own frontend calls — treat it as drift-prone too (its shape tracks Cursor's pricing, which has changed before). MiniMax officially publishes its Token Plan quota route, but not a formal response schema, so the parser still treats its wire shape defensively.
 
 OpenAI's known 5-hour and 7-day windows are identified from each window's
 reported duration, not from `primary_window` / `secondary_window` position.

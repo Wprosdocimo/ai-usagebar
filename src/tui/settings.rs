@@ -1,8 +1,8 @@
 //! Settings overlay — opened from the TUI by pressing `s`. Lets the user pick
 //! the primary vendor and paste an API key for any key-authenticated vendor
-//! (Z.AI, OpenRouter, DeepSeek, Kilo, Novita, Kimi, Grok) without hand-editing
-//! config.toml. Anthropic and OpenAI authenticate via their CLI's OAuth login,
-//! so they have no key field here.
+//! (including Z.AI, Kimi, MiniMax, and the balance vendors) without hand-editing
+//! config.toml. Anthropic, OpenAI, Cursor, and Antigravity authenticate through
+//! local product state, so they have no key field here.
 //!
 //! Persistence uses `toml_edit` so the existing config keeps its comments,
 //! whitespace, and unrelated fields. Writing a key also flips that vendor's
@@ -102,6 +102,13 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         section: "grok",
         note: "management key, not the inference key",
     },
+    KeyVendor {
+        id: VendorId::Minimax,
+        label: "MiniMax",
+        env: "MINIMAX_API_KEY",
+        section: "minimax",
+        note: "Token Plan subscription key",
+    },
 ];
 
 /// Read the inline `api_key` currently in config for a given section, so the
@@ -117,6 +124,7 @@ fn config_inline_key<'a>(cfg: &'a Config, section: &str) -> Option<&'a str> {
         "novita" => cfg.novita.api_key.as_deref(),
         "moonshot" => cfg.moonshot.api_key.as_deref(),
         "grok" => cfg.grok.api_key.as_deref(),
+        "minimax" => cfg.minimax.api_key.as_deref(),
         _ => None,
     }
 }
@@ -745,6 +753,7 @@ fn vendor_label(v: VendorId) -> &'static str {
         VendorId::Grok => "Grok",
         VendorId::Antigravity => "Antigravity",
         VendorId::Cursor => "Cursor",
+        VendorId::Minimax => "MiniMax",
     }
 }
 

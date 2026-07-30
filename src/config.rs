@@ -48,6 +48,7 @@ pub struct Config {
     pub grok: GrokConfig,
     pub antigravity: AntigravityConfig,
     pub cursor: CursorConfig,
+    pub minimax: MinimaxConfig,
 }
 
 /// UI / dispatch preferences. Currently just `primary` — which vendor the
@@ -582,6 +583,32 @@ impl Default for NovitaConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
+pub struct MinimaxConfig {
+    pub enabled: bool,
+    pub api_key_env: String,
+    pub api_key: Option<String>,
+    /// `"global"` → api.minimax.io; `"cn"` → api.minimaxi.com. Unlike
+    /// Moonshot's, this does not change the unit — MiniMax reports quota as a
+    /// percentage either way. It picks the *instance*: a key issued for one
+    /// host is rejected by the other (`status_code 2049`), so pointing this at
+    /// the wrong region reads as an invalid key rather than an empty plan.
+    pub region: String,
+}
+
+impl Default for MinimaxConfig {
+    fn default() -> Self {
+        // Opt-in like the other API-key vendors: needs an explicit key.
+        Self {
+            enabled: false,
+            api_key_env: "MINIMAX_API_KEY".to_string(),
+            api_key: None,
+            region: "global".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct MoonshotConfig {
     pub enabled: bool,
     pub api_key_env: String,
@@ -771,6 +798,7 @@ impl Config {
             VendorId::Grok => self.grok.enabled,
             VendorId::Antigravity => self.antigravity.enabled,
             VendorId::Cursor => self.cursor.enabled,
+            VendorId::Minimax => self.minimax.enabled,
         }
     }
 
@@ -811,6 +839,14 @@ impl Config {
                  remove it to show spend without a limit"
                     .into(),
             ));
+        }
+        if !self.minimax.region.eq_ignore_ascii_case("global")
+            && !self.minimax.region.eq_ignore_ascii_case("cn")
+        {
+            return Err(AppError::Other(format!(
+                "[minimax] region must be \"global\" or \"cn\", got {:?}",
+                self.minimax.region
+            )));
         }
         let mut labels = HashSet::new();
         for account in &self.anthropic.accounts {
@@ -928,6 +964,7 @@ mod tests {
             VendorId::Moonshot,
             VendorId::Grok,
             VendorId::Cursor,
+            VendorId::Minimax,
         ] {
             assert!(!c.is_enabled(opt_in), "{opt_in:?}");
         }
@@ -1007,6 +1044,23 @@ enabled = false
                 .monthly_limit,
             Some(1000.0)
         );
+    }
+
+    #[test]
+    fn minimax_region_accepts_only_known_instances() {
+        for region in ["global", "GLOBAL", "cn", "CN"] {
+            let file = write_toml(&format!("[minimax]\nregion = {region:?}\n"));
+            assert_eq!(
+                Config::load_from(file.path()).unwrap().minimax.region,
+                region
+            );
+        }
+
+        for region in ["", "china", "us"] {
+            let file = write_toml(&format!("[minimax]\nregion = {region:?}\n"));
+            let error = Config::load_from(file.path()).unwrap_err().to_string();
+            assert!(error.contains("[minimax] region"), "{error}");
+        }
     }
 
     #[test]
@@ -1667,6 +1721,7 @@ enabled = false
         assert!(!c.is_enabled(VendorId::Moonshot));
         assert!(!c.is_enabled(VendorId::Grok));
         assert!(!c.is_enabled(VendorId::Cursor));
+        assert!(!c.is_enabled(VendorId::Minimax));
     }
 
     #[test]

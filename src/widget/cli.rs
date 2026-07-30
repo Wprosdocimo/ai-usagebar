@@ -11,7 +11,7 @@ use clap::{Parser, ValueEnum};
 #[command(
     name = "ai-usagebar",
     args_conflicts_with_subcommands = true,
-    about = "Waybar widget for AI plan usage (Anthropic / OpenAI / Z.AI / OpenRouter / DeepSeek / Kimi)",
+    about = "Waybar widget and terminal dashboard for multi-provider AI plan usage",
     long_about = "\
 Drop-in replacement for `claudebar` with multi-vendor support.
 
@@ -231,6 +231,7 @@ pub enum Vendor {
     Grok,
     Antigravity,
     Cursor,
+    Minimax,
 }
 
 impl Vendor {
@@ -249,6 +250,7 @@ impl Vendor {
             Vendor::Grok => crate::vendor::VendorId::Grok,
             Vendor::Antigravity => crate::vendor::VendorId::Antigravity,
             Vendor::Cursor => crate::vendor::VendorId::Cursor,
+            Vendor::Minimax => crate::vendor::VendorId::Minimax,
         }
     }
 }
@@ -334,6 +336,7 @@ fn id_to_vendor(id: crate::vendor::VendorId) -> Vendor {
         crate::vendor::VendorId::Grok => Vendor::Grok,
         crate::vendor::VendorId::Antigravity => Vendor::Antigravity,
         crate::vendor::VendorId::Cursor => Vendor::Cursor,
+        crate::vendor::VendorId::Minimax => Vendor::Minimax,
     }
 }
 

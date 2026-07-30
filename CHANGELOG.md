@@ -11,6 +11,26 @@ Each release is also published at
 
 ### Added
 
+- **MiniMax Token Plan vendor** (`--vendor minimax`, `[minimax]`, opt-in). Reads
+  the subscription quota from the officially published
+  `GET /v1/token_plan/remains` route (response shape verified against the live
+  global endpoint). The plan reports one row per model bucket, each with a
+  rolling interval window and a weekly window, so it renders as a two-pool
+  quota vendor: `general` (text/coding) drives the bar and the generic
+  `{session_pct}` / `{weekly_pct}` aliases, and `video` rides along in the
+  tooltip and TUI panel. `{vendor_short}` is `mmx`.
+  Four properties of this API are encoded deliberately, each with a test:
+  it answers **HTTP 200 even when auth fails** (the real status is
+  `base_resp.status_code`; the two credential codes map onto HTTP 401 so a bad
+  key reports as an auth problem, not schema drift); the percentages are what
+  **remains**, not what was consumed, and are inverted on the way in; the
+  interval length is **not fixed** (5h for `general`, 24h for `video`), so each
+  window's duration comes from its own start/end; and all timestamps are epoch
+  **milliseconds**. `[minimax] region` picks the *instance* rather than a unit —
+  the global and CN deployments issue separate keys and reject each other's, so
+  the endpoint and a non-secret key fingerprint are recorded in the cache
+  payload, and a mismatched cache is discarded instead of being shown against
+  the wrong account.
 - **`ai-usagebar account status` and `account switch <label>` — see and change
   which Claude account you are actually signed in as (macOS).** There are two
   separate identities on a Mac and they drift apart constantly: the **Claude
@@ -80,7 +100,6 @@ Each release is also published at
   (the responsive existing default), `navbar` (always use the horizontal top
   strip), or `none` (hide the navigation and give the active panel the full
   terminal width). Live config reload applies the layout immediately.
-
 ## [0.19.0] — 2026-07-27
 
 ### Added

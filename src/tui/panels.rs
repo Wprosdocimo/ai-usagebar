@@ -132,6 +132,13 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
             s.plan.clone(),
             vec![pct("auto", s.auto_pct), pct("premium", s.api_pct)],
         ),
+        VendorSnapshot::Minimax(s) => (
+            s.plan.clone(),
+            vec![
+                pct("S", s.session.utilization_pct),
+                pct("W", s.weekly.utilization_pct),
+            ],
+        ),
     }
 }
 
@@ -169,6 +176,7 @@ pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
             Some(s.session.utilization_pct.max(s.weekly.utilization_pct))
         }
         VendorSnapshot::Cursor(s) => (!s.unlimited).then_some(s.total_pct),
+        VendorSnapshot::Minimax(s) => Some(s.session.utilization_pct.max(s.weekly.utilization_pct)),
         VendorSnapshot::Openrouter(_)
         | VendorSnapshot::Deepseek(_)
         | VendorSnapshot::Kilo(_)
@@ -217,6 +225,7 @@ pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> 
                 VendorSnapshot::Grok(s) => grok_sections(s),
                 VendorSnapshot::Antigravity(s) => antigravity_sections(s, now),
                 VendorSnapshot::Cursor(s) => cursor_sections(s, now),
+                VendorSnapshot::Minimax(s) => minimax_sections(s, now, pace_tolerance),
             };
             // Inject the (already-absolute) fetched-at instant into the title
             // row, right-aligned. Pre-snapshotted in app::refresh_one so it
@@ -535,6 +544,38 @@ fn cursor_sections(s: &crate::usage::CursorSnapshot, now: DateTime<Utc>) -> Vec<
         label: "Resets".into(),
         value: countdown::format(s.reset_at, now),
     });
+    v
+}
+
+/// MiniMax groups quota by model bucket, so the panel is laid out by window
+/// (Session, Weekly) with one row per pool — the same shape as Antigravity's
+/// two-group panel. Pacing is shown: both windows report a real duration, so
+/// the marker is meaningful.
+fn minimax_sections(
+    s: &crate::usage::MinimaxSnapshot,
+    now: DateTime<Utc>,
+    tol: u32,
+) -> Vec<Section> {
+    use crate::minimax::vendor::{POOL_GENERAL, POOL_VIDEO};
+
+    let mut v = vec![Section::Title {
+        left: s.plan.clone(),
+        right: None,
+    }];
+    for (heading, general, video) in [
+        ("Session", &s.session, s.video_session.as_ref()),
+        ("Weekly", &s.weekly, s.video_weekly.as_ref()),
+    ] {
+        v.push(Section::Spacer);
+        v.push(Section::Text {
+            label: heading.into(),
+            value: String::new(),
+        });
+        push_window(&mut v, POOL_GENERAL, general, now, tol, true);
+        if let Some(w) = video {
+            push_window(&mut v, POOL_VIDEO, w, now, tol, true);
+        }
+    }
     v
 }
 
