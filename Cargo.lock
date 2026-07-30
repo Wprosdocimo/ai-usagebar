@@ -38,7 +38,7 @@ dependencies = [
  "pretty_assertions",
  "ratatui",
  "ratatui-bubbletea-components",
- "ratatui-bubbletea-theme",
+ "ratatui-bubbletea-theme 0.1.0",
  "reqwest",
  "rusqlite",
  "serde",
@@ -1893,12 +1893,12 @@ dependencies = [
 
 [[package]]
 name = "ratatui-bubbletea-components"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "122266d0c9da990eb5f683ec75494ceea413bb40e22ab972b0b508ccb79b7680"
+checksum = "1e63b3cc8648282cdd062b2d6d09a85d74dc2b9d64121d2d29df6d022b00e67b"
 dependencies = [
  "ratatui",
- "ratatui-bubbletea-theme",
+ "ratatui-bubbletea-theme 0.2.0",
 ]
 
 [[package]]
@@ -1906,6 +1906,15 @@ name = "ratatui-bubbletea-theme"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07802dfd9f37d00934c8d6fe263837b0ca43319d67881c484c9c3db56c3d063a"
+dependencies = [
+ "ratatui",
+]
+
+[[package]]
+name = "ratatui-bubbletea-theme"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17e1205e312e20390cdeb2ce827796f475cc1a3afdba416e1922bf3adf4a3914"
 dependencies = [
  "ratatui",
 ]
