@@ -1,5 +1,6 @@
 //! TUI app state — vendors, tab selection, per-vendor snapshot cache.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -38,7 +39,7 @@ pub struct ReadyTab {
 /// Identity of one TUI tab. Usually a whole vendor; for Anthropic it can also
 /// name a specific configured account (issues #14 / #17). `account: None` is a
 /// plain vendor tab — the default Claude account, or any non-Anthropic vendor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TabId {
     pub vendor: VendorId,
     pub account: Option<String>,
@@ -93,6 +94,9 @@ pub struct App {
     pub tabs_meta: Vec<TabId>,
     pub active: usize,
     pub tabs: Vec<TabState>,
+    /// Tab identities with a request currently in flight. Kept separate from
+    /// `tabs` so a successful snapshot remains visible while it is refreshed.
+    refreshing_tabs: HashSet<TabId>,
     /// Monotonically increasing identity for a complete tab-set replacement.
     /// Background fetches carry this with their tab identity so results from a
     /// previous Settings reload cannot land in a new tab at the old index.
@@ -136,6 +140,7 @@ impl App {
             tabs_meta,
             active: 0,
             tabs: vec![TabState::Loading; n],
+            refreshing_tabs: HashSet::new(),
             tab_generation: 0,
             overview: false,
             overview_vendors: None,
@@ -188,6 +193,33 @@ impl App {
             .unwrap_or(fallback);
         self.tabs = vec![TabState::Loading; tabs_meta.len()];
         self.tabs_meta = tabs_meta;
+        self.refreshing_tabs.clear();
+    }
+
+    /// Mark one tab as in flight. A ready snapshot stays in place; tabs that
+    /// have never succeeded still use the full `Loading` state. Returning
+    /// `false` suppresses duplicate requests for the same tab.
+    pub fn begin_refresh(&mut self, tab: &TabId) -> bool {
+        let Some(index) = self.tabs_meta.iter().position(|current| current == tab) else {
+            return false;
+        };
+        if !self.refreshing_tabs.insert(tab.clone()) {
+            return false;
+        }
+        if !matches!(self.tabs[index], TabState::Ready(_)) {
+            self.tabs[index] = TabState::Loading;
+        }
+        true
+    }
+
+    pub fn is_refreshing(&self, tab: &TabId) -> bool {
+        self.refreshing_tabs.contains(tab)
+    }
+
+    pub fn tab_is_refreshing(&self, index: usize) -> bool {
+        self.tabs_meta
+            .get(index)
+            .is_some_and(|tab| self.is_refreshing(tab))
     }
 
     /// Apply an asynchronous refresh only when it still belongs to this tab
@@ -201,7 +233,19 @@ impl App {
         let Some(index) = self.tabs_meta.iter().position(|current| current == tab) else {
             return false;
         };
-        self.tabs[index] = state;
+        let was_refreshing = self.refreshing_tabs.remove(tab);
+        // If revalidation fails after a successful snapshot, preserve the
+        // useful data but make the failure explicit. Initial failures still
+        // become the normal Error state because there is no data to preserve.
+        if was_refreshing
+            && let TabState::Ready(ready) = &mut self.tabs[index]
+            && let TabState::Error(message) = state
+        {
+            ready.stale = true;
+            ready.last_error = Some((0, message));
+        } else {
+            self.tabs[index] = state;
+        }
         true
     }
 
@@ -775,11 +819,14 @@ mod tests {
         );
         app.active = 2; // "personal"
         app.tabs[0] = TabState::Error("old".into());
+        let old_tab = app.tabs_meta[0].clone();
+        assert!(app.begin_refresh(&old_tab));
 
         app.set_tabs(tabs_from_config(&config_with_accounts(&[])));
         assert_eq!(app.tabs_meta, vec![TabId::vendor(VendorId::Anthropic)]);
         assert_eq!(app.active, 0, "selection clamped after shrink");
         assert!(matches!(app.tabs[0], TabState::Loading));
+        assert!(!app.is_refreshing(&old_tab));
     }
 
     #[test]
@@ -836,6 +883,7 @@ mod tests {
         let openai = TabId::vendor(VendorId::Openai);
         let mut app = App::with_theme(vec![anthropic.clone(), openai.clone()], Theme::default());
         let generation = app.tab_generation;
+        assert!(app.begin_refresh(&anthropic));
 
         // A reorder is safe because delivery resolves the captured identity,
         // not a stale positional index.
@@ -844,6 +892,7 @@ mod tests {
         assert!(app.apply_refresh(generation, &anthropic, TabState::Error("ready".into())));
         assert!(matches!(app.tabs[0], TabState::Loading));
         assert!(matches!(&app.tabs[1], TabState::Error(message) if message == "ready"));
+        assert!(!app.is_refreshing(&anthropic));
     }
 
     fn ready_at(fetched_at: chrono::DateTime<Utc>) -> TabState {
@@ -863,6 +912,103 @@ mod tests {
             last_error: None,
             fetched_at: Some(fetched_at),
         }))
+    }
+
+    #[test]
+    fn refresh_keeps_ready_snapshot_visible_and_suppresses_duplicates() {
+        let tab = TabId::vendor(VendorId::Openrouter);
+        let fetched_at = Utc.with_ymd_and_hms(2026, 5, 23, 12, 0, 0).unwrap();
+        let mut app = App::with_theme(vec![tab.clone()], Theme::default());
+        app.tabs[0] = ready_at(fetched_at);
+
+        assert!(app.begin_refresh(&tab));
+        assert!(
+            !app.begin_refresh(&tab),
+            "duplicate request must be suppressed"
+        );
+        assert!(app.is_refreshing(&tab));
+        match &app.tabs[0] {
+            TabState::Ready(ready) => assert_eq!(ready.fetched_at, Some(fetched_at)),
+            other => panic!("ready snapshot disappeared during refresh: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn first_refresh_still_uses_loading_until_data_arrives() {
+        let tab = TabId::vendor(VendorId::Openrouter);
+        let mut app = App::with_theme(vec![tab.clone()], Theme::default());
+
+        assert!(app.begin_refresh(&tab));
+        assert!(app.is_refreshing(&tab));
+        assert!(matches!(app.tabs[0], TabState::Loading));
+
+        assert!(app.apply_refresh(
+            app.tab_generation,
+            &tab,
+            TabState::Error("not signed in".into()),
+        ));
+        assert!(!app.is_refreshing(&tab));
+        assert!(matches!(&app.tabs[0], TabState::Error(message) if message == "not signed in"));
+    }
+
+    #[test]
+    fn successful_revalidation_replaces_snapshot_and_clears_indicator() {
+        let tab = TabId::vendor(VendorId::Openrouter);
+        let old_at = Utc.with_ymd_and_hms(2026, 5, 23, 12, 0, 0).unwrap();
+        let new_at = Utc.with_ymd_and_hms(2026, 5, 23, 12, 1, 0).unwrap();
+        let mut app = App::with_theme(vec![tab.clone()], Theme::default());
+        app.tabs[0] = ready_at(old_at);
+
+        assert!(app.begin_refresh(&tab));
+        assert!(app.apply_refresh(app.tab_generation, &tab, ready_at(new_at)));
+        assert!(!app.is_refreshing(&tab));
+        match &app.tabs[0] {
+            TabState::Ready(ready) => assert_eq!(ready.fetched_at, Some(new_at)),
+            other => panic!("expected replacement snapshot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_revalidation_preserves_snapshot_with_visible_warning() {
+        let tab = TabId::vendor(VendorId::Openrouter);
+        let fetched_at = Utc.with_ymd_and_hms(2026, 5, 23, 12, 0, 0).unwrap();
+        let mut app = App::with_theme(vec![tab.clone()], Theme::default());
+        app.tabs[0] = ready_at(fetched_at);
+
+        assert!(app.begin_refresh(&tab));
+        assert!(app.apply_refresh(
+            app.tab_generation,
+            &tab,
+            TabState::Error("refresh failed".into()),
+        ));
+        assert!(!app.is_refreshing(&tab));
+        match &app.tabs[0] {
+            TabState::Ready(ready) => {
+                assert_eq!(ready.fetched_at, Some(fetched_at));
+                assert!(ready.stale);
+                assert_eq!(ready.last_error, Some((0, "refresh failed".into())));
+            }
+            other => panic!("last successful snapshot was lost: {other:?}"),
+        }
+        let sections = crate::tui::panels::sections_for(&app.tabs[0], Utc::now(), 5);
+        assert!(sections.iter().any(|section| matches!(
+            section,
+            crate::tui::panels::Section::Text { label, value }
+                if label == "Warning" && value == "refresh failed"
+        )));
+    }
+
+    #[test]
+    fn old_generation_result_does_not_clear_current_refresh() {
+        let tab = TabId::vendor(VendorId::Openrouter);
+        let mut app = App::with_theme(vec![tab.clone()], Theme::default());
+        let old_generation = app.tab_generation;
+        app.set_tabs(vec![tab.clone()]);
+        assert!(app.begin_refresh(&tab));
+
+        assert!(!app.apply_refresh(old_generation, &tab, TabState::Error("old result".into()),));
+        assert!(app.is_refreshing(&tab));
+        assert!(matches!(app.tabs[0], TabState::Loading));
     }
 
     #[test]
