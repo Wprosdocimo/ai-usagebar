@@ -135,6 +135,13 @@ pub enum Command {
         #[command(subcommand)]
         action: AccountAction,
     },
+
+    /// Quota and time-to-reset for every configured vendor and account.
+    Usage {
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(clap::Subcommand, Debug, Clone)]
@@ -364,6 +371,12 @@ fn is_stdout_tty() -> bool {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn usage_subcommand_parses_machine_readable_mode() {
+        let cli = Cli::parse_from(["ai-usagebar", "usage", "--json"]);
+        assert!(matches!(cli.command, Some(Command::Usage { json: true })));
+    }
 
     #[test]
     fn defaults_match_claudebar() {

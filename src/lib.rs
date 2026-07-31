@@ -33,6 +33,7 @@ pub mod openai;
 pub mod openrouter;
 pub mod pacing;
 pub mod pango;
+pub mod report;
 pub mod theme;
 pub mod tooltip;
 pub mod tui;
