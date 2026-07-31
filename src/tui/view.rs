@@ -216,7 +216,10 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     // The Overview is the virtual first entry, before the per-vendor tabs.
     let mut items = vec![ListItem::new("Overview").description("all vendors")];
     items.extend(app.tabs_meta.iter().enumerate().map(|(index, tab)| {
-        ListItem::new(tab_label(tab)).description(tab_status(app.tabs.get(index)))
+        ListItem::new(tab_label(tab)).description(tab_status(
+            app.tabs.get(index),
+            app.tab_is_refreshing(index),
+        ))
     }));
     let mut list = SelectList::new(items).theme(theme);
     list.select(Some(if app.overview { 0 } else { app.active + 1 }));
@@ -262,7 +265,10 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
         " Overview ".to_string()
     } else {
         app.active_tab_id()
-            .map(|tab| format!(" {} ", tab_label(tab)))
+            .map(|tab| {
+                let refreshing = if app.is_refreshing(tab) { " ↻" } else { "" };
+                format!(" {}{refreshing} ", tab_label(tab))
+            })
             .unwrap_or_else(|| " details ".to_string())
     };
     let block = theme.titled_block(title);
@@ -347,6 +353,12 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
                 if r.stale {
                     spans.push(theme.muted("  ⏸"));
                 }
+                if r.last_error.is_some() {
+                    spans.push(theme.muted(" ⚠"));
+                }
+                if app.tab_is_refreshing(i) {
+                    spans.push(theme.muted("  ↻"));
+                }
             }
             Some(TabState::Error(_)) => spans.push(Span::styled(
                 "error",
@@ -360,8 +372,9 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
-fn tab_status(tab: Option<&TabState>) -> &'static str {
+fn tab_status(tab: Option<&TabState>, refreshing: bool) -> &'static str {
     match tab {
+        Some(TabState::Ready(_)) if refreshing => "refreshing",
         Some(TabState::Loading) => "fetching",
         Some(TabState::Error(_)) => "error",
         Some(TabState::Ready(ready)) if ready.stale => "stale cache",
@@ -478,6 +491,21 @@ mod tests {
         // passing off "now" as a response time.
         let app = app_with(vec![ready_at(None), TabState::Loading]);
         assert_eq!(header_refresh_text(&app), "last refresh —");
+    }
+
+    #[test]
+    fn overview_keeps_metrics_visible_while_refreshing() {
+        let fetched_at = Utc.with_ymd_and_hms(2026, 5, 23, 12, 0, 0).unwrap();
+        let mut app = app_with(vec![ready_at(Some(fetched_at)), ready_at(Some(fetched_at))]);
+        app.overview = true;
+        let tab = app.tabs_meta[0].clone();
+        assert!(app.begin_refresh(&tab));
+
+        let out = body_text(&app);
+        assert!(out.contains("$0.00"), "ready metrics disappeared: {out}");
+        assert!(out.contains('↻'), "refresh indicator missing: {out}");
+        assert!(!out.contains("fetching…"), "ready row flickered: {out}");
+        assert_eq!(tab_status(app.tabs.first(), true), "refreshing");
     }
 
     fn app_with_context(layout: crate::config::ContextLayout) -> App {

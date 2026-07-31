@@ -446,13 +446,13 @@ fn spawn_one(
     tx: &mpsc::UnboundedSender<(u64, TabId, TabState)>,
     delay: Duration,
 ) {
+    if !app.begin_refresh(&tab) {
+        return;
+    }
     let tx = tx.clone();
     let client = client.clone();
     let cfg = config.clone();
     let generation = app.tab_generation;
-    if let Some(index) = app.tabs_meta.iter().position(|current| current == &tab) {
-        app.tabs[index] = TabState::Loading;
-    }
     tokio::spawn(async move {
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;

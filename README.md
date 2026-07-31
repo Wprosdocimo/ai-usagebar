@@ -725,7 +725,11 @@ make clippy                                        # cargo clippy -D warnings
 - `c` — open local Claude context sessions (only when `[context] enabled = true`); `v` cycles its layout
 - `q` / `Esc` / `Ctrl-C` — quit
 
-Auto-refresh runs every 60 seconds in the background. Vendors use the same layout. Here's OpenRouter showing the credit balance gauge (red because 98% is consumed), usage-by-period totals, and tier:
+Auto-refresh runs every 60 seconds in the background. Existing values stay
+visible with a `↻` indicator while a request is in flight; a failed refresh
+keeps the last snapshot visibly marked stale instead of clearing it. Vendors
+use the same layout. Here's OpenRouter showing the credit balance gauge (red
+because 98% is consumed), usage-by-period totals, and tier:
 
 ![ai-usagebar-tui showing the OpenRouter tab — Credit balance gauge at 98% in red ($13.67 left of $900), Usage by period with today/week/month, paid tier](screenshots/tui-openrouter.png)
 

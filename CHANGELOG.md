@@ -26,6 +26,15 @@ Each release is also published at
   Thin by construction: it reuses the TUI's existing tab enumeration, fetch, and
   snapshot-to-sections projection, so no vendor needs to know it exists.
 
+### Fixed
+
+- **TUI refresh flicker.** Auto-refresh and manual refresh now keep the last
+  successful vendor snapshot visible with a `↻` indicator while revalidating.
+  Initial loads still show `fetching…`; failed revalidation preserves the old
+  snapshot with an explicit stale warning instead of briefly or permanently
+  hiding useful data. Duplicate requests for the same tab are suppressed
+  (#64).
+
 ## [0.20.1] — 2026-07-30
 
 ### Security
