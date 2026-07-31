@@ -373,6 +373,12 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn usage_subcommand_parses_machine_readable_mode() {
+        let cli = Cli::parse_from(["ai-usagebar", "usage", "--json"]);
+        assert!(matches!(cli.command, Some(Command::Usage { json: true })));
+    }
+
+    #[test]
     fn defaults_match_claudebar() {
         let cli = Cli::parse_from(["ai-usagebar"]);
         assert_eq!(cli.vendor, None);

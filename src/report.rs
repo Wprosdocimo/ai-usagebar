@@ -10,11 +10,12 @@
 //! Deliberately thin: [`crate::tui::app::tabs_from_config`] already decides
 //! what is configured, [`crate::tui::app::refresh_one`] already fetches and
 //! parses it, and [`crate::tui::panels::sections_for`] already projects any
-//! vendor's snapshot into labelled metrics carrying both the percentage and
-//! the reset. So this file only enumerates, flattens, and formats — no vendor
+//! vendor's snapshot into labelled sections carrying every reported value.
+//! So this file only enumerates, projects, and formats — no vendor
 //! ever needs to know it exists.
 
 use chrono::Utc;
+use serde::Serialize;
 use serde_json::json;
 
 use crate::config::Config;
@@ -30,15 +31,42 @@ struct Entry {
     id: String,
     name: String,
     plan: Option<String>,
-    metrics: Vec<Metric>,
+    sections: Vec<ReportSection>,
     error: Option<String>,
 }
 
-struct Metric {
-    label: String,
-    pct: u16,
-    value: String,
-    detail: String,
+/// Lossless machine-readable projection of a TUI panel row. `metrics` remains
+/// available in JSON as a convenience view over only the gauge rows; callers
+/// that need every reported value should consume this ordered list.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ReportSection {
+    Metric {
+        label: String,
+        percent: u16,
+        value: String,
+        detail: String,
+    },
+    Text {
+        label: String,
+        value: String,
+    },
+    Block {
+        label: String,
+        body: Vec<String>,
+    },
+    Spacer,
+}
+
+impl ReportSection {
+    fn label(&self) -> Option<&str> {
+        match self {
+            Self::Metric { label, .. } | Self::Text { label, .. } | Self::Block { label, .. } => {
+                Some(label)
+            }
+            Self::Spacer => None,
+        }
+    }
 }
 
 pub async fn run(json: bool) -> i32 {
@@ -79,22 +107,31 @@ pub async fn run(json: bool) -> i32 {
     } else {
         print!("{}", render_text(&entries));
     }
-    i32::from(entries.iter().all(|entry| entry.error.is_some()))
+    report_exit_code(&entries)
 }
 
 async fn entry_for(client: &reqwest::Client, config: &Config, tab: &TabId) -> Entry {
     let state = refresh_one(client, config, tab).await;
+    entry_from_state(tab, &state, Utc::now())
+}
+
+fn entry_from_state(tab: &TabId, state: &TabState, now: chrono::DateTime<Utc>) -> Entry {
     let mut entry = Entry {
         id: tab_id(tab),
         name: tab_name(tab),
         plan: None,
-        metrics: Vec::new(),
+        sections: Vec::new(),
         error: match &state {
             TabState::Error(message) => Some(message.clone()),
             _ => None,
         },
     };
-    for section in sections_for(&state, Utc::now(), PACE_TOLERANCE) {
+    // The error is already a first-class entry field. Do not duplicate the
+    // TUI's interactive retry instructions as report data.
+    if entry.error.is_some() {
+        return entry;
+    }
+    for section in sections_for(state, now, PACE_TOLERANCE) {
         match section {
             Section::Title { left, .. } => entry.plan = Some(left),
             Section::Metric {
@@ -103,25 +140,26 @@ async fn entry_for(client: &reqwest::Client, config: &Config, tab: &TabId) -> En
                 value_label,
                 footnote,
                 ..
-            } => entry.metrics.push(Metric {
+            } => entry.sections.push(ReportSection::Metric {
                 label,
-                pct,
+                percent: pct,
                 value: value_label,
                 detail: footnote,
             }),
-            // Balance-only vendors report through Text rows rather than a
-            // gauge; keep them, since a credit balance is the whole answer
-            // for those.
-            Section::Text { label, value } => entry.metrics.push(Metric {
-                label,
-                pct: 0,
-                value,
-                detail: String::new(),
-            }),
-            Section::Block { .. } | Section::Spacer => {}
+            Section::Text { label, value } => {
+                entry.sections.push(ReportSection::Text { label, value });
+            }
+            Section::Block { label, body } => {
+                entry.sections.push(ReportSection::Block { label, body });
+            }
+            Section::Spacer => entry.sections.push(ReportSection::Spacer),
         }
     }
     entry
+}
+
+fn report_exit_code(entries: &[Entry]) -> i32 {
+    i32::from(entries.iter().all(|entry| entry.error.is_some()))
 }
 
 /// Stable machine id, matching the `anthropic@<label>` convention the macOS
@@ -144,17 +182,31 @@ fn render_json(entries: &[Entry]) -> String {
     let rows: Vec<serde_json::Value> = entries
         .iter()
         .map(|entry| {
+            let metrics = entry
+                .sections
+                .iter()
+                .filter_map(|section| match section {
+                    ReportSection::Metric {
+                        label,
+                        percent,
+                        value,
+                        detail,
+                    } => Some(json!({
+                        "label": label,
+                        "percent": percent,
+                        "value": value,
+                        "detail": detail,
+                    })),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
             json!({
                 "id": entry.id,
                 "name": entry.name,
                 "plan": entry.plan,
                 "error": entry.error,
-                "metrics": entry.metrics.iter().map(|metric| json!({
-                    "label": metric.label,
-                    "percent": metric.pct,
-                    "value": metric.value,
-                    "detail": metric.detail,
-                })).collect::<Vec<_>>(),
+                "metrics": metrics,
+                "sections": entry.sections,
             })
         })
         .collect();
@@ -166,8 +218,9 @@ fn render_text(entries: &[Entry]) -> String {
     // whole report rather than per-section.
     let width = entries
         .iter()
-        .flat_map(|entry| entry.metrics.iter())
-        .map(|metric| metric.label.chars().count())
+        .flat_map(|entry| entry.sections.iter())
+        .filter_map(ReportSection::label)
+        .map(|label| label.chars().count())
         .max()
         .unwrap_or(0);
 
@@ -182,19 +235,59 @@ fn render_text(entries: &[Entry]) -> String {
             out.push_str(&format!("  ! {error}\n\n"));
             continue;
         }
-        if entry.metrics.is_empty() {
+        if !entry
+            .sections
+            .iter()
+            .any(|section| !matches!(section, ReportSection::Spacer))
+        {
             out.push_str("  (nothing reported)\n\n");
             continue;
         }
-        for metric in &entry.metrics {
-            let label = format!("{:width$}", metric.label, width = width);
-            let value = format!("{:>9}", metric.value);
-            if metric.detail.is_empty() {
-                out.push_str(&format!("  {label}  {value}\n"));
-            } else {
-                out.push_str(&format!("  {label}  {value}   {}\n", metric.detail));
+        let mut body = String::new();
+        let mut pending_spacer = false;
+        for section in &entry.sections {
+            if matches!(section, ReportSection::Spacer) {
+                pending_spacer |= !body.is_empty();
+                continue;
+            }
+            if pending_spacer {
+                body.push('\n');
+                pending_spacer = false;
+            }
+            match section {
+                ReportSection::Metric {
+                    label,
+                    value,
+                    detail,
+                    ..
+                } => {
+                    let label = format!("{label:width$}");
+                    let value = format!("{value:>9}");
+                    if detail.is_empty() {
+                        body.push_str(&format!("  {label}  {value}\n"));
+                    } else {
+                        body.push_str(&format!("  {label}  {value}   {detail}\n"));
+                    }
+                }
+                ReportSection::Text { label, value } => {
+                    if label.is_empty() {
+                        body.push_str(&format!("  {}\n", value.trim_start()));
+                    } else if value.is_empty() {
+                        body.push_str(&format!("  {label}\n"));
+                    } else {
+                        body.push_str(&format!("  {label:width$}  {value}\n"));
+                    }
+                }
+                ReportSection::Block { label, body: lines } => {
+                    body.push_str(&format!("  {label}\n"));
+                    for line in lines {
+                        body.push_str(&format!("    {line}\n"));
+                    }
+                }
+                ReportSection::Spacer => unreachable!(),
             }
         }
+        out.push_str(&body);
         out.push('\n');
     }
     out
@@ -203,22 +296,24 @@ fn render_text(entries: &[Entry]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::app::ReadyTab;
+    use crate::usage::{DeepseekSnapshot, OpenRouterSnapshot, VendorSnapshot};
     use crate::vendor::VendorId;
 
-    fn entry(name: &str, metrics: Vec<Metric>) -> Entry {
+    fn entry(name: &str, sections: Vec<ReportSection>) -> Entry {
         Entry {
             id: name.into(),
             name: name.into(),
             plan: Some("Claude Max 20x".into()),
-            metrics,
+            sections,
             error: None,
         }
     }
 
-    fn metric(label: &str, pct: u16, value: &str, detail: &str) -> Metric {
-        Metric {
+    fn metric(label: &str, percent: u16, value: &str, detail: &str) -> ReportSection {
+        ReportSection::Metric {
             label: label.into(),
-            pct,
+            percent,
             value: value.into(),
             detail: detail.into(),
         }
@@ -298,5 +393,116 @@ mod tests {
         assert_eq!(first["metrics"][0]["percent"], 29);
         assert_eq!(first["metrics"][0]["detail"], "Resets in 0h 50m");
         assert!(first["error"].is_null());
+    }
+
+    #[test]
+    fn json_preserves_non_metric_sections_without_fabricating_percentages() {
+        let rendered = render_json(&[entry(
+            "openrouter",
+            vec![
+                metric("Credit balance", 25, "$75.00", "$25.00 used"),
+                ReportSection::Spacer,
+                ReportSection::Text {
+                    label: "Resets".into(),
+                    value: "in 9d".into(),
+                },
+                ReportSection::Block {
+                    label: "Usage by period".into(),
+                    body: vec!["today $1.00 · week $5.00".into()],
+                },
+            ],
+        )]);
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        let first = &value["entries"][0];
+        assert_eq!(first["metrics"].as_array().unwrap().len(), 1);
+        assert_eq!(first["sections"][1]["type"], "spacer");
+        assert_eq!(first["sections"][2]["type"], "text");
+        assert!(first["sections"][2].get("percent").is_none());
+        assert_eq!(first["sections"][3]["type"], "block");
+        assert_eq!(first["sections"][3]["body"][0], "today $1.00 · week $5.00");
+    }
+
+    #[test]
+    fn real_panel_projection_keeps_openrouter_blocks() {
+        let state = TabState::Ready(Box::new(ReadyTab {
+            snapshot: VendorSnapshot::Openrouter(OpenRouterSnapshot {
+                label: "OR".into(),
+                total_credits: 100.0,
+                total_usage: 25.0,
+                usage_daily: 1.0,
+                usage_weekly: 5.0,
+                usage_monthly: 25.0,
+                is_free_tier: false,
+                limit: None,
+                limit_remaining: None,
+            }),
+            stale: false,
+            last_error: None,
+            fetched_at: None,
+        }));
+        let projected = entry_from_state(&TabId::vendor(VendorId::Openrouter), &state, Utc::now());
+        assert!(projected.sections.iter().any(|section| matches!(
+            section,
+            ReportSection::Block { label, .. } if label == "Usage by period"
+        )));
+        assert!(projected.sections.iter().any(|section| matches!(
+            section,
+            ReportSection::Block { label, .. } if label == "Tier"
+        )));
+        let text = render_text(&[projected]);
+        assert!(text.contains("Usage by period"), "{text}");
+        assert!(
+            text.contains("today $1.00 · week $5.00 · month $25.00"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn real_balance_text_is_not_exposed_as_a_percentage_metric() {
+        let state = TabState::Ready(Box::new(ReadyTab {
+            snapshot: VendorSnapshot::Deepseek(DeepseekSnapshot {
+                is_available: true,
+                balance: 12.5,
+                granted: 2.5,
+                topped_up: 10.0,
+                currency: "USD".into(),
+            }),
+            stale: false,
+            last_error: None,
+            fetched_at: None,
+        }));
+        let projected = entry_from_state(&TabId::vendor(VendorId::Deepseek), &state, Utc::now());
+        assert!(projected.sections.iter().any(|section| matches!(
+            section,
+            ReportSection::Text { label, value } if label == "Balance" && value == "$12.50"
+        )));
+        assert!(
+            !projected
+                .sections
+                .iter()
+                .any(|section| matches!(section, ReportSection::Metric { .. }))
+        );
+    }
+
+    #[test]
+    fn failed_entries_do_not_duplicate_tui_retry_rows() {
+        let failed = entry_from_state(
+            &TabId::vendor(VendorId::Openai),
+            &TabState::Error("not signed in".into()),
+            Utc::now(),
+        );
+        assert_eq!(failed.error.as_deref(), Some("not signed in"));
+        assert!(failed.sections.is_empty());
+    }
+
+    #[test]
+    fn exit_is_nonzero_only_when_every_entry_failed() {
+        let mut failed = entry("openai", Vec::new());
+        failed.error = Some("not signed in".into());
+        assert_eq!(report_exit_code(&[failed]), 1);
+
+        let mut failed = entry("openai", Vec::new());
+        failed.error = Some("not signed in".into());
+        assert_eq!(report_exit_code(&[failed, entry("cursor", Vec::new())]), 0);
     }
 }

@@ -254,7 +254,7 @@ ai-usagebar --json
 # Everything at once: quota + time-to-reset for every configured vendor,
 # with one entry per named Claude account.
 ai-usagebar usage
-ai-usagebar usage --json | jq '.entries[] | {id, metrics}'
+ai-usagebar usage --json | jq '.entries[] | {id, metrics, sections}'
 
 # Live preview while iterating on --format / --tooltip-format.
 ai-usagebar --vendor openrouter --watch 5
@@ -262,6 +262,10 @@ ai-usagebar --vendor openrouter --watch 5
 # Interactive TUI with tabs.
 ai-usagebar-tui
 ```
+
+In JSON, `metrics` contains only percentage gauges. The ordered `sections`
+array is the lossless view and also includes balance text, grouped breakdowns,
+and visual spacers; non-percentage rows never invent a numeric percentage.
 
 ## Standalone TUI — no Waybar required
 

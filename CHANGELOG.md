@@ -16,13 +16,15 @@ Each release is also published at
   at a time, which is what a status bar needs and what a person checking on four
   Claude accounts does not. This walks the same set the TUI builds — every
   enabled vendor plus one entry per named Claude account — and prints each
-  window's percentage next to when it resets. `--json` gives the same thing with
-  the percentage as a number, keyed by a stable id (`anthropic@work`), for
-  scripting and logging. A vendor that fails to fetch reports inline instead of
-  hiding the rest, and the exit code is non-zero only when every entry failed.
+  window's percentage next to when it resets. `--json` keeps gauge rows in a
+  convenient `metrics` list and provides a lossless ordered `sections` list for
+  balance text and grouped breakdowns, keyed by a stable id
+  (`anthropic@work`), for scripting and logging. A vendor that fails to fetch
+  reports inline instead of hiding the rest, and the exit code is non-zero only
+  when every entry failed.
 
   Thin by construction: it reuses the TUI's existing tab enumeration, fetch, and
-  snapshot-to-metrics projection, so no vendor needs to know it exists.
+  snapshot-to-sections projection, so no vendor needs to know it exists.
 
 ## [0.20.1] — 2026-07-30
 
