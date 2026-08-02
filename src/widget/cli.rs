@@ -224,9 +224,9 @@ pub enum AccountAction {
         /// by another, should be removed everywhere. Repeatable. Supplying any
         /// suppresses the interactive prompt — ids not listed are kept — which
         /// is how the macOS menu bar passes an answered dialog through.
-        /// `account status --json` lists the candidates as `routine_conflicts`.
+        /// `account status --json` lists the candidates as `deletion_conflicts`.
         #[arg(long, value_name = "ID")]
-        delete_routine: Vec<String>,
+        delete_conflict: Vec<String>,
     },
 }
 

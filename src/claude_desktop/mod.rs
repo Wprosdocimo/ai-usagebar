@@ -188,16 +188,15 @@ pub fn load_profiles(profiles_dir: &Path) -> Vec<ProfileMeta> {
 /// Read the schedule sync record. Absent or malformed reads as empty, which
 /// makes every task look new — so a first run, or a corrupted record, reports
 /// no deletions rather than inventing them.
-pub fn load_synced(path: &Path) -> merge::SyncedTasks {
+pub fn load_synced(path: &Path) -> merge::Synced {
     std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .map(|bytes| merge::parse_synced(&bytes))
         .unwrap_or_default()
 }
 
 /// Record what every account holds now, so the next switch can tell a deletion
 /// from a task that account never had.
-pub fn save_synced(path: &Path, synced: &merge::SyncedTasks) -> Result<()> {
+pub fn save_synced(path: &Path, synced: &merge::Synced) -> Result<()> {
     crate::cache::atomic_write(path, &serde_json::to_vec(synced)?)
 }
 
@@ -451,13 +450,22 @@ fn apply_switch_while_stopped(
     // prompt returns forever. Runs after the merge so it also strips anything
     // the merge just re-added.
     match merge::plan_deletion_sweep(&paths.sessions_root(), &plan.confirmed_deletions) {
-        Ok(writes) => {
-            for (path, bytes) in writes {
+        Ok(sweep) => {
+            for (path, bytes) in sweep.rewrites {
                 if let Err(error) = crate::cache::atomic_write(&path, &bytes) {
                     notes.push(format!(
                         "could not apply deletion to {}: {error}",
                         path.display()
                     ));
+                }
+            }
+            // Only the chat's *index* goes. Its transcript lives in the
+            // account-agnostic `~/.claude/projects/` and is never touched, so a
+            // confirmed chat stops following you between accounts without the
+            // conversation itself being destroyed.
+            for path in sweep.removals {
+                if let Err(error) = std::fs::remove_file(&path) {
+                    notes.push(format!("could not remove {}: {error}", path.display()));
                 }
             }
         }
@@ -467,7 +475,7 @@ fn apply_switch_while_stopped(
     // intentional deletion from a task that account simply never received.
     if let Err(error) = save_synced(
         &paths.synced_path(),
-        &merge::current_task_ids(&paths.sessions_root()),
+        &merge::current_state(&paths.sessions_root()),
     ) {
         notes.push(format!("could not record the schedule sync: {error}"));
     }
@@ -1160,7 +1168,9 @@ mod tests {
         let recorded = load_synced(&fixture.paths.synced_path());
         assert!(!recorded.is_empty(), "the sync record was never written");
         assert!(
-            recorded.values().all(|ids| !ids.contains("t1")),
+            recorded
+                .values()
+                .all(|state| !state.routines.contains("t1")),
             "{recorded:?} still lists the deleted task"
         );
     }

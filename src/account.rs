@@ -57,7 +57,7 @@ pub fn run(action: &AccountAction) -> i32 {
             keep_bridge,
             backup_sessions,
             keep_backups,
-            delete_routine,
+            delete_conflict,
         } => switch(&SwitchArgs {
             label,
             desktop: *desktop,
@@ -65,7 +65,7 @@ pub fn run(action: &AccountAction) -> i32 {
             dry_run: *dry_run,
             yes: *yes,
             force: *force,
-            delete_routine: delete_routine.clone(),
+            delete_conflict: delete_conflict.clone(),
             opts: SwitchOpts {
                 keep_bridge: *keep_bridge,
                 backup_sessions: *backup_sessions,
@@ -150,7 +150,7 @@ fn status(json: bool) -> i32 {
             .collect();
         // Routines one account deleted that another still holds. Reported here
         // so the macOS menu bar can ask before it starts a switch, then pass
-        // the answer back with `--delete-routine`.
+        // the answer back with `--delete-conflict`.
         let named = |uuid: &str| {
             claude_desktop::label_for_uuid(&profiles, uuid)
                 .unwrap_or(uuid)
@@ -164,6 +164,7 @@ fn status(json: bool) -> i32 {
         .map(|candidate| {
             serde_json::json!({
                 "id": candidate.id,
+                "kind": candidate.kind.label(),
                 "summary": candidate.summary,
                 "deleted_by": named(&candidate.deleted_by),
                 "still_in": candidate.still_in.iter().map(|uuid| named(uuid)).collect::<Vec<_>>(),
@@ -177,7 +178,7 @@ fn status(json: bool) -> i32 {
             "active_label": active_label,
             "active_account_uuid": active_uuid,
             "profiles": rows,
-            "routine_conflicts": conflicts,
+            "deletion_conflicts": conflicts,
         })
     });
 
@@ -404,7 +405,7 @@ struct SwitchArgs<'a> {
     force: bool,
     /// Routine ids an already-answered dialog confirmed for deletion. Non-empty
     /// means the decision is made and nothing is prompted.
-    delete_routine: Vec<String>,
+    delete_conflict: Vec<String>,
     opts: SwitchOpts,
 }
 
@@ -534,14 +535,14 @@ fn resolve_deletions(paths: &Paths, plan: &mut SwitchPlan, args: &SwitchArgs, in
     if plan.deletions.is_empty() {
         return;
     }
-    if !args.delete_routine.is_empty() {
+    if !args.delete_conflict.is_empty() {
         // The caller already asked — the macOS menu bar's dialog, or a script
-        // that listed `routine_conflicts` from `account status --json`. Only
+        // that listed `deletion_conflicts` from `account status --json`. Only
         // ids actually in conflict are honoured, so a stale dialog answered
         // against an older list cannot delete something new.
         let known: BTreeSet<&str> = plan.deletions.iter().map(|c| c.id.as_str()).collect();
         plan.confirmed_deletions = args
-            .delete_routine
+            .delete_conflict
             .iter()
             .filter(|id| known.contains(id.as_str()))
             .cloned()
@@ -562,14 +563,15 @@ fn resolve_deletions(paths: &Paths, plan: &mut SwitchPlan, args: &SwitchArgs, in
 
     println!();
     println!(
-        "Routine conflicts  {} deleted in one account, still present in another",
+        "Deleted elsewhere  {} item(s) deleted in one account, still present in another",
         plan.deletions.len()
     );
     for (index, candidate) in plan.deletions.iter().take(DELETION_PREVIEW).enumerate() {
         let others: Vec<String> = candidate.still_in.iter().map(|uuid| name(uuid)).collect();
         println!(
-            "  {:>2}. {:<34} deleted in {}, still in {}",
+            "  {:>2}. {:<7} {:<34} deleted in {}, still in {}",
             index + 1,
+            candidate.kind.label(),
             candidate.summary,
             name(&candidate.deleted_by),
             others.join(", ")
@@ -594,6 +596,10 @@ fn resolve_deletions(paths: &Paths, plan: &mut SwitchPlan, args: &SwitchArgs, in
     println!("  [k] keep them all (default)      — they stay, and this asks again next time");
     println!("  [d] delete them everywhere       — removed from every account");
     println!("  [c] choose individually");
+    println!(
+        "      (a deleted chat loses only its index — the transcript in \
+         ~/.claude/projects stays)"
+    );
     let answer = ask("> ").unwrap_or_default().to_ascii_lowercase();
     match answer.as_str() {
         "d" | "delete" => {

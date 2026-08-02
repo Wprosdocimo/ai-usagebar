@@ -97,95 +97,223 @@ pub fn plan_session_merge(
     merge
 }
 
-/// What each account held the last time a merge wrote its registry, keyed by
-/// account UUID. Union-merging is additive, so this record is the only way to
-/// tell "this account deleted the task" from "this account never had it".
-pub type SyncedTasks = BTreeMap<String, BTreeSet<String>>;
+/// What one account held the last time a merge touched it.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SyncedAccount {
+    #[serde(default)]
+    pub routines: BTreeSet<String>,
+    /// Session-index filenames (`local_<id>.json`), not transcripts.
+    #[serde(default)]
+    pub sessions: BTreeSet<String>,
+}
 
-/// A task an account deleted that other accounts still hold, so the next merge
-/// would hand it straight back. Only the user can say which they meant, so the
-/// merge surfaces these rather than guessing.
+/// What every account held after the last merge, keyed by account UUID.
+/// Union-merging is additive, so this record is the only way to tell "this
+/// account deleted it" from "this account never had it".
+pub type Synced = BTreeMap<String, SyncedAccount>;
+
+/// Kept for the record written before conversations were covered: a bare list
+/// was routines only. Reading it as such means an existing file keeps working
+/// instead of being silently discarded and re-learned.
+pub fn parse_synced(bytes: &[u8]) -> Synced {
+    if let Ok(current) = serde_json::from_slice::<Synced>(bytes) {
+        return current;
+    }
+    serde_json::from_slice::<BTreeMap<String, BTreeSet<String>>>(bytes)
+        .map(|old| {
+            old.into_iter()
+                .map(|(account, routines)| {
+                    (
+                        account,
+                        SyncedAccount {
+                            routines,
+                            sessions: BTreeSet::new(),
+                        },
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Which of the two things a conflict is about. They live in different files
+/// and are swept differently, but the user answers one question about both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictKind {
+    Routine,
+    Chat,
+}
+
+impl ConflictKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Routine => "routine",
+            Self::Chat => "chat",
+        }
+    }
+}
+
+/// Something an account deleted that other accounts still hold, so the next
+/// merge would hand it straight back. Only the user can say which they meant,
+/// so the merge surfaces these rather than guessing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeletionCandidate {
+    pub kind: ConflictKind,
+    /// Task id for a routine; session-index filename for a chat.
     pub id: String,
     /// Account UUID that had it and no longer does.
     pub deleted_by: String,
     /// Account UUIDs that still hold a copy.
     pub still_in: Vec<String>,
-    /// Short human description — schedule and task file, for the prompt.
+    /// Short human description for the prompt — the id alone is opaque.
     pub summary: String,
 }
 
-/// Every account's current task ids, for refreshing [`SyncedTasks`] after a
-/// merge lands.
-pub fn current_task_ids(sessions_root: &Path) -> SyncedTasks {
-    let mut out = SyncedTasks::new();
+/// Every account's current contents, for refreshing [`Synced`] after a merge.
+pub fn current_state(sessions_root: &Path) -> Synced {
+    let mut out = Synced::new();
     for (account, path) in scheduled_registries(sessions_root) {
         let (tasks, _) = load_scheduled(&path);
         out.entry(account)
             .or_default()
+            .routines
             .extend(tasks.iter().filter_map(task_id));
+    }
+    for (account, dir) in account_dirs(sessions_root) {
+        out.entry(account).or_default().sessions.extend(
+            local_session_files(&dir)
+                .iter()
+                .filter_map(|path| file_name(path)),
+        );
     }
     out
 }
 
-/// Tasks that an account dropped since its last recorded sync but that survive
-/// in another account. Sorted by id so prompts and tests are deterministic.
+/// Routines and chats an account dropped since its last recorded sync that
+/// survive in another account. Sorted for deterministic prompts and tests.
 ///
-/// A task absent from `synced` was never recorded as reaching that account, so
-/// it is simply new and never reported — which also means the very first run,
-/// before any manifest exists, reports nothing and behaves exactly as before.
-pub fn deletion_candidates(sessions_root: &Path, synced: &SyncedTasks) -> Vec<DeletionCandidate> {
-    let mut holders: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut summaries: BTreeMap<String, String> = BTreeMap::new();
-    let mut present: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+/// Anything absent from `synced` was never recorded as reaching that account,
+/// so it is simply new and never reported — which also means the very first
+/// run, before any record exists, reports nothing and behaves exactly as
+/// before.
+pub fn deletion_candidates(sessions_root: &Path, synced: &Synced) -> Vec<DeletionCandidate> {
+    let mut out = Vec::new();
+    let mut routines: Index = Index::default();
+    let mut chats: Index = Index::default();
 
     for (account, path) in scheduled_registries(sessions_root) {
         let (tasks, _) = load_scheduled(&path);
+        routines.seen(&account);
         for task in &tasks {
             let Some(id) = task_id(task) else { continue };
-            holders.entry(id.clone()).or_default().push(account.clone());
-            summaries
-                .entry(id.clone())
-                .or_insert_with(|| describe(task));
-            present.entry(account.clone()).or_default().insert(id);
+            routines.record(&account, id, || describe_task(task));
         }
-        present.entry(account).or_default();
+    }
+    for (account, dir) in account_dirs(sessions_root) {
+        chats.seen(&account);
+        for path in local_session_files(&dir) {
+            let Some(name) = file_name(&path) else {
+                continue;
+            };
+            chats.record(&account, name, || describe_session(&path));
+        }
     }
 
-    let mut out = Vec::new();
     for (account, had) in synced {
-        let holds = present.get(account);
+        routines.collect(ConflictKind::Routine, account, &had.routines, &mut out);
+        chats.collect(ConflictKind::Chat, account, &had.sessions, &mut out);
+    }
+    out.sort_by(|a, b| {
+        a.kind
+            .label()
+            .cmp(b.kind.label())
+            .then(a.id.cmp(&b.id))
+            .then(a.deleted_by.cmp(&b.deleted_by))
+    });
+    out.dedup_by(|a, b| a.kind == b.kind && a.id == b.id);
+    out
+}
+
+/// Who holds what, built once per kind so the deletion scan is a lookup rather
+/// than a rescan per account.
+#[derive(Default)]
+struct Index {
+    holders: BTreeMap<String, Vec<String>>,
+    summaries: BTreeMap<String, String>,
+    present: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl Index {
+    fn seen(&mut self, account: &str) {
+        self.present.entry(account.to_string()).or_default();
+    }
+
+    fn record(&mut self, account: &str, id: String, summary: impl FnOnce() -> String) {
+        self.holders
+            .entry(id.clone())
+            .or_default()
+            .push(account.to_string());
+        self.summaries.entry(id.clone()).or_insert_with(summary);
+        self.present
+            .entry(account.to_string())
+            .or_default()
+            .insert(id);
+    }
+
+    fn collect(
+        &self,
+        kind: ConflictKind,
+        account: &str,
+        had: &BTreeSet<String>,
+        out: &mut Vec<DeletionCandidate>,
+    ) {
+        let holds = self.present.get(account);
         for id in had {
             if holds.is_some_and(|ids| ids.contains(id)) {
                 continue; // still there — not deleted
             }
-            let Some(still_in) = holders.get(id) else {
+            let Some(still_in) = self.holders.get(id) else {
                 continue; // gone everywhere; nothing would resurrect it
             };
             out.push(DeletionCandidate {
+                kind,
                 id: id.clone(),
-                deleted_by: account.clone(),
+                deleted_by: account.to_string(),
                 still_in: still_in.clone(),
-                summary: summaries.get(id).cloned().unwrap_or_default(),
+                summary: self.summaries.get(id).cloned().unwrap_or_default(),
             });
         }
     }
-    out.sort_by(|a, b| a.id.cmp(&b.id).then(a.deleted_by.cmp(&b.deleted_by)));
-    out.dedup_by(|a, b| a.id == b.id);
-    out
 }
 
-/// Remove `doomed` task ids from every account's registry, so a deletion the
-/// user confirmed actually sticks instead of returning on the next switch.
-/// Returns the files to write; nothing is touched here.
+/// Registry rewrites and session-index removals a confirmed deletion implies.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DeletionSweep {
+    pub rewrites: Vec<(PathBuf, Vec<u8>)>,
+    pub removals: Vec<PathBuf>,
+}
+
+impl DeletionSweep {
+    pub fn is_empty(&self) -> bool {
+        self.rewrites.is_empty() && self.removals.is_empty()
+    }
+}
+
+/// Remove `doomed` from every account, so a deletion the user confirmed sticks
+/// instead of returning on the next switch. Returns the work; nothing is
+/// touched here.
+///
+/// A chat is removed by dropping its *index* file. The transcript itself lives
+/// in the account-agnostic `~/.claude/projects/`, which this never touches — so
+/// the conversation stops following you between accounts without the text
+/// being destroyed.
 pub fn plan_deletion_sweep(
     sessions_root: &Path,
     doomed: &BTreeSet<String>,
-) -> Result<Vec<(PathBuf, Vec<u8>)>> {
-    let mut writes = Vec::new();
+) -> Result<DeletionSweep> {
+    let mut sweep = DeletionSweep::default();
     if doomed.is_empty() {
-        return Ok(writes);
+        return Ok(sweep);
     }
     for (_, path) in scheduled_registries(sessions_root) {
         let (tasks, skips) = load_scheduled(&path);
@@ -198,13 +326,60 @@ pub fn plan_deletion_sweep(
             continue; // this registry held none of them
         }
         let merged = serde_json::json!({ "scheduledTasks": kept, "recordedSkips": skips });
-        writes.push((path, serde_json::to_vec(&merged)?));
+        sweep.rewrites.push((path, serde_json::to_vec(&merged)?));
     }
-    Ok(writes)
+    for (_, dir) in account_dirs(sessions_root) {
+        for path in local_session_files(&dir) {
+            if file_name(&path).is_some_and(|name| doomed.contains(&name)) {
+                sweep.removals.push(path);
+            }
+        }
+    }
+    Ok(sweep)
+}
+
+/// `(account uuid, org dir)` for every account/org folder.
+fn account_dirs(sessions_root: &Path) -> Vec<(String, PathBuf)> {
+    account_org_dirs(sessions_root)
+        .into_iter()
+        .filter_map(|dir| {
+            let account = dir.parent()?.file_name()?.to_str()?.to_string();
+            Some((account, dir))
+        })
+        .collect()
+}
+
+fn file_name(path: &Path) -> Option<String> {
+    path.file_name()?.to_str().map(str::to_string)
+}
+
+/// One line naming a chat: its title and the project it ran in.
+fn describe_session(path: &Path) -> String {
+    let Ok(bytes) = std::fs::read(path) else {
+        return file_name(path).unwrap_or_default();
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return file_name(path).unwrap_or_default();
+    };
+    let title = value
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|title| !title.is_empty())
+        .unwrap_or("untitled");
+    match value.get("cwd").and_then(Value::as_str) {
+        Some(cwd) => {
+            let project = Path::new(cwd)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(cwd);
+            format!("{title}  ({project})")
+        }
+        None => title.to_string(),
+    }
 }
 
 /// One line naming a task in the confirmation prompt. The id alone is opaque.
-fn describe(task: &Value) -> String {
+fn describe_task(task: &Value) -> String {
     let cron = task
         .get("cronExpression")
         .and_then(Value::as_str)
@@ -755,13 +930,31 @@ mod tests {
         assert_eq!(merge.updated, 0);
     }
 
-    fn synced(pairs: &[(&str, &[&str])]) -> SyncedTasks {
+    fn synced(pairs: &[(&str, &[&str])]) -> Synced {
         pairs
             .iter()
             .map(|(account, ids)| {
                 (
                     (*account).to_string(),
-                    ids.iter().map(|id| (*id).to_string()).collect(),
+                    SyncedAccount {
+                        routines: ids.iter().map(|id| (*id).to_string()).collect(),
+                        sessions: BTreeSet::new(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn synced_chats(pairs: &[(&str, &[&str])]) -> Synced {
+        pairs
+            .iter()
+            .map(|(account, names)| {
+                (
+                    (*account).to_string(),
+                    SyncedAccount {
+                        routines: BTreeSet::new(),
+                        sessions: names.iter().map(|name| (*name).to_string()).collect(),
+                    },
                 )
             })
             .collect()
@@ -807,7 +1000,7 @@ mod tests {
             r#"{"scheduledTasks":[]}"#,
         );
 
-        assert!(deletion_candidates(sessions, &SyncedTasks::new()).is_empty());
+        assert!(deletion_candidates(sessions, &Synced::new()).is_empty());
         // …and a brand-new account that simply never received it is not a
         // deletion either.
         assert!(deletion_candidates(sessions, &synced(&[("B", &[])])).is_empty());
@@ -851,7 +1044,7 @@ mod tests {
         );
 
         let doomed: BTreeSet<String> = ["t1".to_string()].into_iter().collect();
-        let writes = plan_deletion_sweep(sessions, &doomed).unwrap();
+        let writes = plan_deletion_sweep(sessions, &doomed).unwrap().rewrites;
 
         // C never held t1, so it is not rewritten at all.
         assert_eq!(writes.len(), 2, "{writes:?}");
@@ -873,6 +1066,104 @@ mod tests {
         let a: Value = serde_json::from_slice(a_bytes).unwrap();
         assert_eq!(a["recordedSkips"]["t1"], "keep me");
         assert_eq!(a["scheduledTasks"][0]["id"], "t2");
+    }
+
+    /// A chat B once had and no longer does, while A still holds it — the same
+    /// resurrection a routine suffers, in the other file.
+    #[test]
+    fn a_chat_dropped_by_one_account_is_reported_as_a_deletion() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/local_x.json"),
+            r#"{"lastActivityAt":1,"title":"Refactor the parser","cwd":"/w/ai-usagebar"}"#,
+        );
+        write(
+            &sessions.join("B/O2/local_y.json"),
+            r#"{"lastActivityAt":2}"#,
+        );
+
+        let found = deletion_candidates(sessions, &synced_chats(&[("B", &["local_x.json"])]));
+
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].kind, ConflictKind::Chat);
+        assert_eq!(found[0].id, "local_x.json");
+        assert_eq!(found[0].deleted_by, "B");
+        assert_eq!(found[0].summary, "Refactor the parser  (ai-usagebar)");
+    }
+
+    /// Both kinds surface from one scan, so the user answers a single question.
+    #[test]
+    fn routines_and_chats_are_reported_together() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","cronExpression":"0 5 * * *"}]}"#,
+        );
+        write(&sessions.join("A/O1/local_x.json"), r#"{"title":"Chat"}"#);
+        write(
+            &sessions.join("B/O2/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[]}"#,
+        );
+
+        let mut had = synced(&[("B", &["t1"])]);
+        had.get_mut("B")
+            .unwrap()
+            .sessions
+            .insert("local_x.json".into());
+        let found = deletion_candidates(sessions, &had);
+
+        let kinds: Vec<&str> = found.iter().map(|c| c.kind.label()).collect();
+        assert_eq!(kinds, ["chat", "routine"], "{found:?}");
+    }
+
+    /// Confirming a chat removes its index from every account — and only the
+    /// index, since the transcript lives outside this tree entirely.
+    #[test]
+    fn a_confirmed_chat_deletion_removes_every_index_copy() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(&sessions.join("A/O1/local_x.json"), r#"{"title":"Doomed"}"#);
+        write(&sessions.join("B/O2/local_x.json"), r#"{"title":"Doomed"}"#);
+        write(
+            &sessions.join("B/O2/local_keep.json"),
+            r#"{"title":"Innocent"}"#,
+        );
+
+        let doomed: BTreeSet<String> = ["local_x.json".to_string()].into_iter().collect();
+        let sweep = plan_deletion_sweep(sessions, &doomed).unwrap();
+
+        assert!(sweep.rewrites.is_empty(), "no registry is involved");
+        assert_eq!(sweep.removals.len(), 2, "{:?}", sweep.removals);
+        assert!(sweep.removals.iter().all(|p| p.ends_with("local_x.json")));
+    }
+
+    /// The record written before chats were covered was a bare id list. It has
+    /// to keep working, or upgrading would silently forget every routine and
+    /// re-learn them as new.
+    #[test]
+    fn the_previous_record_format_is_still_understood() {
+        let old = br#"{"acct-a":["t1","t2"]}"#;
+        let parsed = parse_synced(old);
+        assert_eq!(
+            parsed["acct-a"].routines,
+            BTreeSet::from(["t1".to_string(), "t2".to_string()])
+        );
+        assert!(parsed["acct-a"].sessions.is_empty());
+
+        let current = br#"{"acct-a":{"routines":["t1"],"sessions":["local_x.json"]}}"#;
+        let parsed = parse_synced(current);
+        assert_eq!(
+            parsed["acct-a"].routines,
+            BTreeSet::from(["t1".to_string()])
+        );
+        assert_eq!(
+            parsed["acct-a"].sessions,
+            BTreeSet::from(["local_x.json".to_string()])
+        );
+
+        assert!(parse_synced(b"not json").is_empty());
     }
 
     #[test]
@@ -903,12 +1194,12 @@ mod tests {
             r#"{"scheduledTasks":[{"id":"t2"}]}"#,
         );
 
-        let ids = current_task_ids(sessions);
+        let ids = current_state(sessions);
         assert_eq!(
-            ids["A"],
-            ["t1".to_string(), "t2".to_string()].into_iter().collect()
+            ids["A"].routines,
+            BTreeSet::from(["t1".to_string(), "t2".to_string()])
         );
-        assert_eq!(ids["B"], ["t2".to_string()].into_iter().collect());
+        assert_eq!(ids["B"].routines, BTreeSet::from(["t2".to_string()]));
     }
 
     #[test]

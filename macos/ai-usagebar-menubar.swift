@@ -901,17 +901,19 @@ struct AccountStatus: Equatable {
     var cliLabels: [String] = []
     /// Routines one account deleted that another still holds. A switch would
     /// hand them back, so the user is asked before it starts.
-    var routineConflicts: [RoutineConflict] = []
+    var deletionConflicts: [DeletionConflict] = []
 }
 
-struct RoutineConflict: Equatable {
+struct DeletionConflict: Equatable {
     var id: String
+    /// "routine" or "chat" — they are swept differently but answered together.
+    var kind: String
     var summary: String
     var deletedBy: String
     var stillIn: [String]
 
     /// One line for the dialog: what it is, and who dropped it.
-    var line: String { "\(summary) — deleted in \(deletedBy)" }
+    var line: String { "[\(kind)] \(summary) — deleted in \(deletedBy)" }
 }
 
 /// Parse `account status --json`. Every field is optional on purpose: a Mac
@@ -932,10 +934,11 @@ func parseAccountStatus(_ data: Data) -> AccountStatus? {
         (side as? [String: Any])?["active_label"] as? String
     }
     let desktop = root["desktop"], cli = root["cli"]
-    let conflicts = ((desktop as? [String: Any])?["routine_conflicts"] as? [[String: Any]] ?? [])
-        .compactMap { row -> RoutineConflict? in
+    let conflicts = ((desktop as? [String: Any])?["deletion_conflicts"] as? [[String: Any]] ?? [])
+        .compactMap { row -> DeletionConflict? in
             guard let id = row["id"] as? String else { return nil }
-            return RoutineConflict(id: id,
+            return DeletionConflict(id: id,
+                                   kind: row["kind"] as? String ?? "item",
                                    summary: row["summary"] as? String ?? id,
                                    deletedBy: row["deleted_by"] as? String ?? "?",
                                    stillIn: row["still_in"] as? [String] ?? [])
@@ -945,7 +948,7 @@ func parseAccountStatus(_ data: Data) -> AccountStatus? {
                          cliActive: active(cli),
                          desktopLabels: labels(desktop, "profiles"),
                          cliLabels: labels(cli, "accounts"),
-                         routineConflicts: conflicts)
+                         deletionConflicts: conflicts)
 }
 
 /// The one dim line under the header. Empty when neither surface resolved, so
@@ -961,15 +964,15 @@ func accountsSummaryLine(_ s: AccountStatus) -> String {
 /// on a stdin that is not a terminal and abort.
 func switchArgs(label: String, desktop: Bool, deleting: [String] = []) -> [String] {
     var args = ["account", "switch", label, desktop ? "--desktop" : "--cli", "-y"]
-    // Passing any --delete-routine also tells the binary the question was
+    // Passing any --delete-conflict also tells the binary the question was
     // already answered, so it never blocks on a prompt it cannot show here.
-    for id in deleting { args += ["--delete-routine", id] }
+    for id in deleting { args += ["--delete-conflict", id] }
     return args
 }
 
 /// The first few conflicts spelled out, the rest summarised — a switch after a
 /// big clean-up must not grow a dialog taller than the screen.
-func conflictPreview(_ conflicts: [RoutineConflict], limit: Int = 10) -> String {
+func conflictPreview(_ conflicts: [DeletionConflict], limit: Int = 10) -> String {
     var lines = conflicts.prefix(limit).map { "• \($0.line)" }
     if conflicts.count > limit {
         lines.append("… e mais \(conflicts.count - limit)")
@@ -2520,22 +2523,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Routines deleted in one account but alive in another would be handed
         // straight back by the merge. Decide before the switch starts, since a
         // background subprocess has no way to ask.
-        guard let doomed = resolveRoutineConflicts() else { return }
+        guard let doomed = resolveDeletionConflicts() else { return }
         runAccountSwitch(label: label, desktop: true, deleting: doomed)
     }
 
     /// Returns the routine ids to delete everywhere, or nil if the user backed
     /// out of the whole switch. An empty array means "keep them all".
-    private func resolveRoutineConflicts() -> [String]? {
-        let conflicts = lastAccountStatus?.routineConflicts ?? []
+    private func resolveDeletionConflicts() -> [String]? {
+        let conflicts = lastAccountStatus?.deletionConflicts ?? []
         if conflicts.isEmpty { return [] }
 
         let alert = NSAlert()
         alert.messageText = conflicts.count == 1
-            ? "1 rotina foi apagada em uma conta e ainda existe em outra"
-            : "\(conflicts.count) rotinas foram apagadas em uma conta e ainda existem em outra"
+            ? "1 item foi apagado em uma conta e ainda existe em outra"
+            : "\(conflicts.count) itens foram apagados em uma conta e ainda existem em outra"
         alert.informativeText = conflictPreview(conflicts)
-            + "\n\nMantê-las traz de volta as apagadas. Apagar remove de todas as contas."
+            + "\n\nManter traz de volta os apagados. Apagar remove de todas as contas — uma conversa perde só o índice, a transcrição permanece."
         alert.addButton(withTitle: "Manter todas")
         alert.addButton(withTitle: "Apagar em todas")
         alert.addButton(withTitle: "Escolher…")
@@ -2543,14 +2546,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch alert.runModal() {
         case .alertFirstButtonReturn: return []
         case .alertSecondButtonReturn: return conflicts.map { $0.id }
-        default: return chooseRoutineConflicts(conflicts)
+        default: return chooseDeletionConflicts(conflicts)
         }
     }
 
     /// A checkbox per conflict — checked means keep. Everything left unchecked
     /// is deleted everywhere, so the destructive outcome takes a deliberate
     /// uncheck rather than being the default.
-    private func chooseRoutineConflicts(_ conflicts: [RoutineConflict]) -> [String]? {
+    private func chooseDeletionConflicts(_ conflicts: [DeletionConflict]) -> [String]? {
         let rowHeight = 22
         let list = NSStackView(frame: NSRect(x: 0, y: 0, width: 420,
                                              height: rowHeight * conflicts.count))
@@ -2570,8 +2573,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         scroll.documentView = list
 
         let alert = NSAlert()
-        alert.messageText = "Quais rotinas manter?"
-        alert.informativeText = "Marcadas continuam. As desmarcadas são apagadas em todas as contas."
+        alert.messageText = "O que manter?"
+        alert.informativeText = "Marcados continuam. Os desmarcados são apagados em todas as contas."
         alert.accessoryView = scroll
         alert.addButton(withTitle: "Confirmar")
         alert.addButton(withTitle: "Cancelar")
