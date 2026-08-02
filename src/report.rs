@@ -19,7 +19,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::config::Config;
-use crate::tui::app::{TabId, TabState, refresh_one, tabs_from_config};
+use crate::tui::app::{TabId, TabState, refresh_one, tabs_with_desktop};
 use crate::tui::panels::{Section, sections_for};
 
 /// Matches the widget's `--pace-tolerance` default; only affects the pacing
@@ -85,7 +85,7 @@ pub async fn run(json: bool) -> i32 {
         }
     };
 
-    let tabs = tabs_from_config(&config);
+    let tabs = tabs_with_desktop(&config);
     if tabs.is_empty() {
         eprintln!(
             "ai-usagebar usage: no vendors enabled in {}",
@@ -173,6 +173,9 @@ fn tab_id(tab: &TabId) -> String {
 
 fn tab_name(tab: &TabId) -> String {
     match &tab.account {
+        // Mark a Desktop-sourced account so a mixed CLI+Desktop setup is legible;
+        // for a Desktop-only user every Claude row simply reads "· <label> (desktop)".
+        Some(account) if tab.desktop => format!("{} · {account} (desktop)", tab.vendor.slug()),
         Some(account) => format!("{} · {account}", tab.vendor.slug()),
         None => tab.vendor.slug().to_string(),
     }

@@ -143,13 +143,23 @@ pub enum CredsTarget {
     /// fallback would be: the Keychain item is hashed from `config_dir`, so
     /// it can never resolve to a *different* account's credentials.
     Named { path: PathBuf, config_dir: PathBuf },
+    /// The Claude **Desktop app's** own encrypted token store — no `claude` CLI
+    /// login required. Read/decrypt/write-back all live in
+    /// [`super::desktop_creds`]; this variant just carries the resolved source.
+    Desktop(super::desktop_creds::DesktopCreds),
 }
 
 impl CredsTarget {
+    /// Filesystem path backing this target, for diagnostics. A [`Desktop`]
+    /// source has no single credential file (it decrypts a blob), so its
+    /// blob path stands in.
+    ///
+    /// [`Desktop`]: CredsTarget::Desktop
     pub fn path(&self) -> &Path {
         match self {
             CredsTarget::Default(p) | CredsTarget::Explicit(p) => p,
             CredsTarget::Named { path, .. } => path,
+            CredsTarget::Desktop(d) => d.blob_path(),
         }
     }
 }
@@ -168,6 +178,10 @@ pub enum CredsSource {
     /// Code-credentials-<hash>`), keyed by the account's config dir so
     /// write-backs land in the same per-account item they were read from.
     NamedKeychain(PathBuf),
+    /// The Claude Desktop token store; the handle re-encrypts a refreshed token
+    /// back into the same blob it was read from (a no-op for a read-only
+    /// active account).
+    Desktop(super::desktop_creds::Writeback),
 }
 
 /// Credentials that can't possibly authenticate anything: no access token, no
@@ -197,6 +211,10 @@ pub fn resolve(target: &CredsTarget) -> Result<(CredentialsFile, CredsSource)> {
             return read_named_with(path, config_dir, keychain::read_raw_for);
             #[cfg(not(target_os = "macos"))]
             read_named_with(path, config_dir, |_| Ok(None))
+        }
+        CredsTarget::Desktop(desktop) => {
+            let (creds, writeback) = desktop.read()?;
+            Ok((creds, CredsSource::Desktop(writeback)))
         }
     }
 }
@@ -336,6 +354,7 @@ pub fn write_back_to(source: &CredsSource, new_oauth: &OauthCreds) -> Result<()>
         CredsSource::NamedKeychain(_) => Err(AppError::Other(
             "Keychain credentials source is macOS-only".into(),
         )),
+        CredsSource::Desktop(writeback) => writeback.write(new_oauth),
     }
 }
 
