@@ -78,6 +78,46 @@ pub struct Writeback {
     allow_refresh: bool,
 }
 
+/// Resolve a saved Desktop account label to a fetchable target + its cache.
+/// Shared by the TUI and the widget so both surface the same accounts. macOS
+/// only — the Desktop token store and its Keychain key exist nowhere else, and
+/// such accounts are never enumerated off-Mac.
+#[cfg(target_os = "macos")]
+pub fn account_target(
+    config: &crate::config::Config,
+    label: &str,
+) -> Result<(super::creds::CredsTarget, crate::cache::Cache)> {
+    let paths = crate::claude_desktop::Paths::resolve(&config.anthropic)?;
+    let profile = crate::claude_desktop::load_profiles(&paths.profiles_dir)
+        .into_iter()
+        .find(|p| p.label == label)
+        .ok_or_else(|| AppError::Other(format!("no saved Desktop profile {label:?}")))?;
+    let is_active = crate::claude_desktop::active_account_uuid(&paths.config_json())
+        .is_some_and(|uuid| uuid == profile.account_uuid);
+    let key = crate::safe_storage::macos_key()?;
+    let source = source_for(
+        &paths.config_json(),
+        &paths.profile_dir(label),
+        is_active,
+        crate::claude_desktop::app::is_running(),
+        key,
+    );
+    // Plain `anthropic/<label>` cache — one usage source per label — so the
+    // widget, menu bar and `claude-acc list` all read the same file.
+    let cache = crate::cache::Cache::for_vendor_account("anthropic", label)?;
+    Ok((super::creds::CredsTarget::Desktop(source), cache))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn account_target(
+    _config: &crate::config::Config,
+    label: &str,
+) -> Result<(super::creds::CredsTarget, crate::cache::Cache)> {
+    Err(AppError::Other(format!(
+        "Claude Desktop accounts are macOS-only (requested {label:?})"
+    )))
+}
+
 /// Build the credential source for a saved Desktop profile, applying the
 /// refresh-safety policy. The *active* account (the one `config.json` currently
 /// points at) is read from the live `config.json` — kept fresh by the app — and

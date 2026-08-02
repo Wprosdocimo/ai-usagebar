@@ -812,9 +812,32 @@ func showDefaultClaudeAccount(configValue: String?, hasAccounts: Bool) -> Bool {
 
 /// Pseudo-id mapping: `anthropic@<label>` selects a named account.
 let ACCOUNT_ID_PREFIX = "anthropic@"
+// A Claude account whose usage comes from the Desktop app's own token (a saved
+// ~/.claude-acc/profiles/<label>), fetched with the widget's `--desktop` flag.
+// Distinct prefix so `vendorArgs` knows to pass it; every other helper treats it
+// as a Claude account via `accountLabel(of:)`.
+let DESKTOP_ACCOUNT_ID_PREFIX = "anthropic-desktop@"
 
 func accountLabel(of id: String) -> String? {
-    id.hasPrefix(ACCOUNT_ID_PREFIX) ? String(id.dropFirst(ACCOUNT_ID_PREFIX.count)) : nil
+    if id.hasPrefix(DESKTOP_ACCOUNT_ID_PREFIX) {
+        return String(id.dropFirst(DESKTOP_ACCOUNT_ID_PREFIX.count))
+    }
+    return id.hasPrefix(ACCOUNT_ID_PREFIX) ? String(id.dropFirst(ACCOUNT_ID_PREFIX.count)) : nil
+}
+
+func isDesktopAccountId(_ id: String) -> Bool { id.hasPrefix(DESKTOP_ACCOUNT_ID_PREFIX) }
+
+/// Saved Claude Desktop profiles with usable credentials (both encrypted token
+/// caches present), mirroring the Rust `has_credentials` check. Read straight
+/// from the claude-acc profile store so the menu bar needs no extra subprocess.
+func desktopProfileLabels() -> [String] {
+    let dir = "\(NSHomeDirectory())/.claude-acc/profiles"
+    guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return [] }
+    let fm = FileManager.default
+    return entries.filter { label in
+        fm.fileExists(atPath: "\(dir)/\(label)/config-tokenCache")
+            && fm.fileExists(atPath: "\(dir)/\(label)/config-tokenCacheV2")
+    }.sorted()
 }
 
 func baseVendorId(_ id: String) -> String {
@@ -824,7 +847,9 @@ func baseVendorId(_ id: String) -> String {
 /// The subprocess arguments that select `id` (base vendor or named account).
 func vendorArgs(for id: String) -> [String] {
     if let label = accountLabel(of: id) {
-        return ["--vendor", "anthropic", "--account", label]
+        var args = ["--vendor", "anthropic", "--account", label]
+        if isDesktopAccountId(id) { args.append("--desktop") }
+        return args
     }
     return ["--vendor", id]
 }
@@ -860,14 +885,22 @@ func vendorEntries(active: String) -> [MenuEntry] {
     for v in VENDOR_AUTH where vendorEnabled(v) {
         if v.id == "anthropic" {
             let labels = claudeAccountLabels()
+            // Desktop accounts the CLI config doesn't already name — same
+            // dedup as the Rust `tabs_with_desktop` (a configured CLI account
+            // wins its label).
+            let desktop = desktopProfileLabels().filter { !labels.contains($0) }
             let showDefault = showDefaultClaudeAccount(
                 configValue: configValueTOML("anthropic", "show_default_account"),
-                hasAccounts: !labels.isEmpty)
+                hasAccounts: !(labels.isEmpty && desktop.isEmpty))
             if showDefault && (v.id == active || vendorConfigured(v)) {
                 out.append(MenuEntry(id: v.id, name: v.name))
             }
             for label in labels {
                 out.append(MenuEntry(id: ACCOUNT_ID_PREFIX + label, name: "Claude · \(label)"))
+            }
+            for label in desktop {
+                out.append(MenuEntry(id: DESKTOP_ACCOUNT_ID_PREFIX + label,
+                                     name: "Claude · \(label)"))
             }
         } else if v.id == active || vendorConfigured(v) {
             out.append(MenuEntry(id: v.id, name: v.name))

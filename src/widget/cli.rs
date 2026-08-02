@@ -123,6 +123,13 @@ pub struct Cli {
     #[arg(long, value_name = "LABEL", conflicts_with = "creds_path")]
     pub account: Option<String>,
 
+    /// Read `--account <LABEL>`'s usage from the Claude **Desktop app's** own
+    /// token instead of a `claude` CLI credential — a saved
+    /// `~/.claude-acc/profiles/<LABEL>` account, no CLI login required (macOS).
+    /// This is how the menu bar shows Desktop accounts in its overview.
+    #[arg(long, requires = "account")]
+    pub desktop: bool,
+
     /// Administrative command. Omit it to run the normal usage widget.
     #[command(subcommand)]
     pub command: Option<Command>,

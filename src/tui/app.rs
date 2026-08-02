@@ -445,7 +445,9 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             // `credentials_path` is an explicit strict read, and only the
             // platform default gets the macOS Keychain fallback.
             let (creds_target, cache) = match tab.account.as_deref() {
-                Some(label) if tab.desktop => desktop_target(config, label)?,
+                Some(label) if tab.desktop => {
+                    crate::anthropic::desktop_creds::account_target(config, label)?
+                }
                 Some(label) => config.anthropic.account_target(label)?,
                 None => {
                     let target = match config.anthropic.credentials_path.clone() {
@@ -673,48 +675,6 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             Ok(outcome.into())
         }
     }
-}
-
-/// Resolve a Claude Desktop account label to its credential source + cache.
-/// The active account (the one `config.json` points at) reads the live token
-/// and refreshes only while the app is stopped; every other account reads its
-/// own snapshot. The cache is the plain `anthropic/<label>` dir — one usage
-/// source per label — so the widget, menu bar and `claude-acc list` all find
-/// it. macOS-only: the Desktop token store and its Keychain key don't exist
-/// elsewhere, and such tabs are never enumerated off-Mac.
-#[cfg(target_os = "macos")]
-fn desktop_target(
-    config: &Config,
-    label: &str,
-) -> Result<(crate::anthropic::creds::CredsTarget, crate::cache::Cache)> {
-    use crate::error::AppError;
-    let paths = crate::claude_desktop::Paths::resolve(&config.anthropic)?;
-    let profile = crate::claude_desktop::load_profiles(&paths.profiles_dir)
-        .into_iter()
-        .find(|p| p.label == label)
-        .ok_or_else(|| AppError::Other(format!("no saved Desktop profile {label:?}")))?;
-    let is_active = crate::claude_desktop::active_account_uuid(&paths.config_json())
-        .is_some_and(|uuid| uuid == profile.account_uuid);
-    let key = crate::safe_storage::macos_key()?;
-    let source = crate::anthropic::desktop_creds::source_for(
-        &paths.config_json(),
-        &paths.profile_dir(label),
-        is_active,
-        crate::claude_desktop::app::is_running(),
-        key,
-    );
-    let cache = crate::cache::Cache::for_vendor_account("anthropic", label)?;
-    Ok((crate::anthropic::creds::CredsTarget::Desktop(source), cache))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn desktop_target(
-    _config: &Config,
-    label: &str,
-) -> Result<(crate::anthropic::creds::CredsTarget, crate::cache::Cache)> {
-    Err(crate::error::AppError::Other(format!(
-        "Claude Desktop accounts are macOS-only (requested {label:?})"
-    )))
 }
 
 /// Convenience for the watch-driven binary: how long to wait between

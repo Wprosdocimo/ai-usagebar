@@ -647,6 +647,18 @@ fn vendor_cache(cli: &Cli, vendor: &str) -> Result<Cache> {
 /// account behaves byte-identically to before.
 fn anthropic_target(cli: &Cli, config: &Config) -> Result<(CredsTarget, Cache)> {
     match cli.account.as_deref() {
+        // `--account <label> --desktop`: read the Claude Desktop app's own token
+        // for that saved profile (the menu bar's overview path). `--cache-dir`
+        // still relocates the cache for scripted/multi-monitor setups.
+        Some(label) if cli.desktop => {
+            let (target, default_cache) =
+                crate::anthropic::desktop_creds::account_target(config, label)?;
+            let cache = match cli.cache_dir.as_deref() {
+                Some(p) => Cache::at(p.join("anthropic").join(label)),
+                None => default_cache,
+            };
+            Ok((target, cache))
+        }
         Some(label) => named_account_target(cli, config, label),
         None => Ok((
             anthropic_default_creds(cli, config)?,

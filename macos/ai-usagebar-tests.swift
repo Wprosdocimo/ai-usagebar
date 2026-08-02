@@ -593,6 +593,23 @@ func testAccountStatus() {
     assertEqual(nasty.contains(#"'a'\''; rm -rf ~; echo '\'''"#), true, "label is escaped")
 }
 
+func testDesktopAccounts() {
+    // A Desktop account id round-trips through accountLabel (so display, dedup
+    // and baseVendorId treat it as Claude) but is flagged for --desktop.
+    let id = DESKTOP_ACCOUNT_ID_PREFIX + "gmail"
+    assertEqual(accountLabel(of: id), "gmail", "desktop id yields its label")
+    assertEqual(baseVendorId(id), "anthropic", "desktop id is an anthropic entry")
+    assertEqual(isDesktopAccountId(id), true, "desktop id detected")
+    assertEqual(isDesktopAccountId(ACCOUNT_ID_PREFIX + "gmail"), false, "cli id is not desktop")
+
+    // vendorArgs adds --desktop only for a desktop account.
+    assertEqual(vendorArgs(for: id), ["--vendor", "anthropic", "--account", "gmail", "--desktop"],
+                "desktop account passes --desktop")
+    assertEqual(vendorArgs(for: ACCOUNT_ID_PREFIX + "gmail"),
+                ["--vendor", "anthropic", "--account", "gmail"],
+                "cli account omits --desktop")
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -603,6 +620,7 @@ struct TestRunner {
         testOverviewHeadline()
         testVendorCycle()
         testClaudeAccounts()
+        testDesktopAccounts()
         testCompactToggle()
         testShortReset()
         testOverviewProviderToggle()
