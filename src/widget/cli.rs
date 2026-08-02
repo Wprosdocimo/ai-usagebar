@@ -219,6 +219,14 @@ pub enum AccountAction {
         /// Rollback archives to retain.
         #[arg(long, default_value_t = 10)]
         keep_backups: usize,
+
+        /// Confirm that this routine id, deleted in one account but still held
+        /// by another, should be removed everywhere. Repeatable. Supplying any
+        /// suppresses the interactive prompt — ids not listed are kept — which
+        /// is how the macOS menu bar passes an answered dialog through.
+        /// `account status --json` lists the candidates as `routine_conflicts`.
+        #[arg(long, value_name = "ID")]
+        delete_routine: Vec<String>,
     },
 }
 

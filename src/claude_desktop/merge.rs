@@ -8,7 +8,7 @@
 //! algorithm be unit-tested against a temporary directory on any platform.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -95,6 +95,146 @@ pub fn plan_session_merge(
         }
     }
     merge
+}
+
+/// What each account held the last time a merge wrote its registry, keyed by
+/// account UUID. Union-merging is additive, so this record is the only way to
+/// tell "this account deleted the task" from "this account never had it".
+pub type SyncedTasks = BTreeMap<String, BTreeSet<String>>;
+
+/// A task an account deleted that other accounts still hold, so the next merge
+/// would hand it straight back. Only the user can say which they meant, so the
+/// merge surfaces these rather than guessing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletionCandidate {
+    pub id: String,
+    /// Account UUID that had it and no longer does.
+    pub deleted_by: String,
+    /// Account UUIDs that still hold a copy.
+    pub still_in: Vec<String>,
+    /// Short human description — schedule and task file, for the prompt.
+    pub summary: String,
+}
+
+/// Every account's current task ids, for refreshing [`SyncedTasks`] after a
+/// merge lands.
+pub fn current_task_ids(sessions_root: &Path) -> SyncedTasks {
+    let mut out = SyncedTasks::new();
+    for (account, path) in scheduled_registries(sessions_root) {
+        let (tasks, _) = load_scheduled(&path);
+        out.entry(account)
+            .or_default()
+            .extend(tasks.iter().filter_map(task_id));
+    }
+    out
+}
+
+/// Tasks that an account dropped since its last recorded sync but that survive
+/// in another account. Sorted by id so prompts and tests are deterministic.
+///
+/// A task absent from `synced` was never recorded as reaching that account, so
+/// it is simply new and never reported — which also means the very first run,
+/// before any manifest exists, reports nothing and behaves exactly as before.
+pub fn deletion_candidates(sessions_root: &Path, synced: &SyncedTasks) -> Vec<DeletionCandidate> {
+    let mut holders: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut summaries: BTreeMap<String, String> = BTreeMap::new();
+    let mut present: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for (account, path) in scheduled_registries(sessions_root) {
+        let (tasks, _) = load_scheduled(&path);
+        for task in &tasks {
+            let Some(id) = task_id(task) else { continue };
+            holders.entry(id.clone()).or_default().push(account.clone());
+            summaries
+                .entry(id.clone())
+                .or_insert_with(|| describe(task));
+            present.entry(account.clone()).or_default().insert(id);
+        }
+        present.entry(account).or_default();
+    }
+
+    let mut out = Vec::new();
+    for (account, had) in synced {
+        let holds = present.get(account);
+        for id in had {
+            if holds.is_some_and(|ids| ids.contains(id)) {
+                continue; // still there — not deleted
+            }
+            let Some(still_in) = holders.get(id) else {
+                continue; // gone everywhere; nothing would resurrect it
+            };
+            out.push(DeletionCandidate {
+                id: id.clone(),
+                deleted_by: account.clone(),
+                still_in: still_in.clone(),
+                summary: summaries.get(id).cloned().unwrap_or_default(),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id).then(a.deleted_by.cmp(&b.deleted_by)));
+    out.dedup_by(|a, b| a.id == b.id);
+    out
+}
+
+/// Remove `doomed` task ids from every account's registry, so a deletion the
+/// user confirmed actually sticks instead of returning on the next switch.
+/// Returns the files to write; nothing is touched here.
+pub fn plan_deletion_sweep(
+    sessions_root: &Path,
+    doomed: &BTreeSet<String>,
+) -> Result<Vec<(PathBuf, Vec<u8>)>> {
+    let mut writes = Vec::new();
+    if doomed.is_empty() {
+        return Ok(writes);
+    }
+    for (_, path) in scheduled_registries(sessions_root) {
+        let (tasks, skips) = load_scheduled(&path);
+        let before = tasks.len();
+        let kept: Vec<Value> = tasks
+            .into_iter()
+            .filter(|task| task_id(task).is_none_or(|id| !doomed.contains(&id)))
+            .collect();
+        if kept.len() == before {
+            continue; // this registry held none of them
+        }
+        let merged = serde_json::json!({ "scheduledTasks": kept, "recordedSkips": skips });
+        writes.push((path, serde_json::to_vec(&merged)?));
+    }
+    Ok(writes)
+}
+
+/// One line naming a task in the confirmation prompt. The id alone is opaque.
+fn describe(task: &Value) -> String {
+    let cron = task
+        .get("cronExpression")
+        .and_then(Value::as_str)
+        .unwrap_or("no schedule");
+    match task.get("filePath").and_then(Value::as_str) {
+        Some(path) => {
+            let name = Path::new(path)
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .unwrap_or(path);
+            format!("{cron}  ({name})")
+        }
+        None => cron.to_string(),
+    }
+}
+
+/// `(account uuid, registry path)` for every account on this machine.
+fn scheduled_registries(sessions_root: &Path) -> Vec<(String, PathBuf)> {
+    account_org_dirs(sessions_root)
+        .into_iter()
+        .filter_map(|dir| {
+            let path = dir.join(SCHEDULED_TASKS);
+            if !path.is_file() {
+                return None;
+            }
+            let account = dir.parent()?.file_name()?.to_str()?.to_string();
+            Some((account, path))
+        })
+        .collect()
 }
 
 /// Plan the routine/schedule merge: a union by task `id`, with the newer
@@ -613,6 +753,162 @@ mod tests {
         let merge = plan_scheduled_merge(sessions, "A", "O1").unwrap();
         assert_eq!(merge.added, 0);
         assert_eq!(merge.updated, 0);
+    }
+
+    fn synced(pairs: &[(&str, &[&str])]) -> SyncedTasks {
+        pairs
+            .iter()
+            .map(|(account, ids)| {
+                (
+                    (*account).to_string(),
+                    ids.iter().map(|id| (*id).to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// A task B once had and no longer does, while A still holds it: the next
+    /// merge into B would hand it straight back, so it needs confirming.
+    #[test]
+    fn a_task_dropped_by_one_account_is_reported_as_a_deletion() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1,"cronExpression":"0 5 * * *",
+                "filePath":"/x/daily-report/SKILL.md"},{"id":"t2","createdAt":2}]}"#,
+        );
+        write(
+            &sessions.join("B/O2/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t2","createdAt":2}]}"#,
+        );
+
+        let found = deletion_candidates(sessions, &synced(&[("B", &["t1", "t2"])]));
+
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].id, "t1");
+        assert_eq!(found[0].deleted_by, "B");
+        assert_eq!(found[0].still_in, ["A"]);
+        assert_eq!(found[0].summary, "0 5 * * *  (daily-report)");
+    }
+
+    /// The safe-rollout property: with no manifest yet, nothing is a deletion,
+    /// so an upgrade never opens a prompt about tasks it has no history for.
+    #[test]
+    fn nothing_is_a_deletion_without_a_recorded_sync() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1}]}"#,
+        );
+        write(
+            &sessions.join("B/O2/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[]}"#,
+        );
+
+        assert!(deletion_candidates(sessions, &SyncedTasks::new()).is_empty());
+        // …and a brand-new account that simply never received it is not a
+        // deletion either.
+        assert!(deletion_candidates(sessions, &synced(&[("B", &[])])).is_empty());
+    }
+
+    /// Deleted in every account is just deleted — nothing would resurrect it,
+    /// so there is nothing to ask about.
+    #[test]
+    fn a_task_gone_everywhere_is_not_a_conflict() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[]}"#,
+        );
+        write(
+            &sessions.join("B/O2/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[]}"#,
+        );
+
+        let found = deletion_candidates(sessions, &synced(&[("A", &["t1"]), ("B", &["t1"])]));
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_confirmed_deletion_is_swept_from_every_registry() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1},{"id":"t2","createdAt":2}],
+                "recordedSkips":{"t1":"keep me"}}"#,
+        );
+        write(
+            &sessions.join("B/O2/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1}]}"#,
+        );
+        write(
+            &sessions.join("C/O3/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t2","createdAt":2}]}"#,
+        );
+
+        let doomed: BTreeSet<String> = ["t1".to_string()].into_iter().collect();
+        let writes = plan_deletion_sweep(sessions, &doomed).unwrap();
+
+        // C never held t1, so it is not rewritten at all.
+        assert_eq!(writes.len(), 2, "{writes:?}");
+        for (path, bytes) in &writes {
+            let value: Value = serde_json::from_slice(bytes).unwrap();
+            let ids: Vec<&str> = value["scheduledTasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|task| task["id"].as_str().unwrap())
+                .collect();
+            assert!(!ids.contains(&"t1"), "{path:?} still has t1");
+        }
+        // Unrelated state in a rewritten registry survives the sweep.
+        let (_, a_bytes) = writes
+            .iter()
+            .find(|(p, _)| p.ends_with("A/O1/scheduled-tasks.json"))
+            .unwrap();
+        let a: Value = serde_json::from_slice(a_bytes).unwrap();
+        assert_eq!(a["recordedSkips"]["t1"], "keep me");
+        assert_eq!(a["scheduledTasks"][0]["id"], "t2");
+    }
+
+    #[test]
+    fn keeping_everything_rewrites_nothing() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1}]}"#,
+        );
+        assert!(
+            plan_deletion_sweep(sessions, &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn current_task_ids_records_every_account() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1"},{"id":"t2"}]}"#,
+        );
+        write(
+            &sessions.join("B/O2/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t2"}]}"#,
+        );
+
+        let ids = current_task_ids(sessions);
+        assert_eq!(
+            ids["A"],
+            ["t1".to_string(), "t2".to_string()].into_iter().collect()
+        );
+        assert_eq!(ids["B"], ["t2".to_string()].into_iter().collect());
     }
 
     #[test]

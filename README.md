@@ -574,6 +574,22 @@ it cannot save (`--force` overrides, and genuinely discards it).
 claude-acc's format, so if you already use that tool your existing profiles work
 here untouched, and either tool can capture or switch them.
 
+**Deleted routines are confirmed, not silently resurrected.** The history merge
+is a union, so a routine you delete in one account would normally come straight
+back from whichever account still holds a copy. ai-usagebar records what each
+account held after the last merge, so it can tell a real deletion from a routine
+that account simply never received, and asks before acting: keep them all,
+delete them everywhere, or choose individually. Answering "delete" removes the
+routine from every account so it stops following you around. A switch run
+without a terminal — the menu bar's subprocess, a script — always keeps
+everything and says so; deleting is only ever reachable from an answered prompt.
+The macOS menu bar asks the same question in a dialog with a checkbox per
+routine, and passes the answer through as `--delete-routine <id>`;
+`account status --json` lists the pending ones under `routine_conflicts`.
+
+Conversations are not part of this: they reconcile on `lastActivityAt` (newest
+wins, so work in either account survives), and a deleted chat still reappears.
+
 **What this does not do.** Forgetting an account (`remove`) and chat filtering
 (`only` / `reset`) are not implemented — delete a profile directory by hand, or
 use claude-acc. Cowork (agent-mode) sessions are not migrated by a switch and

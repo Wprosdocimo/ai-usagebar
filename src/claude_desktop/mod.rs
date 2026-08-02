@@ -23,6 +23,7 @@ pub mod app;
 pub mod capture;
 pub mod merge;
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -119,6 +120,14 @@ impl Paths {
     pub fn prelogin_dir(&self) -> PathBuf {
         self.backups_dir.with_file_name("prelogin-backup")
     }
+
+    /// What each account's schedule registry held after the last merge, keyed
+    /// by account UUID. Kept beside the profile store rather than inside a
+    /// profile so both this tool and claude-acc read and write one record, and
+    /// so accounts without a captured profile are still tracked.
+    pub fn synced_path(&self) -> PathBuf {
+        self.backups_dir.with_file_name("synced.json")
+    }
 }
 
 /// One saved account in the profile store.
@@ -174,6 +183,22 @@ pub fn load_profiles(profiles_dir: &Path) -> Vec<ProfileMeta> {
         .collect();
     profiles.sort_by(|a, b| a.label.cmp(&b.label));
     profiles
+}
+
+/// Read the schedule sync record. Absent or malformed reads as empty, which
+/// makes every task look new — so a first run, or a corrupted record, reports
+/// no deletions rather than inventing them.
+pub fn load_synced(path: &Path) -> merge::SyncedTasks {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Record what every account holds now, so the next switch can tell a deletion
+/// from a task that account never had.
+pub fn save_synced(path: &Path, synced: &merge::SyncedTasks) -> Result<()> {
+    crate::cache::atomic_write(path, &serde_json::to_vec(synced)?)
 }
 
 /// Which account the Desktop app currently believes it is. This is the app's
@@ -266,6 +291,13 @@ pub struct SwitchPlan {
     pub archive_members: Vec<String>,
     pub restores_desktop_state: bool,
     pub opts: SwitchOpts,
+    /// Schedules an account deleted that others still hold, so this merge would
+    /// resurrect them. The caller decides — a terminal prompt or the menu bar —
+    /// and records the verdict in `confirmed_deletions`.
+    pub deletions: Vec<merge::DeletionCandidate>,
+    /// Task ids the user confirmed should go everywhere. Empty means keep them
+    /// all, which is also what a non-interactive switch must do.
+    pub confirmed_deletions: BTreeSet<String>,
 }
 
 /// Decide the whole switch without performing any of it.
@@ -300,6 +332,7 @@ pub fn plan_switch(paths: &Paths, label: &str, opts: SwitchOpts) -> Result<Switc
         ),
         None => (SessionMerge::default(), None),
     };
+    let deletions = merge::deletion_candidates(&sessions_root, &load_synced(&paths.synced_path()));
 
     let outgoing = active_account_uuid(&paths.config_json())
         .and_then(|uuid| label_for_uuid(&profiles, &uuid).map(str::to_string));
@@ -346,6 +379,8 @@ pub fn plan_switch(paths: &Paths, label: &str, opts: SwitchOpts) -> Result<Switc
         scheduled,
         tokens,
         opts,
+        deletions,
+        confirmed_deletions: BTreeSet::new(),
     })
 }
 
@@ -410,6 +445,31 @@ fn apply_switch_while_stopped(
     }
     if let Some(scheduled) = &plan.scheduled {
         crate::cache::atomic_write(&scheduled.target, &scheduled.bytes)?;
+    }
+    // A confirmed deletion has to leave every registry, or the copy still
+    // sitting in another account hands it back on the next switch and the same
+    // prompt returns forever. Runs after the merge so it also strips anything
+    // the merge just re-added.
+    match merge::plan_deletion_sweep(&paths.sessions_root(), &plan.confirmed_deletions) {
+        Ok(writes) => {
+            for (path, bytes) in writes {
+                if let Err(error) = crate::cache::atomic_write(&path, &bytes) {
+                    notes.push(format!(
+                        "could not apply deletion to {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        Err(error) => notes.push(format!("deletion sweep skipped: {error}")),
+    }
+    // Record what every account holds now, so the next switch can tell an
+    // intentional deletion from a task that account simply never received.
+    if let Err(error) = save_synced(
+        &paths.synced_path(),
+        &merge::current_task_ids(&paths.sessions_root()),
+    ) {
+        notes.push(format!("could not record the schedule sync: {error}"));
     }
 
     // Identify the outgoing account from the *live* config, after the quit:

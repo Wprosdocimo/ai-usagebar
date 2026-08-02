@@ -11,6 +11,27 @@ Each release is also published at
 
 ### Added
 
+- **Deleted routines are now confirmed instead of silently resurrected.** The
+  schedule merge is a union, so deleting a routine in one account meant it came
+  straight back from whichever account still held a copy — and there was no way
+  to tell that apart from a routine the account had simply never received.
+  ai-usagebar now records what each account held after the last merge
+  (`~/.claude-acc/synced.json`, shared with claude-acc) and uses it to detect a
+  genuine deletion, then asks: keep them all, delete them everywhere, or choose
+  individually. Confirming a deletion sweeps the routine from *every* account so
+  it stops returning. The macOS menu bar asks the same question in a dialog with
+  one checkbox per routine — checked keeps it — and passes the verdict through
+  as `--delete-routine <id>`; `account status --json` lists pending conflicts
+  under `routine_conflicts` so scripts can do the same.
+
+  Deleting is only ever reachable from an answered prompt: `-y` does not imply
+  it, and a switch with no terminal (the menu bar's subprocess, a pipe, a cron)
+  keeps everything and says so. With no record yet — the first run after
+  upgrading — nothing is reported as a deletion, so behaviour is unchanged until
+  there is real history to compare against.
+
+### Added
+
 - **`ai-usagebar usage` — quota and time-to-reset for everything in the config,
   in one command.** The widget answers "how is *this* vendor doing" one process
   at a time, which is what a status bar needs and what a person checking on four
