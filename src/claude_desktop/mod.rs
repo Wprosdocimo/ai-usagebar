@@ -464,7 +464,7 @@ fn merge_history_into(
     }
     let routines = match merge::plan_scheduled_merge(&sessions_root, account_uuid, org_uuid) {
         Ok(scheduled) => match crate::cache::atomic_write(&scheduled.target, &scheduled.bytes) {
-            Ok(()) => scheduled.added,
+            Ok(()) => scheduled.added + scheduled.updated,
             Err(error) => {
                 notes.push(format!("schedule seed skipped: {error}"));
                 0

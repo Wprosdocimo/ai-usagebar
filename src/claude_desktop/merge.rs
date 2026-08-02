@@ -7,6 +7,7 @@
 //! `--dry-run` be free (compute the plan, print it, stop) and lets the whole
 //! algorithm be unit-tested against a temporary directory on any platform.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -45,6 +46,9 @@ pub struct ScheduledMerge {
     pub bytes: Vec<u8>,
     /// Tasks the target did not already have.
     pub added: usize,
+    /// Tasks the target already had, whose definition a more recently edited
+    /// registry replaced — an edit made while signed into another account.
+    pub updated: usize,
 }
 
 /// Plan the session-index merge into `<sessions_root>/<account_uuid>/<org_uuid>`.
@@ -107,32 +111,53 @@ pub fn plan_scheduled_merge(
         .join(org_uuid)
         .join(SCHEDULED_TASKS);
     let (target_tasks, mut skips) = load_scheduled(&target);
+    let target_mtime = modified_at(&target);
 
     // A Vec rather than a map: registries hold a handful of entries, and the
-    // target's own tasks must keep their existing order.
-    let mut tasks: Vec<(String, Value)> = target_tasks
+    // target's own tasks must keep their existing order. The third element is
+    // how fresh the registry each task came from is — see the comparison below.
+    let mut tasks: Vec<(String, Value, i64)> = target_tasks
         .into_iter()
-        .filter_map(|task| task_id(&task).map(|id| (id, task)))
+        .filter_map(|task| task_id(&task).map(|id| (id, task, target_mtime)))
         .collect();
     let mut added = 0usize;
+    let mut updated = 0usize;
 
     for source in scheduled_task_files(sessions_root) {
         if source == target {
             continue;
         }
+        let source_mtime = modified_at(&source);
         let (source_tasks, source_skips) = load_scheduled(&source);
         for task in source_tasks {
             let Some(id) = task_id(&task) else {
                 continue;
             };
-            match tasks.iter_mut().find(|(existing, _)| *existing == id) {
-                Some((_, existing)) => {
-                    if created_at(&task) > created_at(existing) {
+            match tasks.iter_mut().find(|(existing, ..)| *existing == id) {
+                Some((_, existing, existing_mtime)) => {
+                    // A scheduled task has no `updatedAt`: editing its cron,
+                    // model, or `enabled` flag leaves `createdAt` untouched.
+                    // Comparing `createdAt` alone therefore drops *every* edit
+                    // made after the task first synced to another account —
+                    // both copies tie, and a tie kept the incumbent. The
+                    // registry file's mtime is the only "who wrote last" signal
+                    // the format offers, and the account just worked in owns
+                    // the freshest one, so it breaks the tie.
+                    let fresher = match created_at(&task).cmp(&created_at(existing)) {
+                        Ordering::Greater => true,
+                        Ordering::Equal => source_mtime > *existing_mtime,
+                        Ordering::Less => false,
+                    };
+                    if fresher {
+                        if *existing != task {
+                            updated += 1;
+                        }
                         *existing = task;
+                        *existing_mtime = source_mtime;
                     }
                 }
                 None => {
-                    tasks.push((id, task));
+                    tasks.push((id, task, source_mtime));
                     added += 1;
                 }
             }
@@ -144,13 +169,14 @@ pub fn plan_scheduled_merge(
     }
 
     let merged = serde_json::json!({
-        "scheduledTasks": tasks.into_iter().map(|(_, task)| task).collect::<Vec<_>>(),
+        "scheduledTasks": tasks.into_iter().map(|(_, task, _)| task).collect::<Vec<_>>(),
         "recordedSkips": skips,
     });
     Ok(ScheduledMerge {
         target,
         bytes: serde_json::to_vec(&merged)?,
         added,
+        updated,
     })
 }
 
@@ -341,6 +367,19 @@ fn created_at(task: &Value) -> i64 {
     task.get("createdAt").map_or(0, json_i64)
 }
 
+/// When a registry file was last written, in epoch milliseconds. Absent or
+/// unreadable counts as the beginning of time, so a file we cannot stat never
+/// wins a tie against one we can.
+fn modified_at(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
 fn last_activity(path: &Path) -> i64 {
     let Ok(bytes) = std::fs::read(path) else {
         return 0;
@@ -463,6 +502,117 @@ mod tests {
         // setdefault semantics: the target's own skip is never overridden.
         assert_eq!(value["recordedSkips"]["t1"], "target");
         assert_eq!(value["recordedSkips"]["t2"], "other");
+    }
+
+    /// Set a file's mtime so a test can say which registry was written last.
+    fn touch(path: &Path, millis_since_epoch: u64) {
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis_since_epoch);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(time))
+            .unwrap();
+    }
+
+    /// A schedule edited while signed into another account: same `id`, same
+    /// `createdAt` (the format has no `updatedAt`), different cron. Comparing
+    /// `createdAt` alone ties, and a tie used to keep the incumbent — silently
+    /// discarding the edit on every switch back.
+    #[test]
+    fn scheduled_merge_takes_an_edit_that_did_not_change_created_at() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        let target = sessions.join("A/O1/scheduled-tasks.json");
+        let source = sessions.join("B/O2/scheduled-tasks.json");
+        write(
+            &target,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"0 5 * * *","enabled":true}]}"#,
+        );
+        write(
+            &source,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"30 9 * * *","enabled":false}]}"#,
+        );
+        touch(&target, 1_000);
+        touch(&source, 2_000); // edited more recently
+
+        let merge = plan_scheduled_merge(sessions, "A", "O1").unwrap();
+
+        assert_eq!(merge.added, 0);
+        assert_eq!(merge.updated, 1, "the edit must be carried across");
+        let value: Value = serde_json::from_slice(&merge.bytes).unwrap();
+        assert_eq!(value["scheduledTasks"][0]["cronExpression"], "30 9 * * *");
+        assert_eq!(value["scheduledTasks"][0]["enabled"], false);
+    }
+
+    /// The mirror image: the target holds the fresher registry, so an older
+    /// copy sitting in another account must not overwrite it.
+    #[test]
+    fn scheduled_merge_keeps_the_target_when_its_registry_is_fresher() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        let target = sessions.join("A/O1/scheduled-tasks.json");
+        let source = sessions.join("B/O2/scheduled-tasks.json");
+        write(
+            &target,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"30 9 * * *"}]}"#,
+        );
+        write(
+            &source,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"0 5 * * *"}]}"#,
+        );
+        touch(&target, 2_000); // target edited more recently
+        touch(&source, 1_000);
+
+        let merge = plan_scheduled_merge(sessions, "A", "O1").unwrap();
+
+        assert_eq!(merge.updated, 0);
+        let value: Value = serde_json::from_slice(&merge.bytes).unwrap();
+        assert_eq!(value["scheduledTasks"][0]["cronExpression"], "30 9 * * *");
+    }
+
+    /// mtime only breaks ties. A genuinely newer `createdAt` — the task was
+    /// deleted and recreated — still wins even from a staler file.
+    #[test]
+    fn a_newer_created_at_wins_regardless_of_file_mtime() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        let target = sessions.join("A/O1/scheduled-tasks.json");
+        let source = sessions.join("B/O2/scheduled-tasks.json");
+        write(
+            &target,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"name":"old"}]}"#,
+        );
+        write(
+            &source,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":500,"name":"recreated"}]}"#,
+        );
+        touch(&target, 9_000); // target file is much fresher…
+        touch(&source, 1_000); // …but the task itself is older
+
+        let merge = plan_scheduled_merge(sessions, "A", "O1").unwrap();
+        let value: Value = serde_json::from_slice(&merge.bytes).unwrap();
+        assert_eq!(value["scheduledTasks"][0]["name"], "recreated");
+    }
+
+    /// An identical copy in a fresher file is not an edit; reporting it as one
+    /// would make every switch claim to have changed something.
+    #[test]
+    fn an_identical_copy_is_not_counted_as_an_edit() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        let target = sessions.join("A/O1/scheduled-tasks.json");
+        let source = sessions.join("B/O2/scheduled-tasks.json");
+        let same =
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"0 5 * * *"}]}"#;
+        write(&target, same);
+        write(&source, same);
+        touch(&target, 1_000);
+        touch(&source, 2_000);
+
+        let merge = plan_scheduled_merge(sessions, "A", "O1").unwrap();
+        assert_eq!(merge.added, 0);
+        assert_eq!(merge.updated, 0);
     }
 
     #[test]

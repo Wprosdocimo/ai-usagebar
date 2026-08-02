@@ -493,12 +493,16 @@ fn print_plan(plan: &SwitchPlan) {
     }
     match plan.target.org_uuid {
         Some(_) => {
-            let routines = plan.scheduled.as_ref().map_or(0, |merge| merge.added);
+            let (new_routines, edited_routines) = plan
+                .scheduled
+                .as_ref()
+                .map_or((0, 0), |merge| (merge.added, merge.updated));
             println!(
-                "  history         {} new + {} refreshed session(s), {routines} routine(s)",
+                "  history         {} new + {} refreshed session(s)",
                 plan.sessions.copied.len(),
                 plan.sessions.updated.len(),
             );
+            println!("  routines        {new_routines} new + {edited_routines} edited elsewhere");
         }
         None => println!("  history         skipped (no org recorded for this account yet)"),
     }

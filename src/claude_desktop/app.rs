@@ -53,11 +53,54 @@ fn set_private_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
 }
 
+/// Whether Claude Desktop is up.
+///
+/// **Not** `pgrep -x Claude`: that matches nothing while the app is running
+/// (verified against a live install — `ps` lists
+/// `/Applications/Claude.app/Contents/MacOS/Claude`, but neither `pgrep -x
+/// Claude` nor `pgrep -f <full path>` finds it). Every liveness check therefore
+/// answered "stopped" instantly, so [`AppControl::quit`] reported success
+/// without ever confirming the app had exited — and would then let a switch
+/// copy live SQLite and LevelDB stores, the exact corruption this guards
+/// against.
+///
+/// AppleScript answers correctly, and asking whether an application `is
+/// running` does not launch it.
 fn is_running() -> bool {
-    Command::new("/usr/bin/pgrep")
-        .args(["-x", "Claude"])
+    Command::new("/usr/bin/osascript")
+        .args(["-e", "application \"Claude\" is running"])
         .output()
-        .is_ok_and(|output| output.status.success())
+        .is_ok_and(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
+        })
+}
+
+/// The app's main process id, for the force-quit fallbacks. `pkill -x Claude`
+/// misses it for the same reason `pgrep` does, so match the executable path
+/// out of `ps` instead — the helper processes have distinct paths and are
+/// deliberately left alone, since quitting the main process takes them with it.
+fn main_pid() -> Option<String> {
+    const MAIN_EXECUTABLE: &str = "/Claude.app/Contents/MacOS/Claude";
+
+    let output = Command::new("/bin/ps")
+        .args(["-Ao", "pid=,comm="])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| {
+            let (pid, command) = line.trim().split_once(char::is_whitespace)?;
+            command
+                .trim()
+                .ends_with(MAIN_EXECUTABLE)
+                .then(|| pid.to_string())
+        })
+}
+
+fn signal_main(signal: &str) {
+    if let Some(pid) = main_pid() {
+        let _ = Command::new("/bin/kill").args([signal, &pid]).output();
+    }
 }
 
 fn wait_until_stopped() -> bool {
@@ -73,8 +116,9 @@ fn wait_until_stopped() -> bool {
 impl AppControl for DesktopApp {
     fn quit(&self) -> Result<()> {
         // Graceful first so the app tears down its own child processes; the
-        // signal is the fallback. Neither touches a `claude` CLI process —
-        // `-x` matches the executable name exactly.
+        // signals are the fallback for a hung app. Neither touches a `claude`
+        // CLI process: the AppleScript targets the Claude application, and the
+        // signals go to one pid matched on the app bundle's executable path.
         let _ = Command::new("/usr/bin/osascript")
             .args(["-e", "tell application \"Claude\" to quit"])
             .output();
@@ -82,15 +126,11 @@ impl AppControl for DesktopApp {
         if wait_until_stopped() {
             return Ok(());
         }
-        let _ = Command::new("/usr/bin/pkill")
-            .args(["-x", "Claude"])
-            .output();
+        signal_main("-TERM");
         if wait_until_stopped() {
             return Ok(());
         }
-        let _ = Command::new("/usr/bin/pkill")
-            .args(["-KILL", "-x", "Claude"])
-            .output();
+        signal_main("-KILL");
         if wait_until_stopped() {
             Ok(())
         } else {
