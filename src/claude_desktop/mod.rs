@@ -1108,6 +1108,85 @@ mod tests {
         assert_eq!(steps[2], "relaunch");
     }
 
+    /// The wiring, not the pieces: a confirmed deletion must actually reach
+    /// every registry through `apply_switch`, and the sync record must be
+    /// written so the next switch can tell deletions from new tasks. Testing
+    /// `plan_deletion_sweep` alone would pass even if nothing called it.
+    #[test]
+    fn a_confirmed_deletion_reaches_every_account_and_updates_the_record() {
+        let fixture = fixture();
+        let sessions = fixture.paths.sessions_root();
+        // Both accounts hold t1; only `there` holds t2.
+        write(
+            &sessions.join("uuid-here/org-1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1}]}"#,
+        );
+        write(
+            &sessions.join("uuid-there/org-2/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1},{"id":"t2","createdAt":2}]}"#,
+        );
+
+        let mut plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+        plan.confirmed_deletions = ["t1".to_string()].into_iter().collect();
+        apply_switch(&fixture.paths, &plan, &Recorder::default()).unwrap();
+
+        for registry in [
+            sessions.join("uuid-here/org-1/scheduled-tasks.json"),
+            sessions.join("uuid-there/org-2/scheduled-tasks.json"),
+        ] {
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&registry).unwrap()).unwrap();
+            let ids: Vec<&str> = value["scheduledTasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|task| task["id"].as_str())
+                .collect();
+            assert!(
+                !ids.contains(&"t1"),
+                "{registry:?} still holds the deleted task"
+            );
+        }
+        // The unrelated task survives, so the sweep is targeted rather than a
+        // blanket wipe of the registry.
+        let there: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(sessions.join("uuid-there/org-2/scheduled-tasks.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(there["scheduledTasks"][0]["id"], "t2");
+
+        // And the record now reflects reality, so t1 is not reported as a
+        // deletion for ever after.
+        let recorded = load_synced(&fixture.paths.synced_path());
+        assert!(!recorded.is_empty(), "the sync record was never written");
+        assert!(
+            recorded.values().all(|ids| !ids.contains("t1")),
+            "{recorded:?} still lists the deleted task"
+        );
+    }
+
+    /// Keeping everything must leave *other* accounts' registries untouched —
+    /// the safe answer has to be genuinely inert, not "delete nothing but
+    /// rewrite everything anyway". The switch target is excluded because the
+    /// ordinary merge rewrites it either way.
+    #[test]
+    fn keeping_every_conflict_leaves_other_accounts_untouched() {
+        let fixture = fixture();
+        let sessions = fixture.paths.sessions_root();
+        let bystander = sessions.join("uuid-here/org-1/scheduled-tasks.json");
+        write(
+            &bystander,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1}]}"#,
+        );
+        let before = std::fs::read(&bystander).unwrap();
+
+        let plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+        assert!(plan.confirmed_deletions.is_empty());
+        apply_switch(&fixture.paths, &plan, &Recorder::default()).unwrap();
+
+        assert_eq!(std::fs::read(&bystander).unwrap(), before);
+    }
+
     #[test]
     fn applying_a_switch_swaps_the_credential_and_carries_history() {
         let fixture = fixture();
