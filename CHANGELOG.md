@@ -9,6 +9,8 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-08-03
+
 ### Added
 
 - **Claude Desktop accounts now report usage with no `claude` CLI login.** A
@@ -24,8 +26,9 @@ Each release is also published at
   The token lives in the app's encrypted `safeStorage` blob; ai-usagebar
   decrypts it with the login-Keychain key (macOS), picks the
   `user:inference`-scoped entry, and maps it onto the existing OAuth path so
-  rendering are unchanged. The **active** account is read-only from the live
-  `config.json` the app keeps fresh; ai-usagebar never rotates that credential,
+  fetching and rendering stay unchanged. The **active** account is read-only
+  from the live `config.json` the app keeps fresh; ai-usagebar never rotates
+  that credential,
   even while the app happens to be stopped. Every other account is read from
   its profile snapshot and refreshed under the same lock as account switching,
   with the rotation written back before a switch can install it. Desktop caches
@@ -67,8 +70,6 @@ Each release is also published at
   editing the desired copy resolves it on the next switch. Existing sync files
   remain readable and keep their flat claude-acc-compatible shape.
 
-### Added
-
 - **`ai-usagebar usage` — quota and time-to-reset for everything in the config,
   in one command.** The widget answers "how is *this* vendor doing" one process
   at a time, which is what a status bar needs and what a person checking on four
@@ -83,6 +84,13 @@ Each release is also published at
 
   Thin by construction: it reuses the TUI's existing tab enumeration, fetch, and
   snapshot-to-sections projection, so no vendor needs to know it exists.
+
+### Changed
+
+- Refreshed the Rust UI, configuration, SQLite, serialization, and base64
+  dependencies and the pinned checkout, artifact, and AUR deployment actions.
+  The resulting dependency graph remains compatible with the declared Rust
+  1.88 minimum.
 
 ### Fixed
 
@@ -1326,7 +1334,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.1...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.18.0...v0.19.0
