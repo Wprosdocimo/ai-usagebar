@@ -590,11 +590,16 @@ destroyed.
 A switch run without a terminal — the menu bar's subprocess, a script — always
 keeps everything and says so; deleting is only ever reachable from an answered
 prompt. The macOS menu bar asks the same question in a dialog with a checkbox
-per item, and passes the answer through as `--delete-conflict <id>`;
-`account status --json` lists the pending ones under `deletion_conflicts`.
+per item, and passes the answer through as `--delete-conflict <key>`;
+`account status --json` lists the pending ones under `deletion_conflicts`. Use
+the returned opaque `key`; the type scope
+prevents a routine id from authorizing deletion of a same-named chat index.
 
-Edits still reconcile independently of this: chats on `lastActivityAt` and
-routines on their registry's mtime, newest wins either way.
+Edits still reconcile independently of this: chats use `lastActivityAt`, while
+routines use a per-task three-way baseline in the sync record. Edits to
+different routines propagate independently. If two accounts edit the same
+routine concurrently, each local copy is preserved and the switch reports the
+conflict; edit the desired copy once more to resolve it on the next switch.
 
 **What this does not do.** Forgetting an account (`remove`) and chat filtering
 (`only` / `reset`) are not implemented — delete a profile directory by hand, or

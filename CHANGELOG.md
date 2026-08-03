@@ -24,15 +24,23 @@ Each release is also published at
   account-agnostic `~/.claude/projects/` is never touched, so the conversation
   stops following you between accounts without the text being destroyed. The
   macOS menu bar asks the same question in a dialog with one checkbox per item —
-  checked keeps it — and passes the verdict through as `--delete-conflict <id>`;
-  `account status --json` lists pending conflicts under `deletion_conflicts` so
-  scripts can do the same.
+  checked keeps it — and passes the verdict through as the type-scoped
+  `--delete-conflict <key>`; `account status --json` lists each pending
+  conflict's opaque `key` under `deletion_conflicts` so scripts can do the same
+  without confusing a routine id with a chat filename.
 
   Deleting is only ever reachable from an answered prompt: `-y` does not imply
   it, and a switch with no terminal (the menu bar's subprocess, a pipe, a cron)
   keeps everything and says so. With no record yet — the first run after
   upgrading — nothing is reported as a deletion, so behaviour is unchanged until
   there is real history to compare against.
+
+- **Routine edits now reconcile per task instead of per registry file.** The
+  sync record keeps a three-way baseline, so editing one routine in each of two
+  accounts preserves both edits. Concurrent edits to the same routine remain
+  local and are reported during the switch instead of silently choosing one;
+  editing the desired copy resolves it on the next switch. Existing sync files
+  remain readable and keep their flat claude-acc-compatible shape.
 
 ### Added
 

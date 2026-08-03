@@ -220,12 +220,13 @@ pub enum AccountAction {
         #[arg(long, default_value_t = 10)]
         keep_backups: usize,
 
-        /// Confirm that this routine id, deleted in one account but still held
-        /// by another, should be removed everywhere. Repeatable. Supplying any
-        /// suppresses the interactive prompt — ids not listed are kept — which
-        /// is how the macOS menu bar passes an answered dialog through.
+        /// Confirm that this type-scoped conflict key, deleted in one account
+        /// but still held by another, should be removed everywhere. Repeatable.
+        /// Supplying any suppresses the interactive prompt — keys not listed
+        /// are kept — which is how the macOS menu bar passes an answered dialog
+        /// through.
         /// `account status --json` lists the candidates as `deletion_conflicts`.
-        #[arg(long, value_name = "ID")]
+        #[arg(long, value_name = "KEY")]
         delete_conflict: Vec<String>,
     },
 }

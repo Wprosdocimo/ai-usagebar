@@ -66,13 +66,40 @@ fn set_private_mode(_path: &Path, _mode: u32) -> Result<()> {
 ///
 /// AppleScript answers correctly, and asking whether an application `is
 /// running` does not launch it.
-fn is_running() -> bool {
-    Command::new("/usr/bin/osascript")
+fn query_running_with(program: &Path) -> Result<bool> {
+    let output = Command::new(program)
         .args(["-e", "application \"Claude\" is running"])
         .output()
-        .is_ok_and(|output| {
-            output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
-        })
+        .map_err(|error| {
+            AppError::Other(format!(
+                "could not determine whether Claude Desktop is running: {error}"
+            ))
+        })?;
+    parse_running_output(
+        output.status.success(),
+        output.status.code(),
+        &output.stdout,
+    )
+}
+
+fn parse_running_output(success: bool, code: Option<i32>, stdout: &[u8]) -> Result<bool> {
+    if !success {
+        return Err(AppError::Other(format!(
+            "could not determine whether Claude Desktop is running (osascript exited {})",
+            code.unwrap_or(-1)
+        )));
+    }
+    match String::from_utf8_lossy(stdout).trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => Err(AppError::Other(format!(
+            "could not determine whether Claude Desktop is running (unexpected response {value:?})"
+        ))),
+    }
+}
+
+fn is_running() -> Result<bool> {
+    query_running_with(Path::new("/usr/bin/osascript"))
 }
 
 /// The app's main process id, for the force-quit fallbacks. `pkill -x Claude`
@@ -103,14 +130,21 @@ fn signal_main(signal: &str) {
     }
 }
 
-fn wait_until_stopped() -> bool {
+fn wait_until_stopped_with(
+    mut probe: impl FnMut() -> Result<bool>,
+    mut pause: impl FnMut(),
+) -> Result<bool> {
     for _ in 0..QUIT_POLLS {
-        if !is_running() {
-            return true;
+        if !probe()? {
+            return Ok(true);
         }
-        std::thread::sleep(QUIT_POLL);
+        pause();
     }
-    !is_running()
+    Ok(!probe()?)
+}
+
+fn wait_until_stopped() -> Result<bool> {
+    wait_until_stopped_with(is_running, || std::thread::sleep(QUIT_POLL))
 }
 
 impl AppControl for DesktopApp {
@@ -123,15 +157,15 @@ impl AppControl for DesktopApp {
             .args(["-e", "tell application \"Claude\" to quit"])
             .output();
         std::thread::sleep(QUIT_GRACE);
-        if wait_until_stopped() {
+        if wait_until_stopped()? {
             return Ok(());
         }
         signal_main("-TERM");
-        if wait_until_stopped() {
+        if wait_until_stopped()? {
             return Ok(());
         }
         signal_main("-KILL");
-        if wait_until_stopped() {
+        if wait_until_stopped()? {
             Ok(())
         } else {
             Err(AppError::Other(
@@ -262,6 +296,34 @@ impl AppControl for Recorder {
             members.join(", ")
         ));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+
+    #[test]
+    fn liveness_accepts_only_explicit_boolean_output() {
+        assert!(parse_running_output(true, Some(0), b"true\n").unwrap());
+        assert!(!parse_running_output(true, Some(0), b"false\n").unwrap());
+        assert!(parse_running_output(true, Some(0), b"unknown\n").is_err());
+        assert!(parse_running_output(false, Some(1), b"false\n").is_err());
+    }
+
+    #[test]
+    fn a_probe_launch_failure_is_not_treated_as_stopped() {
+        let missing = Path::new("/definitely/not/an/osascript/binary");
+        assert!(query_running_with(missing).is_err());
+    }
+
+    #[test]
+    fn wait_aborts_on_an_unknown_liveness_state() {
+        let result = wait_until_stopped_with(
+            || Err(AppError::Other("probe failed".into())),
+            || panic!("an unknown state must abort before sleeping"),
+        );
+        assert!(result.is_err());
     }
 }
 

@@ -294,9 +294,12 @@ pub struct SwitchPlan {
     /// resurrect them. The caller decides — a terminal prompt or the menu bar —
     /// and records the verdict in `confirmed_deletions`.
     pub deletions: Vec<merge::DeletionCandidate>,
-    /// Task ids the user confirmed should go everywhere. Empty means keep them
-    /// all, which is also what a non-interactive switch must do.
-    pub confirmed_deletions: BTreeSet<String>,
+    /// Type-scoped items the user confirmed should go everywhere. Empty means
+    /// keep them all, which is also what a non-interactive switch must do.
+    pub confirmed_deletions: BTreeSet<merge::DeletionKey>,
+    /// Baseline used to plan this switch. Apply combines it with the actual
+    /// post-write state so unresolved definitions remain unresolved safely.
+    pub prior_synced: merge::Synced,
 }
 
 /// Decide the whole switch without performing any of it.
@@ -320,6 +323,7 @@ pub fn plan_switch(paths: &Paths, label: &str, opts: SwitchOpts) -> Result<Switc
         })?;
 
     let sessions_root = paths.sessions_root();
+    let synced = load_synced(&paths.synced_path());
     let (sessions, scheduled) = match &target.org_uuid {
         Some(org) => (
             merge::plan_session_merge(&sessions_root, &target.account_uuid, org),
@@ -327,11 +331,12 @@ pub fn plan_switch(paths: &Paths, label: &str, opts: SwitchOpts) -> Result<Switc
                 &sessions_root,
                 &target.account_uuid,
                 org,
+                &synced,
             )?),
         ),
         None => (SessionMerge::default(), None),
     };
-    let deletions = merge::deletion_candidates(&sessions_root, &load_synced(&paths.synced_path()));
+    let deletions = merge::deletion_candidates(&sessions_root, &synced);
 
     let outgoing = active_account_uuid(&paths.config_json())
         .and_then(|uuid| label_for_uuid(&profiles, &uuid).map(str::to_string));
@@ -380,6 +385,7 @@ pub fn plan_switch(paths: &Paths, label: &str, opts: SwitchOpts) -> Result<Switc
         opts,
         deletions,
         confirmed_deletions: BTreeSet::new(),
+        prior_synced: synced,
     })
 }
 
@@ -393,7 +399,18 @@ pub fn apply_switch(paths: &Paths, plan: &SwitchPlan, app: &dyn AppControl) -> R
     let members: Vec<&str> = plan.archive_members.iter().map(String::as_str).collect();
 
     // Stop before archiving so SQLite/LevelDB and config.json are quiescent.
-    app.quit()?;
+    if let Err(error) = app.quit() {
+        // A fail-closed liveness probe can report an error after the graceful
+        // quit request already stopped Claude. Relaunch is harmless if it was
+        // still running and preserves the invariant that an attempted switch
+        // never leaves the app closed solely because verification failed.
+        return match app.relaunch() {
+            Ok(()) => Err(error),
+            Err(relaunch) => Err(AppError::Other(format!(
+                "{error}; Claude Desktop also could not be relaunched: {relaunch}"
+            ))),
+        };
+    }
     let mut archived = false;
     let mut result = (|| {
         if !members.is_empty() {
@@ -473,10 +490,24 @@ fn apply_switch_while_stopped(
     }
     // Record what every account holds now, so the next switch can tell an
     // intentional deletion from a task that account simply never received.
-    if let Err(error) = save_synced(
-        &paths.synced_path(),
-        &merge::current_state(&paths.sessions_root()),
-    ) {
+    let mut synced = merge::current_state(&paths.sessions_root());
+    let mut canonical = plan
+        .scheduled
+        .as_ref()
+        .map(|scheduled| scheduled.canonical_routines.clone())
+        .unwrap_or_else(|| merge::canonical_routines(&plan.prior_synced));
+    for key in &plan.confirmed_deletions {
+        if key.kind == merge::ConflictKind::Routine {
+            canonical.remove(&key.id);
+        }
+    }
+    let present: BTreeSet<String> = synced
+        .values()
+        .flat_map(|account| account.routines.iter().cloned())
+        .collect();
+    canonical.retain(|id, _| present.contains(id));
+    merge::set_canonical_routines(&mut synced, &canonical);
+    if let Err(error) = save_synced(&paths.synced_path(), &synced) {
         notes.push(format!("could not record the schedule sync: {error}"));
     }
 
@@ -530,7 +561,12 @@ fn merge_history_into(
             Err(error) => notes.push(format!("could not seed {}: {error}", destination.display())),
         }
     }
-    let routines = match merge::plan_scheduled_merge(&sessions_root, account_uuid, org_uuid) {
+    let routines = match merge::plan_scheduled_merge(
+        &sessions_root,
+        account_uuid,
+        org_uuid,
+        &load_synced(&paths.synced_path()),
+    ) {
         Ok(scheduled) => match crate::cache::atomic_write(&scheduled.target, &scheduled.bytes) {
             Ok(()) => scheduled.added + scheduled.updated,
             Err(error) => {
@@ -903,10 +939,36 @@ fn timestamp() -> String {
 mod tests {
     use super::*;
     use app::Recorder;
+    use std::cell::RefCell;
 
     struct Fixture {
         _root: tempfile::TempDir,
         paths: Paths,
+    }
+
+    #[derive(Default)]
+    struct QuitFailure {
+        steps: RefCell<Vec<&'static str>>,
+    }
+
+    impl AppControl for QuitFailure {
+        fn quit(&self) -> Result<()> {
+            self.steps.borrow_mut().push("quit");
+            Err(AppError::Other("liveness probe failed".into()))
+        }
+
+        fn relaunch(&self) -> Result<()> {
+            self.steps.borrow_mut().push("relaunch");
+            Ok(())
+        }
+
+        fn archive(&self, _archive: &Path, _root: &Path, _members: &[&str]) -> Result<()> {
+            panic!("archive must not run after an unconfirmed quit")
+        }
+
+        fn restore(&self, _archive: &Path, _root: &Path, _members: &[&str]) -> Result<()> {
+            panic!("restore must not run before a switch starts")
+        }
     }
 
     fn write(path: &Path, contents: &str) {
@@ -1116,6 +1178,20 @@ mod tests {
         assert_eq!(steps[2], "relaunch");
     }
 
+    #[test]
+    fn a_failed_liveness_probe_relaunches_without_touching_account_data() {
+        let fixture = fixture();
+        let plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+        let before = std::fs::read(fixture.paths.config_json()).unwrap();
+        let app = QuitFailure::default();
+
+        let error = apply_switch(&fixture.paths, &plan, &app).unwrap_err();
+
+        assert!(error.to_string().contains("liveness probe failed"));
+        assert_eq!(*app.steps.borrow(), ["quit", "relaunch"]);
+        assert_eq!(std::fs::read(fixture.paths.config_json()).unwrap(), before);
+    }
+
     /// The wiring, not the pieces: a confirmed deletion must actually reach
     /// every registry through `apply_switch`, and the sync record must be
     /// written so the next switch can tell deletions from new tasks. Testing
@@ -1135,7 +1211,14 @@ mod tests {
         );
 
         let mut plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
-        plan.confirmed_deletions = ["t1".to_string()].into_iter().collect();
+        plan.confirmed_deletions = [merge::DeletionKey {
+            kind: merge::ConflictKind::Routine,
+            id: "t1".to_string(),
+            deleted_by: "uuid-here".to_string(),
+            still_in: vec!["uuid-there".to_string()],
+        }]
+        .into_iter()
+        .collect();
         apply_switch(&fixture.paths, &plan, &Recorder::default()).unwrap();
 
         for registry in [

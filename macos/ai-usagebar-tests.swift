@@ -550,11 +550,12 @@ func testAccountStatus() {
     // Routines deleted in one account but alive in another.
     let withConflicts = parseAccountStatus(Data("""
         {"desktop":{"available":true,"profiles":[{"label":"gmail"}],"deletion_conflicts":[
-          {"id":"t1","kind":"routine","summary":"0 5 * * *  (daily-report)","deleted_by":"hotmail",
+          {"key":"opaque-conflict-1","id":"t1","kind":"routine","summary":"0 5 * * *  (daily-report)","deleted_by":"hotmail",
            "still_in":["gmail","struct"]}]}}
         """.utf8))
     assertEqual(withConflicts?.deletionConflicts.count, 1, "conflict parsed")
     assertEqual(withConflicts?.deletionConflicts.first?.id, "t1", "conflict id")
+    assertEqual(withConflicts?.deletionConflicts.first?.key, "opaque-conflict-1", "typed conflict key")
     assertEqual(withConflicts?.deletionConflicts.first?.line,
                 "[routine] 0 5 * * *  (daily-report) — deleted in hotmail", "conflict line")
     // An older binary has no such key, and a status with none must stay empty
@@ -563,7 +564,7 @@ func testAccountStatus() {
                 "absent deletion_conflicts is empty")
 
     let many = (1...12).map {
-        DeletionConflict(id: "t\($0)", kind: "chat", summary: "s\($0)",
+        DeletionConflict(key: "opaque-\($0)", id: "t\($0)", kind: "chat", summary: "s\($0)",
                          deletedBy: "b", stillIn: ["a"])
     }
     assertEqual(conflictPreview(many).components(separatedBy: "\n").count, 11,
@@ -572,9 +573,11 @@ func testAccountStatus() {
     assertEqual(conflictPreview(Array(many.prefix(3))).contains("e mais"), false,
                 "a short list is not summarised")
 
-    assertEqual(switchArgs(label: "work", desktop: true, deleting: ["t1", "t2"]),
+    assertEqual(switchArgs(label: "work", desktop: true,
+                           deleting: ["opaque-1", "opaque-2"]),
                 ["account", "switch", "work", "--desktop", "-y",
-                 "--delete-conflict", "t1", "--delete-conflict", "t2"],
+                 "--delete-conflict", "opaque-1",
+                 "--delete-conflict", "opaque-2"],
                 "confirmed deletions are passed through")
     assertEqual(switchArgs(label: "work", desktop: true),
                 ["account", "switch", "work", "--desktop", "-y"], "desktop switch args")
