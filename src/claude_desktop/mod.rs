@@ -23,6 +23,7 @@ pub mod app;
 pub mod capture;
 pub mod merge;
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -119,6 +120,14 @@ impl Paths {
     pub fn prelogin_dir(&self) -> PathBuf {
         self.backups_dir.with_file_name("prelogin-backup")
     }
+
+    /// What each account's schedule registry held after the last merge, keyed
+    /// by account UUID. Kept beside the profile store rather than inside a
+    /// profile so both this tool and claude-acc read and write one record, and
+    /// so accounts without a captured profile are still tracked.
+    pub fn synced_path(&self) -> PathBuf {
+        self.backups_dir.with_file_name("synced.json")
+    }
 }
 
 /// One saved account in the profile store.
@@ -174,6 +183,21 @@ pub fn load_profiles(profiles_dir: &Path) -> Vec<ProfileMeta> {
         .collect();
     profiles.sort_by(|a, b| a.label.cmp(&b.label));
     profiles
+}
+
+/// Read the schedule sync record. Absent or malformed reads as empty, which
+/// makes every task look new — so a first run, or a corrupted record, reports
+/// no deletions rather than inventing them.
+pub fn load_synced(path: &Path) -> merge::Synced {
+    std::fs::read(path)
+        .map(|bytes| merge::parse_synced(&bytes))
+        .unwrap_or_default()
+}
+
+/// Record what every account holds now, so the next switch can tell a deletion
+/// from a task that account never had.
+pub fn save_synced(path: &Path, synced: &merge::Synced) -> Result<()> {
+    crate::cache::atomic_write(path, &serde_json::to_vec(synced)?)
 }
 
 /// Which account the Desktop app currently believes it is. This is the app's
@@ -266,6 +290,16 @@ pub struct SwitchPlan {
     pub archive_members: Vec<String>,
     pub restores_desktop_state: bool,
     pub opts: SwitchOpts,
+    /// Schedules an account deleted that others still hold, so this merge would
+    /// resurrect them. The caller decides — a terminal prompt or the menu bar —
+    /// and records the verdict in `confirmed_deletions`.
+    pub deletions: Vec<merge::DeletionCandidate>,
+    /// Type-scoped items the user confirmed should go everywhere. Empty means
+    /// keep them all, which is also what a non-interactive switch must do.
+    pub confirmed_deletions: BTreeSet<merge::DeletionKey>,
+    /// Baseline used to plan this switch. Apply combines it with the actual
+    /// post-write state so unresolved definitions remain unresolved safely.
+    pub prior_synced: merge::Synced,
 }
 
 /// Decide the whole switch without performing any of it.
@@ -289,6 +323,7 @@ pub fn plan_switch(paths: &Paths, label: &str, opts: SwitchOpts) -> Result<Switc
         })?;
 
     let sessions_root = paths.sessions_root();
+    let synced = load_synced(&paths.synced_path());
     let (sessions, scheduled) = match &target.org_uuid {
         Some(org) => (
             merge::plan_session_merge(&sessions_root, &target.account_uuid, org),
@@ -296,10 +331,12 @@ pub fn plan_switch(paths: &Paths, label: &str, opts: SwitchOpts) -> Result<Switc
                 &sessions_root,
                 &target.account_uuid,
                 org,
+                &synced,
             )?),
         ),
         None => (SessionMerge::default(), None),
     };
+    let deletions = merge::deletion_candidates(&sessions_root, &synced);
 
     let outgoing = active_account_uuid(&paths.config_json())
         .and_then(|uuid| label_for_uuid(&profiles, &uuid).map(str::to_string));
@@ -346,6 +383,9 @@ pub fn plan_switch(paths: &Paths, label: &str, opts: SwitchOpts) -> Result<Switc
         scheduled,
         tokens,
         opts,
+        deletions,
+        confirmed_deletions: BTreeSet::new(),
+        prior_synced: synced,
     })
 }
 
@@ -359,7 +399,18 @@ pub fn apply_switch(paths: &Paths, plan: &SwitchPlan, app: &dyn AppControl) -> R
     let members: Vec<&str> = plan.archive_members.iter().map(String::as_str).collect();
 
     // Stop before archiving so SQLite/LevelDB and config.json are quiescent.
-    app.quit()?;
+    if let Err(error) = app.quit() {
+        // A fail-closed liveness probe can report an error after the graceful
+        // quit request already stopped Claude. Relaunch is harmless if it was
+        // still running and preserves the invariant that an attempted switch
+        // never leaves the app closed solely because verification failed.
+        return match app.relaunch() {
+            Ok(()) => Err(error),
+            Err(relaunch) => Err(AppError::Other(format!(
+                "{error}; Claude Desktop also could not be relaunched: {relaunch}"
+            ))),
+        };
+    }
     let mut archived = false;
     let mut result = (|| {
         if !members.is_empty() {
@@ -410,6 +461,54 @@ fn apply_switch_while_stopped(
     }
     if let Some(scheduled) = &plan.scheduled {
         crate::cache::atomic_write(&scheduled.target, &scheduled.bytes)?;
+    }
+    // A confirmed deletion has to leave every registry, or the copy still
+    // sitting in another account hands it back on the next switch and the same
+    // prompt returns forever. Runs after the merge so it also strips anything
+    // the merge just re-added.
+    match merge::plan_deletion_sweep(&paths.sessions_root(), &plan.confirmed_deletions) {
+        Ok(sweep) => {
+            for (path, bytes) in sweep.rewrites {
+                if let Err(error) = crate::cache::atomic_write(&path, &bytes) {
+                    notes.push(format!(
+                        "could not apply deletion to {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+            // Only the chat's *index* goes. Its transcript lives in the
+            // account-agnostic `~/.claude/projects/` and is never touched, so a
+            // confirmed chat stops following you between accounts without the
+            // conversation itself being destroyed.
+            for path in sweep.removals {
+                if let Err(error) = std::fs::remove_file(&path) {
+                    notes.push(format!("could not remove {}: {error}", path.display()));
+                }
+            }
+        }
+        Err(error) => notes.push(format!("deletion sweep skipped: {error}")),
+    }
+    // Record what every account holds now, so the next switch can tell an
+    // intentional deletion from a task that account simply never received.
+    let mut synced = merge::current_state(&paths.sessions_root());
+    let mut canonical = plan
+        .scheduled
+        .as_ref()
+        .map(|scheduled| scheduled.canonical_routines.clone())
+        .unwrap_or_else(|| merge::canonical_routines(&plan.prior_synced));
+    for key in &plan.confirmed_deletions {
+        if key.kind == merge::ConflictKind::Routine {
+            canonical.remove(&key.id);
+        }
+    }
+    let present: BTreeSet<String> = synced
+        .values()
+        .flat_map(|account| account.routines.iter().cloned())
+        .collect();
+    canonical.retain(|id, _| present.contains(id));
+    merge::set_canonical_routines(&mut synced, &canonical);
+    if let Err(error) = save_synced(&paths.synced_path(), &synced) {
+        notes.push(format!("could not record the schedule sync: {error}"));
     }
 
     // Identify the outgoing account from the *live* config, after the quit:
@@ -462,9 +561,14 @@ fn merge_history_into(
             Err(error) => notes.push(format!("could not seed {}: {error}", destination.display())),
         }
     }
-    let routines = match merge::plan_scheduled_merge(&sessions_root, account_uuid, org_uuid) {
+    let routines = match merge::plan_scheduled_merge(
+        &sessions_root,
+        account_uuid,
+        org_uuid,
+        &load_synced(&paths.synced_path()),
+    ) {
         Ok(scheduled) => match crate::cache::atomic_write(&scheduled.target, &scheduled.bytes) {
-            Ok(()) => scheduled.added,
+            Ok(()) => scheduled.added + scheduled.updated,
             Err(error) => {
                 notes.push(format!("schedule seed skipped: {error}"));
                 0
@@ -835,10 +939,36 @@ fn timestamp() -> String {
 mod tests {
     use super::*;
     use app::Recorder;
+    use std::cell::RefCell;
 
     struct Fixture {
         _root: tempfile::TempDir,
         paths: Paths,
+    }
+
+    #[derive(Default)]
+    struct QuitFailure {
+        steps: RefCell<Vec<&'static str>>,
+    }
+
+    impl AppControl for QuitFailure {
+        fn quit(&self) -> Result<()> {
+            self.steps.borrow_mut().push("quit");
+            Err(AppError::Other("liveness probe failed".into()))
+        }
+
+        fn relaunch(&self) -> Result<()> {
+            self.steps.borrow_mut().push("relaunch");
+            Ok(())
+        }
+
+        fn archive(&self, _archive: &Path, _root: &Path, _members: &[&str]) -> Result<()> {
+            panic!("archive must not run after an unconfirmed quit")
+        }
+
+        fn restore(&self, _archive: &Path, _root: &Path, _members: &[&str]) -> Result<()> {
+            panic!("restore must not run before a switch starts")
+        }
     }
 
     fn write(path: &Path, contents: &str) {
@@ -1046,6 +1176,108 @@ mod tests {
         assert_eq!(steps[0], "quit");
         assert!(steps[1].starts_with("archive "), "{steps:?}");
         assert_eq!(steps[2], "relaunch");
+    }
+
+    #[test]
+    fn a_failed_liveness_probe_relaunches_without_touching_account_data() {
+        let fixture = fixture();
+        let plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+        let before = std::fs::read(fixture.paths.config_json()).unwrap();
+        let app = QuitFailure::default();
+
+        let error = apply_switch(&fixture.paths, &plan, &app).unwrap_err();
+
+        assert!(error.to_string().contains("liveness probe failed"));
+        assert_eq!(*app.steps.borrow(), ["quit", "relaunch"]);
+        assert_eq!(std::fs::read(fixture.paths.config_json()).unwrap(), before);
+    }
+
+    /// The wiring, not the pieces: a confirmed deletion must actually reach
+    /// every registry through `apply_switch`, and the sync record must be
+    /// written so the next switch can tell deletions from new tasks. Testing
+    /// `plan_deletion_sweep` alone would pass even if nothing called it.
+    #[test]
+    fn a_confirmed_deletion_reaches_every_account_and_updates_the_record() {
+        let fixture = fixture();
+        let sessions = fixture.paths.sessions_root();
+        // Both accounts hold t1; only `there` holds t2.
+        write(
+            &sessions.join("uuid-here/org-1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1}]}"#,
+        );
+        write(
+            &sessions.join("uuid-there/org-2/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1},{"id":"t2","createdAt":2}]}"#,
+        );
+
+        let mut plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+        plan.confirmed_deletions = [merge::DeletionKey {
+            kind: merge::ConflictKind::Routine,
+            id: "t1".to_string(),
+            deleted_by: "uuid-here".to_string(),
+            still_in: vec!["uuid-there".to_string()],
+        }]
+        .into_iter()
+        .collect();
+        apply_switch(&fixture.paths, &plan, &Recorder::default()).unwrap();
+
+        for registry in [
+            sessions.join("uuid-here/org-1/scheduled-tasks.json"),
+            sessions.join("uuid-there/org-2/scheduled-tasks.json"),
+        ] {
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&registry).unwrap()).unwrap();
+            let ids: Vec<&str> = value["scheduledTasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|task| task["id"].as_str())
+                .collect();
+            assert!(
+                !ids.contains(&"t1"),
+                "{registry:?} still holds the deleted task"
+            );
+        }
+        // The unrelated task survives, so the sweep is targeted rather than a
+        // blanket wipe of the registry.
+        let there: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(sessions.join("uuid-there/org-2/scheduled-tasks.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(there["scheduledTasks"][0]["id"], "t2");
+
+        // And the record now reflects reality, so t1 is not reported as a
+        // deletion for ever after.
+        let recorded = load_synced(&fixture.paths.synced_path());
+        assert!(!recorded.is_empty(), "the sync record was never written");
+        assert!(
+            recorded
+                .values()
+                .all(|state| !state.routines.contains("t1")),
+            "{recorded:?} still lists the deleted task"
+        );
+    }
+
+    /// Keeping everything must leave *other* accounts' registries untouched —
+    /// the safe answer has to be genuinely inert, not "delete nothing but
+    /// rewrite everything anyway". The switch target is excluded because the
+    /// ordinary merge rewrites it either way.
+    #[test]
+    fn keeping_every_conflict_leaves_other_accounts_untouched() {
+        let fixture = fixture();
+        let sessions = fixture.paths.sessions_root();
+        let bystander = sessions.join("uuid-here/org-1/scheduled-tasks.json");
+        write(
+            &bystander,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1}]}"#,
+        );
+        let before = std::fs::read(&bystander).unwrap();
+
+        let plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+        assert!(plan.confirmed_deletions.is_empty());
+        apply_switch(&fixture.paths, &plan, &Recorder::default()).unwrap();
+
+        assert_eq!(std::fs::read(&bystander).unwrap(), before);
     }
 
     #[test]

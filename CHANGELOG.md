@@ -11,6 +11,39 @@ Each release is also published at
 
 ### Added
 
+- **Deleted routines and chats are now confirmed instead of silently
+  resurrected.** The merge is a union, so deleting a routine or a conversation
+  in one account meant it came straight back from whichever account still held a
+  copy — and there was no way to tell that apart from something the account had
+  simply never received.
+  ai-usagebar now records what each account held after the last merge
+  (`~/.claude-acc/synced.json`, shared with claude-acc) and uses it to detect a
+  genuine deletion, then asks: keep them all, delete them everywhere, or choose
+  individually. Confirming sweeps it from *every* account so it stops returning.
+  A confirmed chat loses only its **index** — the transcript in the
+  account-agnostic `~/.claude/projects/` is never touched, so the conversation
+  stops following you between accounts without the text being destroyed. The
+  macOS menu bar asks the same question in a dialog with one checkbox per item —
+  checked keeps it — and passes the verdict through as the type-scoped
+  `--delete-conflict <key>`; `account status --json` lists each pending
+  conflict's opaque `key` under `deletion_conflicts` so scripts can do the same
+  without confusing a routine id with a chat filename.
+
+  Deleting is only ever reachable from an answered prompt: `-y` does not imply
+  it, and a switch with no terminal (the menu bar's subprocess, a pipe, a cron)
+  keeps everything and says so. With no record yet — the first run after
+  upgrading — nothing is reported as a deletion, so behaviour is unchanged until
+  there is real history to compare against.
+
+- **Routine edits now reconcile per task instead of per registry file.** The
+  sync record keeps a three-way baseline, so editing one routine in each of two
+  accounts preserves both edits. Concurrent edits to the same routine remain
+  local and are reported during the switch instead of silently choosing one;
+  editing the desired copy resolves it on the next switch. Existing sync files
+  remain readable and keep their flat claude-acc-compatible shape.
+
+### Added
+
 - **`ai-usagebar usage` — quota and time-to-reset for everything in the config,
   in one command.** The widget answers "how is *this* vendor doing" one process
   at a time, which is what a status bar needs and what a person checking on four

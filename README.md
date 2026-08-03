@@ -574,6 +574,33 @@ it cannot save (`--force` overrides, and genuinely discards it).
 claude-acc's format, so if you already use that tool your existing profiles work
 here untouched, and either tool can capture or switch them.
 
+**Deletions are confirmed, not silently resurrected.** The history merge is a
+union, so a routine or chat you delete in one account would normally come
+straight back from whichever account still holds a copy. ai-usagebar records
+what each account held after the last merge, so it can tell a real deletion from
+something that account simply never received, and asks before acting: keep them
+all, delete them everywhere, or choose individually. Answering "delete" removes
+it from every account so it stops following you around.
+
+Deleting a chat drops only its **index**. The transcript lives in the
+account-agnostic `~/.claude/projects/`, which is never touched — the
+conversation stops following you between accounts without the text being
+destroyed.
+
+A switch run without a terminal — the menu bar's subprocess, a script — always
+keeps everything and says so; deleting is only ever reachable from an answered
+prompt. The macOS menu bar asks the same question in a dialog with a checkbox
+per item, and passes the answer through as `--delete-conflict <key>`;
+`account status --json` lists the pending ones under `deletion_conflicts`. Use
+the returned opaque `key`; the type scope
+prevents a routine id from authorizing deletion of a same-named chat index.
+
+Edits still reconcile independently of this: chats use `lastActivityAt`, while
+routines use a per-task three-way baseline in the sync record. Edits to
+different routines propagate independently. If two accounts edit the same
+routine concurrently, each local copy is preserved and the switch reports the
+conflict; edit the desired copy once more to resolve it on the next switch.
+
 **What this does not do.** Forgetting an account (`remove`) and chat filtering
 (`only` / `reset`) are not implemented — delete a profile directory by hand, or
 use claude-acc. Cowork (agent-mode) sessions are not migrated by a switch and

@@ -53,45 +53,119 @@ fn set_private_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
 }
 
-fn is_running() -> bool {
-    Command::new("/usr/bin/pgrep")
-        .args(["-x", "Claude"])
+/// Whether Claude Desktop is up.
+///
+/// **Not** `pgrep -x Claude`: that matches nothing while the app is running
+/// (verified against a live install — `ps` lists
+/// `/Applications/Claude.app/Contents/MacOS/Claude`, but neither `pgrep -x
+/// Claude` nor `pgrep -f <full path>` finds it). Every liveness check therefore
+/// answered "stopped" instantly, so [`AppControl::quit`] reported success
+/// without ever confirming the app had exited — and would then let a switch
+/// copy live SQLite and LevelDB stores, the exact corruption this guards
+/// against.
+///
+/// AppleScript answers correctly, and asking whether an application `is
+/// running` does not launch it.
+fn query_running_with(program: &Path) -> Result<bool> {
+    let output = Command::new(program)
+        .args(["-e", "application \"Claude\" is running"])
         .output()
-        .is_ok_and(|output| output.status.success())
+        .map_err(|error| {
+            AppError::Other(format!(
+                "could not determine whether Claude Desktop is running: {error}"
+            ))
+        })?;
+    parse_running_output(
+        output.status.success(),
+        output.status.code(),
+        &output.stdout,
+    )
 }
 
-fn wait_until_stopped() -> bool {
-    for _ in 0..QUIT_POLLS {
-        if !is_running() {
-            return true;
-        }
-        std::thread::sleep(QUIT_POLL);
+fn parse_running_output(success: bool, code: Option<i32>, stdout: &[u8]) -> Result<bool> {
+    if !success {
+        return Err(AppError::Other(format!(
+            "could not determine whether Claude Desktop is running (osascript exited {})",
+            code.unwrap_or(-1)
+        )));
     }
-    !is_running()
+    match String::from_utf8_lossy(stdout).trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => Err(AppError::Other(format!(
+            "could not determine whether Claude Desktop is running (unexpected response {value:?})"
+        ))),
+    }
+}
+
+fn is_running() -> Result<bool> {
+    query_running_with(Path::new("/usr/bin/osascript"))
+}
+
+/// The app's main process id, for the force-quit fallbacks. `pkill -x Claude`
+/// misses it for the same reason `pgrep` does, so match the executable path
+/// out of `ps` instead — the helper processes have distinct paths and are
+/// deliberately left alone, since quitting the main process takes them with it.
+fn main_pid() -> Option<String> {
+    const MAIN_EXECUTABLE: &str = "/Claude.app/Contents/MacOS/Claude";
+
+    let output = Command::new("/bin/ps")
+        .args(["-Ao", "pid=,comm="])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| {
+            let (pid, command) = line.trim().split_once(char::is_whitespace)?;
+            command
+                .trim()
+                .ends_with(MAIN_EXECUTABLE)
+                .then(|| pid.to_string())
+        })
+}
+
+fn signal_main(signal: &str) {
+    if let Some(pid) = main_pid() {
+        let _ = Command::new("/bin/kill").args([signal, &pid]).output();
+    }
+}
+
+fn wait_until_stopped_with(
+    mut probe: impl FnMut() -> Result<bool>,
+    mut pause: impl FnMut(),
+) -> Result<bool> {
+    for _ in 0..QUIT_POLLS {
+        if !probe()? {
+            return Ok(true);
+        }
+        pause();
+    }
+    Ok(!probe()?)
+}
+
+fn wait_until_stopped() -> Result<bool> {
+    wait_until_stopped_with(is_running, || std::thread::sleep(QUIT_POLL))
 }
 
 impl AppControl for DesktopApp {
     fn quit(&self) -> Result<()> {
         // Graceful first so the app tears down its own child processes; the
-        // signal is the fallback. Neither touches a `claude` CLI process —
-        // `-x` matches the executable name exactly.
+        // signals are the fallback for a hung app. Neither touches a `claude`
+        // CLI process: the AppleScript targets the Claude application, and the
+        // signals go to one pid matched on the app bundle's executable path.
         let _ = Command::new("/usr/bin/osascript")
             .args(["-e", "tell application \"Claude\" to quit"])
             .output();
         std::thread::sleep(QUIT_GRACE);
-        if wait_until_stopped() {
+        if wait_until_stopped()? {
             return Ok(());
         }
-        let _ = Command::new("/usr/bin/pkill")
-            .args(["-x", "Claude"])
-            .output();
-        if wait_until_stopped() {
+        signal_main("-TERM");
+        if wait_until_stopped()? {
             return Ok(());
         }
-        let _ = Command::new("/usr/bin/pkill")
-            .args(["-KILL", "-x", "Claude"])
-            .output();
-        if wait_until_stopped() {
+        signal_main("-KILL");
+        if wait_until_stopped()? {
             Ok(())
         } else {
             Err(AppError::Other(
@@ -222,6 +296,34 @@ impl AppControl for Recorder {
             members.join(", ")
         ));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+
+    #[test]
+    fn liveness_accepts_only_explicit_boolean_output() {
+        assert!(parse_running_output(true, Some(0), b"true\n").unwrap());
+        assert!(!parse_running_output(true, Some(0), b"false\n").unwrap());
+        assert!(parse_running_output(true, Some(0), b"unknown\n").is_err());
+        assert!(parse_running_output(false, Some(1), b"false\n").is_err());
+    }
+
+    #[test]
+    fn a_probe_launch_failure_is_not_treated_as_stopped() {
+        let missing = Path::new("/definitely/not/an/osascript/binary");
+        assert!(query_running_with(missing).is_err());
+    }
+
+    #[test]
+    fn wait_aborts_on_an_unknown_liveness_state() {
+        let result = wait_until_stopped_with(
+            || Err(AppError::Other("probe failed".into())),
+            || panic!("an unknown state must abort before sleeping"),
+        );
+        assert!(result.is_err());
     }
 }
 

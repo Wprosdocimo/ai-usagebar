@@ -547,6 +547,38 @@ func testAccountStatus() {
     assertNil(parseAccountStatus(Data("error: unrecognized subcommand".utf8)), "non-JSON output")
     assertNil(parseAccountStatus(Data("[1,2,3]".utf8)), "JSON that is not an object")
 
+    // Routines deleted in one account but alive in another.
+    let withConflicts = parseAccountStatus(Data("""
+        {"desktop":{"available":true,"profiles":[{"label":"gmail"}],"deletion_conflicts":[
+          {"key":"opaque-conflict-1","id":"t1","kind":"routine","summary":"0 5 * * *  (daily-report)","deleted_by":"hotmail",
+           "still_in":["gmail","struct"]}]}}
+        """.utf8))
+    assertEqual(withConflicts?.deletionConflicts.count, 1, "conflict parsed")
+    assertEqual(withConflicts?.deletionConflicts.first?.id, "t1", "conflict id")
+    assertEqual(withConflicts?.deletionConflicts.first?.key, "opaque-conflict-1", "typed conflict key")
+    assertEqual(withConflicts?.deletionConflicts.first?.line,
+                "[routine] 0 5 * * *  (daily-report) — deleted in hotmail", "conflict line")
+    // An older binary has no such key, and a status with none must stay empty
+    // so the dialog never appears for nothing.
+    assertEqual(withConflicts.map { _ in fresh?.deletionConflicts.isEmpty }, true,
+                "absent deletion_conflicts is empty")
+
+    let many = (1...12).map {
+        DeletionConflict(key: "opaque-\($0)", id: "t\($0)", kind: "chat", summary: "s\($0)",
+                         deletedBy: "b", stillIn: ["a"])
+    }
+    assertEqual(conflictPreview(many).components(separatedBy: "\n").count, 11,
+                "preview caps at 10 plus a summary line")
+    assertEqual(conflictPreview(many).hasSuffix("… e mais 2"), true, "preview counts the rest")
+    assertEqual(conflictPreview(Array(many.prefix(3))).contains("e mais"), false,
+                "a short list is not summarised")
+
+    assertEqual(switchArgs(label: "work", desktop: true,
+                           deleting: ["opaque-1", "opaque-2"]),
+                ["account", "switch", "work", "--desktop", "-y",
+                 "--delete-conflict", "opaque-1",
+                 "--delete-conflict", "opaque-2"],
+                "confirmed deletions are passed through")
     assertEqual(switchArgs(label: "work", desktop: true),
                 ["account", "switch", "work", "--desktop", "-y"], "desktop switch args")
     assertEqual(switchArgs(label: "work", desktop: false),
