@@ -1,7 +1,7 @@
 //! Live API smoke test suite — DETECTS UNDOCUMENTED-ENDPOINT DRIFT.
 //!
 //! Hits the real vendor endpoints using credentials from your shell (API keys,
-//! or the local CLI/IDE session files for Cursor, Kiro CLI and Copilot).
+//! or the local CLI/IDE session files for Cursor and Kiro CLI).
 //! Asserts only the *fields we depend on* so when a vendor renames or removes
 //! one, the failure points at the exact field rather than dumping the whole
 //! response.
@@ -43,21 +43,17 @@
 //! - **Cursor**: reads the session token from the local `state.vscdb`, then
 //!   asserts `premium_pct` is 0..=100 and a future `premium_reset_at` was
 //!   derived from `startOfMonth`. `cursor_live` skips when there is no Cursor
-//!   install (no state DB and no `CURSOR_DB_PATH`).
+//!   credential source (no state DB, no cursor-agent `auth.json`, and neither
+//!   `CURSOR_DB_PATH` nor `CURSOR_AGENT_AUTH_PATH` set).
 //! - **Kiro CLI**: reads the AWS SSO OIDC session from kiro-cli's local
 //!   `data.sqlite3`, then asserts the credit counters are non-negative and the
 //!   plan label is non-empty. `kiro_live` skips when there is no kiro-cli
 //!   install (no db and no `KIRO_DB_PATH`).
-//! - **GitHub Copilot**: reads the GitHub token `ai-usagebar login copilot`
-//!   saved, then asserts the premium-request counters are non-negative.
-//!   `copilot_live` skips when there is no credentials file (and no
-//!   `COPILOT_CREDENTIALS_PATH`).
 
 use std::time::Duration;
 
 use ai_usagebar::anthropic;
 use ai_usagebar::cache::Cache;
-use ai_usagebar::copilot;
 use ai_usagebar::cursor;
 use ai_usagebar::error::AppError;
 use ai_usagebar::kimi;
@@ -331,19 +327,28 @@ async fn kimi_live() {
 #[tokio::test]
 #[ignore = "live API; run with --ignored"]
 async fn cursor_live() {
-    // Cursor has no API key — the credential is the session token the Cursor
-    // IDE wrote to its local state DB. So this test needs a real Cursor install
-    // (or `CURSOR_DB_PATH` pointing at a copied `state.vscdb`) and skips
-    // otherwise, the same way `kimi_live` skips without a key. Nothing to fetch
-    // on a CI box with no Cursor.
+    // Cursor has no API key — the credential is a session token, either the
+    // one the Cursor IDE wrote to its local state DB, or (headless machines
+    // with no IDE) the one the `cursor-agent` CLI wrote to its own auth.json.
+    // So this test needs one of the two installed (or `CURSOR_DB_PATH` /
+    // `CURSOR_AGENT_AUTH_PATH` pointing at a copy) and skips otherwise, the
+    // same way `kimi_live` skips without a key. Nothing to fetch on a CI box
+    // with neither.
     let db_path = match std::env::var("CURSOR_DB_PATH") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
         _ => cursor::db::default_db_path().expect("resolve platform config dir"),
     };
-    if !db_path.exists() {
+    let agent_auth_path = match std::env::var("CURSOR_AGENT_AUTH_PATH") {
+        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => cursor::db::default_agent_auth_path().expect("resolve platform config dir"),
+    };
+    if !db_path.exists() && !agent_auth_path.exists() {
         eprintln!(
-            "cursor_live: no Cursor state DB at {} — skipping (sign in to the Cursor IDE, or set CURSOR_DB_PATH)",
-            db_path.display()
+            "cursor_live: no Cursor state DB at {} and no cursor-agent auth at {} — skipping \
+             (sign in to the Cursor IDE or run `cursor-agent`, or set CURSOR_DB_PATH / \
+             CURSOR_AGENT_AUTH_PATH)",
+            db_path.display(),
+            agent_auth_path.display()
         );
         return;
     }
@@ -357,6 +362,7 @@ async fn cursor_live() {
     let out = cursor::fetch_snapshot(
         &client,
         &db_path,
+        &agent_auth_path,
         &cache,
         &endpoints,
         Duration::from_secs(0),
@@ -441,65 +447,6 @@ async fn kiro_live() {
         out.snapshot.used,
         out.snapshot.limit,
         out.snapshot.pct(),
-        out.snapshot.reset_at,
-    );
-}
-
-#[tokio::test]
-#[ignore = "live API; run with --ignored"]
-async fn copilot_live() {
-    // Copilot has no API key — the credential is the GitHub OAuth token
-    // `ai-usagebar login copilot` saved to its own file. So this test needs
-    // that one-time login (or `COPILOT_CREDENTIALS_PATH` pointing at a copy)
-    // and skips otherwise.
-    let creds_path = match std::env::var("COPILOT_CREDENTIALS_PATH") {
-        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => copilot::creds::default_path().expect("resolve platform config dir"),
-    };
-    if !creds_path.exists() {
-        eprintln!(
-            "copilot_live: no Copilot credentials at {} — skipping (run `ai-usagebar login copilot`, or set COPILOT_CREDENTIALS_PATH)",
-            creds_path.display()
-        );
-        return;
-    }
-
-    let cache = xdg_cache_for("copilot");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .unwrap();
-    let endpoints = copilot::fetch::Endpoints::default();
-    let out = copilot::fetch_snapshot(
-        &client,
-        &creds_path,
-        &cache,
-        &endpoints,
-        Duration::from_secs(0),
-    )
-    .await
-    .expect("copilot fetch should succeed against the real API");
-
-    // The fields the widget depends on: non-negative premium-request counters
-    // and (when reported) a future reset.
-    assert!(
-        out.snapshot.entitlement >= 0.0 && out.snapshot.remaining >= 0.0,
-        "copilot: negative premium-request counter — shape changed? entitlement={} remaining={}",
-        out.snapshot.entitlement,
-        out.snapshot.remaining
-    );
-    if let Some(reset) = out.snapshot.reset_at {
-        assert!(
-            reset > chrono::Utc::now(),
-            "copilot: reset_at should be a future instant, got {reset:?}"
-        );
-    }
-    println!(
-        "✅ copilot — premium requests {} of {} used ({}%, unlimited={}), reset {:?}",
-        out.snapshot.used(),
-        out.snapshot.entitlement,
-        out.snapshot.pct(),
-        out.snapshot.unlimited,
         out.snapshot.reset_at,
     );
 }

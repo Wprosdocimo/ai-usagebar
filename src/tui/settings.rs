@@ -755,7 +755,6 @@ fn vendor_label(v: VendorId) -> &'static str {
         VendorId::Cursor => "Cursor",
         VendorId::Minimax => "MiniMax",
         VendorId::Kiro => "Kiro",
-        VendorId::Copilot => "Copilot",
     }
 }
 

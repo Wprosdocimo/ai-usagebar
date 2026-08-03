@@ -46,15 +46,27 @@ pub struct FetchOutcome {
 
 /// Cache-aware fetch. `db_path` is Cursor's `state.vscdb` — the caller resolves
 /// `[cursor] db_path` (config override) vs [`db::default_db_path`], the same
-/// override pattern as `openai.codex_auth_path`.
+/// override pattern as `openai.codex_auth_path`. `agent_auth_path` is the
+/// headless `cursor-agent` CLI's own `auth.json`, tried when `db_path` is
+/// missing — see `db::resolve_access_token`.
 pub async fn fetch_snapshot(
     client: &reqwest::Client,
     db_path: &Path,
+    agent_auth_path: &Path,
     cache: &Cache,
     endpoints: &Endpoints,
     cache_ttl: Duration,
 ) -> Result<FetchOutcome> {
-    fetch_snapshot_at(client, db_path, cache, endpoints, cache_ttl, Utc::now()).await
+    fetch_snapshot_at(
+        client,
+        db_path,
+        agent_auth_path,
+        cache,
+        endpoints,
+        cache_ttl,
+        Utc::now(),
+    )
+    .await
 }
 
 /// Clock seam for cache rollover tests. Cursor's payload describes one billing
@@ -62,6 +74,7 @@ pub async fn fetch_snapshot(
 async fn fetch_snapshot_at(
     client: &reqwest::Client,
     db_path: &Path,
+    agent_auth_path: &Path,
     cache: &Cache,
     endpoints: &Endpoints,
     cache_ttl: Duration,
@@ -73,7 +86,7 @@ async fn fetch_snapshot_at(
     // Resolve the local identity before accepting a cache hit. Cursor can switch
     // accounts in-place in this database; returning the cache first would show
     // the previous account's private usage until the TTL elapsed.
-    let token = db::read_access_token(db_path)?;
+    let token = db::resolve_access_token(db_path, agent_auth_path)?;
     let auth = db::session_auth(&token)?;
 
     if let Some(bytes) = cache.fresh_payload(cache_ttl)?
@@ -314,6 +327,12 @@ mod tests {
         db::session_auth(token).unwrap().account_key
     }
 
+    /// A path that never exists, for tests that only care about the IDE
+    /// `db_path` and want the agent fallback to stay out of the way.
+    fn no_agent_auth() -> std::path::PathBuf {
+        std::path::PathBuf::from("/nonexistent/cursor-agent-auth.json")
+    }
+
     fn cached_snapshot(account: &str, reset_at: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "account": account,
@@ -367,6 +386,7 @@ mod tests {
         let out = fetch_snapshot(
             &client,
             &db_path,
+            &no_agent_auth(),
             &cache,
             &endpoints,
             Duration::from_secs(0),
@@ -387,10 +407,61 @@ mod tests {
         let endpoints = Endpoints::default();
         let db_path = std::path::Path::new("/nonexistent/state.vscdb");
 
-        let err = fetch_snapshot(&client, db_path, &cache, &endpoints, Duration::from_secs(0))
-            .await
-            .unwrap_err();
+        let err = fetch_snapshot(
+            &client,
+            db_path,
+            &no_agent_auth(),
+            &cache,
+            &endpoints,
+            Duration::from_secs(0),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, AppError::Credentials(_)));
+    }
+
+    #[tokio::test]
+    async fn agent_auth_file_is_used_when_the_ide_db_is_missing() {
+        let mut server = mockito::Server::new_async().await;
+        let token = fake_token("user_123");
+        let m = server
+            .mock("GET", "/api/usage-summary")
+            .match_header(
+                "cookie",
+                format!("WorkosCursorSessionToken=user_123%3A%3A{token}").as_str(),
+            )
+            .with_status(200)
+            .with_body(sample_json())
+            .create_async()
+            .await;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("state.vscdb"); // deliberately never seeded
+        let agent_path = dir.path().join("auth.json");
+        std::fs::write(
+            &agent_path,
+            serde_json::json!({"accessToken": token, "refreshToken": "r"}).to_string(),
+        )
+        .unwrap();
+        let (_cache_dir, cache) = cache_fixture();
+        let client = reqwest::Client::new();
+        let endpoints = Endpoints {
+            summary: format!("{}/api/usage-summary", server.url()),
+        };
+
+        let out = fetch_snapshot(
+            &client,
+            &db_path,
+            &agent_path,
+            &cache,
+            &endpoints,
+            Duration::from_secs(0),
+        )
+        .await
+        .unwrap();
+        m.assert_async().await;
+        assert_eq!(out.snapshot.plan, "Ultra");
+        assert!(!out.stale);
     }
 
     #[tokio::test]
@@ -421,6 +492,7 @@ mod tests {
         let out = fetch_snapshot(
             &client,
             &db_path,
+            &no_agent_auth(),
             &cache,
             &endpoints,
             Duration::from_secs(0),
@@ -459,6 +531,7 @@ mod tests {
         let out = fetch_snapshot(
             &client,
             &db_path,
+            &no_agent_auth(),
             &cache,
             &endpoints,
             Duration::from_secs(3600),
@@ -503,6 +576,7 @@ mod tests {
         let out = fetch_snapshot(
             &reqwest::Client::new(),
             &db_path,
+            &no_agent_auth(),
             &cache,
             &endpoints,
             Duration::from_secs(3600),
@@ -542,6 +616,7 @@ mod tests {
         let err = fetch_snapshot_at(
             &reqwest::Client::new(),
             &db_path,
+            &no_agent_auth(),
             &cache,
             &endpoints,
             Duration::from_secs(0),

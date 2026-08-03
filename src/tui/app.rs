@@ -668,10 +668,22 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 .clone()
                 .map(Ok)
                 .unwrap_or_else(crate::cursor::db::default_db_path)?;
+            let agent_auth_path = config
+                .cursor
+                .agent_auth_path
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(crate::cursor::db::default_agent_auth_path)?;
             let endpoints = crate::cursor::fetch::Endpoints::default();
-            let outcome =
-                crate::cursor::fetch_snapshot(client, &db_path, &cache, &endpoints, DEFAULT_TTL)
-                    .await?;
+            let outcome = crate::cursor::fetch_snapshot(
+                client,
+                &db_path,
+                &agent_auth_path,
+                &cache,
+                &endpoints,
+                DEFAULT_TTL,
+            )
+            .await?;
             Ok(outcome.into())
         }
         VendorId::Kiro => {
@@ -684,25 +696,6 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 .unwrap_or_else(crate::kiro::db::default_db_path)?;
             let outcome =
                 crate::kiro::fetch_snapshot(client, &db_path, &cache, DEFAULT_TTL).await?;
-            Ok(outcome.into())
-        }
-        VendorId::Copilot => {
-            let cache = crate::cache::Cache::for_vendor("copilot")?;
-            let creds_path = config
-                .copilot
-                .credentials_path
-                .clone()
-                .map(Ok)
-                .unwrap_or_else(crate::copilot::creds::default_path)?;
-            let endpoints = crate::copilot::fetch::Endpoints::default();
-            let outcome = crate::copilot::fetch_snapshot(
-                client,
-                &creds_path,
-                &cache,
-                &endpoints,
-                DEFAULT_TTL,
-            )
-            .await?;
             Ok(outcome.into())
         }
     }

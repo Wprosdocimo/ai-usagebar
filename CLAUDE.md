@@ -154,12 +154,10 @@ vendor's response shape drifts:
   the undocumented `GetUsageLimits` — same operation kiro-cli's `/usage` makes.
   Test seams: `db::read_credentials(&path)` with a seeded temp db and
   `fetch::fetch_snapshot_at` with an `Endpoints` override pointed at mockito.
-- `src/copilot/` — GitHub Copilot. The one vendor with no existing CLI/IDE
-  credential to read (`copilot_internal/*` is gated by which OAuth App issued
-  the token), so `ai-usagebar login copilot` does its own device-code login and
-  keeps the token in `copilot-credentials.json` (chmod 600). Test seams:
-  `creds::read_from`/`write_to` with a temp path and the fetch functions with
-  an `Endpoints` override pointed at mockito.
+- `src/cursor/` — Cursor. Reads the IDE's own `state.vscdb` (read-only), with
+  a fallback to the headless `cursor-agent` CLI's `auth.json` when the IDE db
+  is absent — `db::resolve_access_token` tries both. Tests seed a temp db /
+  auth file and pass the paths in; never touch the real ones.
 - `src/anthropic/keychain.rs` — macOS-only `security(1)` fallback when
   `~/.claude/.credentials.json` is absent (Claude Code on macOS stores
   the OAuth blob in the login Keychain). Module-gated with

@@ -82,6 +82,61 @@ pub fn read_access_token(path: &Path) -> Result<String> {
     Ok(token)
 }
 
+/// Default location of the `cursor-agent` CLI's own login state — a plain
+/// JSON file, not the IDE's `state.vscdb`. Written by the headless
+/// `cursor-agent` tool, so it stays
+/// populated on machines that never run the desktop IDE at all.
+pub fn default_agent_auth_path() -> Result<PathBuf> {
+    let base = directories::BaseDirs::new().ok_or_else(|| {
+        AppError::Other("could not resolve the platform config directory (no HOME?)".into())
+    })?;
+    Ok(base.config_dir().join("cursor").join("auth.json"))
+}
+
+/// Read `cursor-agent`'s `accessToken` out of its `auth.json`. Same error
+/// shape as [`read_access_token`] (missing file / missing field / empty
+/// value are all a [`AppError::Credentials`]) so callers can treat both
+/// sources interchangeably.
+pub fn read_agent_access_token(path: &Path) -> Result<String> {
+    if !path.exists() {
+        return Err(AppError::Credentials(format!(
+            "cursor-agent auth file not found at {}. Run `cursor-agent` and sign in at least \
+             once, then try again.",
+            path.display()
+        )));
+    }
+    let bytes = std::fs::read(path).map_err(|e| AppError::io_at(path, e))?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| AppError::Credentials(format!("could not parse {}: {e}", path.display())))?;
+    let token = value
+        .get("accessToken")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::Credentials(format!(
+                "no accessToken in {}. Sign in with `cursor-agent` again.",
+                path.display()
+            ))
+        })?;
+    Ok(token.to_string())
+}
+
+/// Resolve a Cursor session token from either source. The IDE's `state.vscdb`
+/// is tried first (it is the live, continuously-refreshed source when the
+/// desktop app is actually running); a text-only / headless machine that has
+/// never opened the IDE falls back to whatever `cursor-agent` last wrote to
+/// its own `auth.json`. If the agent file exists but cannot be used, its error
+/// is surfaced so a headless user gets an actionable diagnostic. The IDE's
+/// error remains the one surfaced when both sources are absent, since it names
+/// the more commonly expected path.
+pub fn resolve_access_token(db_path: &Path, agent_auth_path: &Path) -> Result<String> {
+    match read_access_token(db_path) {
+        Ok(token) => Ok(token),
+        Err(_) if agent_auth_path.exists() => read_agent_access_token(agent_auth_path),
+        Err(ide_err) => Err(ide_err),
+    }
+}
+
 /// The two values the `/api/usage` call needs, both derived from the same JWT:
 /// the bare user id (a query param) and the `WorkosCursorSessionToken` cookie
 /// value (`userId%3A%3Atoken` — literal, pre-encoded `::`, matching what the
@@ -263,5 +318,124 @@ mod tests {
         let token = fake_jwt(serde_json::json!({"sub": "no-pipe-here"}));
         let err = session_auth(&token).unwrap_err();
         assert!(matches!(err, AppError::Credentials(_)));
+    }
+
+    #[test]
+    fn default_agent_auth_path_ends_with_cursor_auth_json() {
+        let p = default_agent_auth_path().unwrap();
+        assert!(p.ends_with(std::path::Path::new("cursor").join("auth.json")));
+    }
+
+    #[test]
+    fn agent_auth_missing_file_is_a_credentials_error_naming_the_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        let err = read_agent_access_token(&path).unwrap_err();
+        match err {
+            AppError::Credentials(m) => assert!(m.contains(&path.display().to_string())),
+            other => panic!("expected Credentials error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_auth_reads_access_token_out_of_the_json_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({"accessToken": "agent-token-value", "refreshToken": "r"})
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(read_agent_access_token(&path).unwrap(), "agent-token-value");
+    }
+
+    #[test]
+    fn agent_auth_missing_field_is_a_credentials_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::write(&path, serde_json::json!({"refreshToken": "r"}).to_string()).unwrap();
+        let err = read_agent_access_token(&path).unwrap_err();
+        assert!(matches!(err, AppError::Credentials(_)));
+    }
+
+    #[test]
+    fn agent_auth_empty_token_is_a_credentials_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::write(&path, serde_json::json!({"accessToken": ""}).to_string()).unwrap();
+        let err = read_agent_access_token(&path).unwrap_err();
+        assert!(matches!(err, AppError::Credentials(_)));
+    }
+
+    #[test]
+    fn agent_auth_malformed_json_is_a_credentials_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::write(&path, "not json").unwrap();
+        let err = read_agent_access_token(&path).unwrap_err();
+        assert!(matches!(err, AppError::Credentials(_)));
+    }
+
+    #[test]
+    fn resolve_prefers_the_ide_db_when_both_are_present() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("state.vscdb");
+        seed_db(&db_path, Some("ide-token"));
+        let agent_path = dir.path().join("auth.json");
+        std::fs::write(
+            &agent_path,
+            serde_json::json!({"accessToken": "agent-token"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_access_token(&db_path, &agent_path).unwrap(),
+            "ide-token"
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_the_agent_file_when_the_ide_db_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("state.vscdb");
+        let agent_path = dir.path().join("auth.json");
+        std::fs::write(
+            &agent_path,
+            serde_json::json!({"accessToken": "agent-token"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_access_token(&db_path, &agent_path).unwrap(),
+            "agent-token"
+        );
+    }
+
+    #[test]
+    fn resolve_surfaces_the_ide_error_when_both_sources_are_missing() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("state.vscdb");
+        let agent_path = dir.path().join("auth.json");
+        let err = resolve_access_token(&db_path, &agent_path).unwrap_err();
+        match err {
+            AppError::Credentials(m) => assert!(m.contains(&db_path.display().to_string())),
+            other => panic!("expected Credentials error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_surfaces_the_agent_error_when_its_file_exists_but_is_malformed() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("state.vscdb");
+        let agent_path = dir.path().join("auth.json");
+        std::fs::write(&agent_path, "not json").unwrap();
+
+        let err = resolve_access_token(&db_path, &agent_path).unwrap_err();
+        match err {
+            AppError::Credentials(m) => {
+                assert!(m.contains(&agent_path.display().to_string()));
+                assert!(m.contains("could not parse"));
+            }
+            other => panic!("expected Credentials error, got {other:?}"),
+        }
     }
 }

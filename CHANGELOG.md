@@ -11,19 +11,6 @@ Each release is also published at
 
 ### Added
 
-- **GitHub Copilot vendor** (`--vendor copilot`, `[copilot]`, opt-in). Reads
-  premium-request quota (`quota_snapshots.premium_interactions`) from
-  `GET api.github.com/copilot_internal/user` — the same call `oh-my-posh`'s
-  Copilot segment and several VS Code quota-monitor extensions make. Unlike
-  every other local-file vendor here, there is no existing CLI/IDE credential
-  to read: GitHub gates `copilot_internal/*` by which OAuth App issued the
-  token, and neither the `gh` CLI's own token nor a personal access token
-  qualifies (confirmed live — both get a 403 "scraping" response). New
-  `ai-usagebar login copilot` subcommand performs its own GitHub OAuth
-  device-code login (using the public client id `opencode`'s Copilot plugin
-  uses — a different one, VS Code Copilot Chat's own, got stuck indefinitely
-  pending admin approval on an organization-owned seat) and saves the
-  resulting token to its own file, chmod 600.
 - **Kiro CLI vendor** (`--vendor kiro`, `[kiro]`, opt-in). Reads the credit
   pool from `AmazonCodeWhispererService.GetUsageLimits` — the exact call
   kiro-cli's own `/usage` slash command makes — using the AWS SSO OIDC
@@ -33,6 +20,12 @@ Each release is also published at
   API when close to expiry, using the refresh token + client credentials
   kiro-cli registered for itself — never written back to kiro-cli's own
   database.
+- **Cursor: `cursor-agent` fallback credential** (`[cursor] agent_auth_path`).
+  Text-only machines that never open the desktop IDE now get usage too: when
+  the IDE's `state.vscdb` is absent, the vendor falls back to the session
+  token the headless `cursor-agent` CLI wrote to its own
+  `~/.config/cursor/auth.json`. The IDE database stays the preferred source
+  when both exist.
 
 ## [0.21.0] — 2026-08-03
 

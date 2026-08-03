@@ -50,7 +50,6 @@ pub struct Config {
     pub cursor: CursorConfig,
     pub minimax: MinimaxConfig,
     pub kiro: KiroConfig,
-    pub copilot: CopilotConfig,
 }
 
 /// UI / dispatch preferences. Currently just `primary` — which vendor the
@@ -680,6 +679,11 @@ pub struct CursorConfig {
     /// platform-standard `.../User/globalStorage/state.vscdb` — see
     /// `cursor::db::default_db_path`).
     pub db_path: Option<PathBuf>,
+    /// Override the headless `cursor-agent` CLI's own login file (defaults to
+    /// `.../cursor/auth.json` — see `cursor::db::default_agent_auth_path`).
+    /// Used as a fallback when `db_path` doesn't exist, so a text-only
+    /// machine that never runs the desktop IDE still gets usage.
+    pub agent_auth_path: Option<PathBuf>,
 }
 
 /// Kiro CLI reads its quota through the AWS SSO OIDC session kiro-cli already
@@ -698,23 +702,6 @@ pub struct KiroConfig {
     /// platform-standard `.../kiro-cli/data.sqlite3` — see
     /// `kiro::db::default_db_path`).
     pub db_path: Option<PathBuf>,
-}
-
-/// GitHub Copilot has no existing CLI/IDE credential ai-usagebar can read —
-/// `copilot_internal/*` is gated by which OAuth App issued the token, and the
-/// `gh` CLI's own token doesn't qualify (confirmed live). So `ai-usagebar
-/// login copilot` performs its own device-code login and keeps the resulting
-/// GitHub token in its own file (see `copilot::creds`); this struct only
-/// tracks the on/off switch and an override for that file's location.
-///
-/// Opt-in like Cursor/Kiro (`enabled` defaults to `false`).
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub struct CopilotConfig {
-    pub enabled: bool,
-    /// Override where the GitHub token from `ai-usagebar login copilot` is
-    /// stored (defaults to `copilot::creds::default_path`).
-    pub credentials_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -815,8 +802,8 @@ impl Config {
         expand_tilde_opt(&mut self.anthropic.desktop_profiles_dir);
         expand_tilde_opt(&mut self.openai.codex_auth_path);
         expand_tilde_opt(&mut self.cursor.db_path);
+        expand_tilde_opt(&mut self.cursor.agent_auth_path);
         expand_tilde_opt(&mut self.kiro.db_path);
-        expand_tilde_opt(&mut self.copilot.credentials_path);
         for account in &mut self.anthropic.accounts {
             account.credentials_path = expand_tilde(&account.credentials_path);
         }
@@ -839,7 +826,6 @@ impl Config {
             VendorId::Cursor => self.cursor.enabled,
             VendorId::Minimax => self.minimax.enabled,
             VendorId::Kiro => self.kiro.enabled,
-            VendorId::Copilot => self.copilot.enabled,
         }
     }
 
@@ -1007,7 +993,6 @@ mod tests {
             VendorId::Cursor,
             VendorId::Minimax,
             VendorId::Kiro,
-            VendorId::Copilot,
         ] {
             assert!(!c.is_enabled(opt_in), "{opt_in:?}");
         }
@@ -1834,36 +1819,6 @@ enabled = false
         assert!(!cfg.grok.enabled && cfg.grok.api_key.is_none());
         assert!(!cfg.cursor.enabled && cfg.cursor.db_path.is_none());
         assert!(!cfg.kiro.enabled && cfg.kiro.db_path.is_none());
-        assert!(!cfg.copilot.enabled && cfg.copilot.credentials_path.is_none());
-    }
-
-    #[test]
-    fn copilot_credentials_path_is_tilde_expanded() {
-        let f = write_toml(
-            r#"
-            [copilot]
-            credentials_path = "~/copilot-creds.json"
-            "#,
-        );
-        let c = Config::load_from(f.path()).unwrap();
-        let home = crate::cache::home_dir().unwrap();
-        assert_eq!(
-            c.copilot.credentials_path,
-            Some(home.join("copilot-creds.json"))
-        );
-    }
-
-    #[test]
-    fn copilot_appears_when_enabled() {
-        let f = write_toml(
-            r#"
-            [copilot]
-            enabled = true
-            "#,
-        );
-        let c = Config::load_from(f.path()).unwrap();
-        assert!(c.is_enabled(VendorId::Copilot));
-        assert!(c.enabled_vendors().contains(&VendorId::Copilot));
     }
 
     #[test]
@@ -1903,6 +1858,22 @@ enabled = false
         let c = Config::load_from(f.path()).unwrap();
         let home = crate::cache::home_dir().unwrap();
         assert_eq!(c.cursor.db_path, Some(home.join("cursor-state.vscdb")));
+    }
+
+    #[test]
+    fn cursor_agent_auth_path_is_tilde_expanded() {
+        let f = write_toml(
+            r#"
+            [cursor]
+            agent_auth_path = "~/cursor-agent-auth.json"
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        let home = crate::cache::home_dir().unwrap();
+        assert_eq!(
+            c.cursor.agent_auth_path,
+            Some(home.join("cursor-agent-auth.json"))
+        );
     }
 
     #[test]

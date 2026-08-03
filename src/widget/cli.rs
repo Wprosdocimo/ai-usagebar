@@ -143,26 +143,12 @@ pub enum Command {
         action: AccountAction,
     },
 
-    /// Sign in a vendor that has no existing CLI/IDE credential to read.
-    Login {
-        /// Which vendor to sign in.
-        vendor: LoginVendor,
-    },
-
     /// Quota and time-to-reset for every configured vendor and account.
     Usage {
         /// Machine-readable output.
         #[arg(long)]
         json: bool,
     },
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum LoginVendor {
-    /// GitHub OAuth device-code login — see `copilot::device_flow`. The only
-    /// vendor here that needs ai-usagebar to obtain its own credential;
-    /// every other vendor reads one an existing CLI/IDE already wrote.
-    Copilot,
 }
 
 #[derive(clap::Subcommand, Debug, Clone)]
@@ -270,7 +256,6 @@ pub enum Vendor {
     Cursor,
     Minimax,
     Kiro,
-    Copilot,
 }
 
 impl Vendor {
@@ -291,7 +276,6 @@ impl Vendor {
             Vendor::Cursor => crate::vendor::VendorId::Cursor,
             Vendor::Minimax => crate::vendor::VendorId::Minimax,
             Vendor::Kiro => crate::vendor::VendorId::Kiro,
-            Vendor::Copilot => crate::vendor::VendorId::Copilot,
         }
     }
 }
@@ -379,7 +363,6 @@ fn id_to_vendor(id: crate::vendor::VendorId) -> Vendor {
         crate::vendor::VendorId::Cursor => Vendor::Cursor,
         crate::vendor::VendorId::Minimax => Vendor::Minimax,
         crate::vendor::VendorId::Kiro => Vendor::Kiro,
-        crate::vendor::VendorId::Copilot => Vendor::Copilot,
     }
 }
 

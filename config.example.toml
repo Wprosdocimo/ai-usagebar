@@ -205,7 +205,9 @@ enabled = false
 [cursor]
 # Disabled by default — enable once you've signed in to the Cursor IDE at
 # least once (it needs no key from you, but it does need that one-time login
-# to exist).
+# to exist). Headless machines with no desktop IDE work too: sign in to the
+# `cursor-agent` CLI once instead — its own auth.json is used as a fallback
+# when the IDE database below is absent.
 enabled = false
 # Override Cursor's local state database path. Leave commented out to use the
 # platform default:
@@ -214,6 +216,12 @@ enabled = false
 #   Windows: %APPDATA%\Cursor\User\globalStorage\state.vscdb
 # Set this if you use a portable Cursor install or a renamed profile dir.
 # db_path = "/home/you/.config/Cursor/User/globalStorage/state.vscdb"
+# Override the cursor-agent CLI's own login file, tried only when db_path
+# does not exist. Leave commented out to use the platform default:
+#   Linux:   ~/.config/cursor/auth.json
+#   macOS:   ~/Library/Application Support/cursor/auth.json
+#   Windows: %APPDATA%\cursor\auth.json
+# agent_auth_path = "/home/you/.config/cursor/auth.json"
 
 [minimax]
 # Disabled by default — enable once you've set a key (env var or inline).
@@ -244,17 +252,3 @@ enabled = false
 #   macOS:   ~/Library/Application Support/kiro-cli/data.sqlite3
 #   Windows: %APPDATA%\kiro-cli\data.sqlite3
 # db_path = "/home/you/.local/share/kiro-cli/data.sqlite3"
-
-# GitHub Copilot — no existing CLI/IDE credential to read (GitHub gates the
-# quota endpoint by which OAuth App issued the token; the `gh` CLI's own
-# token doesn't qualify). Run `ai-usagebar login copilot` once first — it
-# does its own device-code login and saves the token this vendor reads.
-[copilot]
-# Disabled by default — enable once you've run `ai-usagebar login copilot`.
-enabled = false
-# Override where the login command saved the token. Leave commented out to
-# use the platform default (config dir, alongside this file):
-#   Linux:   ~/.config/ai-usagebar/copilot-credentials.json
-#   macOS:   ~/Library/Application Support/ai-usagebar/copilot-credentials.json
-#   Windows: %APPDATA%\ai-usagebar\copilot-credentials.json
-# credentials_path = "/home/you/.config/ai-usagebar/copilot-credentials.json"
