@@ -7,7 +7,6 @@
 //! `--dry-run` be free (compute the plan, print it, stop) and lets the whole
 //! algorithm be unit-tested against a temporary directory on any platform.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -49,6 +48,12 @@ pub struct ScheduledMerge {
     /// Tasks the target already had, whose definition a more recently edited
     /// registry replaced — an edit made while signed into another account.
     pub updated: usize,
+    /// Same-id definitions changed independently, so the target's local copy
+    /// was preserved instead of guessing and discarding one side.
+    pub conflicts: usize,
+    /// Last successfully reconciled definition per task. Missing entries are
+    /// deliberate unresolved conflicts and must not be propagated later.
+    pub canonical_routines: BTreeMap<String, Value>,
 }
 
 /// Plan the session-index merge into `<sessions_root>/<account_uuid>/<org_uuid>`.
@@ -105,12 +110,40 @@ pub struct SyncedAccount {
     /// Session-index filenames (`local_<id>.json`), not transcripts.
     #[serde(default)]
     pub sessions: BTreeSet<String>,
+    /// Exact definitions observed the last time a switch completed. This is a
+    /// three-way merge baseline, not an authoritative copy.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub routine_definitions: BTreeMap<String, Value>,
+    /// Successfully reconciled definitions, duplicated in every account row
+    /// so the established flat claude-acc-compatible file shape stays intact.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub canonical_routines: BTreeMap<String, Value>,
 }
 
-/// What every account held after the last merge, keyed by account UUID.
-/// Union-merging is additive, so this record is the only way to tell "this
-/// account deleted it" from "this account never had it".
+/// What every account held after the last merge, keyed by account UUID. The
+/// flat shape is shared with claude-acc; new fields on each row are additive.
 pub type Synced = BTreeMap<String, SyncedAccount>;
+
+/// Accept a canonical definition only when every recorded account agrees. An
+/// older writer dropping the additive field therefore fails safe instead of
+/// making a stale definition authoritative.
+pub fn canonical_routines(synced: &Synced) -> BTreeMap<String, Value> {
+    let mut accounts = synced.values();
+    let Some(first) = accounts.next() else {
+        return BTreeMap::new();
+    };
+    let mut canonical = first.canonical_routines.clone();
+    for account in accounts {
+        canonical.retain(|id, task| account.canonical_routines.get(id) == Some(task));
+    }
+    canonical
+}
+
+pub fn set_canonical_routines(synced: &mut Synced, canonical: &BTreeMap<String, Value>) {
+    for account in synced.values_mut() {
+        account.canonical_routines.clone_from(canonical);
+    }
+}
 
 /// Kept for the record written before conversations were covered: a bare list
 /// was routines only. Reading it as such means an existing file keeps working
@@ -128,6 +161,8 @@ pub fn parse_synced(bytes: &[u8]) -> Synced {
                         SyncedAccount {
                             routines,
                             sessions: BTreeSet::new(),
+                            routine_definitions: BTreeMap::new(),
+                            canonical_routines: BTreeMap::new(),
                         },
                     )
                 })
@@ -138,10 +173,39 @@ pub fn parse_synced(bytes: &[u8]) -> Synced {
 
 /// Which of the two things a conflict is about. They live in different files
 /// and are swept differently, but the user answers one question about both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConflictKind {
     Routine,
     Chat,
+}
+
+/// Stable, type-scoped identity for a destructive conflict decision.
+///
+/// Routine ids and chat-index filenames are both arbitrary strings and can
+/// collide. Keeping the kind beside the id all the way to the sweep prevents a
+/// verdict about one namespace from authorizing deletion in the other.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeletionKey {
+    pub kind: ConflictKind,
+    pub id: String,
+    pub deleted_by: String,
+    pub still_in: Vec<String>,
+}
+
+impl DeletionKey {
+    pub fn external(&self) -> String {
+        // JSON is only an opaque transport token here. Length-aware encoding
+        // avoids delimiter collisions in arbitrary ids, and including the
+        // observed account topology makes stale dialogs fail closed.
+        serde_json::to_string(&(
+            1,
+            self.kind.label(),
+            &self.id,
+            &self.deleted_by,
+            &self.still_in,
+        ))
+        .expect("a tuple of strings is always JSON-serializable")
+    }
 }
 
 impl ConflictKind {
@@ -169,15 +233,32 @@ pub struct DeletionCandidate {
     pub summary: String,
 }
 
+impl DeletionCandidate {
+    pub fn key(&self) -> DeletionKey {
+        DeletionKey {
+            kind: self.kind,
+            id: self.id.clone(),
+            deleted_by: self.deleted_by.clone(),
+            still_in: self.still_in.clone(),
+        }
+    }
+
+    pub fn external_key(&self) -> String {
+        self.key().external()
+    }
+}
+
 /// Every account's current contents, for refreshing [`Synced`] after a merge.
 pub fn current_state(sessions_root: &Path) -> Synced {
     let mut out = Synced::new();
     for (account, path) in scheduled_registries(sessions_root) {
         let (tasks, _) = load_scheduled(&path);
-        out.entry(account)
-            .or_default()
-            .routines
-            .extend(tasks.iter().filter_map(task_id));
+        let account = out.entry(account).or_default();
+        for task in tasks {
+            let Some(id) = task_id(&task) else { continue };
+            account.routines.insert(id.clone());
+            account.routine_definitions.insert(id, task);
+        }
     }
     for (account, dir) in account_dirs(sessions_root) {
         out.entry(account).or_default().sessions.extend(
@@ -219,7 +300,7 @@ pub fn deletion_candidates(sessions_root: &Path, synced: &Synced) -> Vec<Deletio
         }
     }
 
-    for (account, had) in synced {
+    for (account, had) in synced.iter() {
         routines.collect(ConflictKind::Routine, account, &had.routines, &mut out);
         chats.collect(ConflictKind::Chat, account, &had.sessions, &mut out);
     }
@@ -309,18 +390,28 @@ impl DeletionSweep {
 /// being destroyed.
 pub fn plan_deletion_sweep(
     sessions_root: &Path,
-    doomed: &BTreeSet<String>,
+    doomed: &BTreeSet<DeletionKey>,
 ) -> Result<DeletionSweep> {
     let mut sweep = DeletionSweep::default();
     if doomed.is_empty() {
         return Ok(sweep);
     }
+    let routine_ids: BTreeSet<&str> = doomed
+        .iter()
+        .filter(|key| key.kind == ConflictKind::Routine)
+        .map(|key| key.id.as_str())
+        .collect();
+    let chat_names: BTreeSet<&str> = doomed
+        .iter()
+        .filter(|key| key.kind == ConflictKind::Chat)
+        .map(|key| key.id.as_str())
+        .collect();
     for (_, path) in scheduled_registries(sessions_root) {
         let (tasks, skips) = load_scheduled(&path);
         let before = tasks.len();
         let kept: Vec<Value> = tasks
             .into_iter()
-            .filter(|task| task_id(task).is_none_or(|id| !doomed.contains(&id)))
+            .filter(|task| task_id(task).is_none_or(|id| !routine_ids.contains(id.as_str())))
             .collect();
         if kept.len() == before {
             continue; // this registry held none of them
@@ -330,7 +421,7 @@ pub fn plan_deletion_sweep(
     }
     for (_, dir) in account_dirs(sessions_root) {
         for path in local_session_files(&dir) {
-            if file_name(&path).is_some_and(|name| doomed.contains(&name)) {
+            if file_name(&path).is_some_and(|name| chat_names.contains(name.as_str())) {
                 sweep.removals.push(path);
             }
         }
@@ -412,70 +503,90 @@ fn scheduled_registries(sessions_root: &Path) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-/// Plan the routine/schedule merge: a union by task `id`, with the newer
-/// `createdAt` winning a conflict. The task *scripts* these point at live in
+#[derive(Debug)]
+struct RoutineCandidate {
+    account: String,
+    task: Value,
+    target: bool,
+}
+
+/// Whether `task` changed since that account was last observed. `None` means
+/// there is no trustworthy baseline (first run or a pre-definition record).
+fn task_changed(synced: &Synced, account: &str, id: &str, task: &Value) -> Option<bool> {
+    let state = synced.get(account)?;
+    match state.routine_definitions.get(id) {
+        Some(previous) => Some(previous != task),
+        None if state.routines.contains(id) => None,
+        None => Some(true),
+    }
+}
+
+fn unique_values<'a>(values: impl Iterator<Item = &'a Value>) -> Vec<Value> {
+    let mut unique = Vec::new();
+    for value in values {
+        if !unique.contains(value) {
+            unique.push(value.clone());
+        }
+    }
+    unique
+}
+
+/// Plan the routine/schedule merge as a three-way reconciliation by task `id`.
+/// The task *scripts* these point at live in
 /// `~/.claude/scheduled-tasks/<name>/` and are global already, so only the
 /// account-scoped registry needs merging.
+///
+/// The sync record holds both the last observation per account and the last
+/// successfully reconciled definition. An edit in one account therefore
+/// propagates to stale copies without treating an unrelated registry write as
+/// an edit to every task. Concurrent edits to the same task are kept local and
+/// reported as a conflict; the user can resolve one by editing the desired
+/// copy, which becomes the sole change against the next baseline.
 pub fn plan_scheduled_merge(
     sessions_root: &Path,
     account_uuid: &str,
     org_uuid: &str,
+    synced: &Synced,
 ) -> Result<ScheduledMerge> {
     let target = sessions_root
         .join(account_uuid)
         .join(org_uuid)
         .join(SCHEDULED_TASKS);
     let (target_tasks, mut skips) = load_scheduled(&target);
-    let target_mtime = modified_at(&target);
+    let prior_canonical = canonical_routines(synced);
 
-    // A Vec rather than a map: registries hold a handful of entries, and the
-    // target's own tasks must keep their existing order. The third element is
-    // how fresh the registry each task came from is — see the comparison below.
-    let mut tasks: Vec<(String, Value, i64)> = target_tasks
-        .into_iter()
-        .filter_map(|task| task_id(&task).map(|id| (id, task, target_mtime)))
-        .collect();
-    let mut added = 0usize;
-    let mut updated = 0usize;
+    let mut candidates: BTreeMap<String, Vec<RoutineCandidate>> = BTreeMap::new();
+    let mut order = Vec::new();
+    let mut seen = BTreeSet::new();
+    for task in target_tasks {
+        let Some(id) = task_id(&task) else { continue };
+        if seen.insert(id.clone()) {
+            order.push(id.clone());
+        }
+        candidates.entry(id).or_default().push(RoutineCandidate {
+            account: account_uuid.to_string(),
+            task,
+            target: true,
+        });
+    }
 
-    for source in scheduled_task_files(sessions_root) {
+    for (account, source) in scheduled_registries(sessions_root) {
         if source == target {
             continue;
         }
-        let source_mtime = modified_at(&source);
         let (source_tasks, source_skips) = load_scheduled(&source);
         for task in source_tasks {
             let Some(id) = task_id(&task) else {
                 continue;
             };
-            match tasks.iter_mut().find(|(existing, ..)| *existing == id) {
-                Some((_, existing, existing_mtime)) => {
-                    // A scheduled task has no `updatedAt`: editing its cron,
-                    // model, or `enabled` flag leaves `createdAt` untouched.
-                    // Comparing `createdAt` alone therefore drops *every* edit
-                    // made after the task first synced to another account —
-                    // both copies tie, and a tie kept the incumbent. The
-                    // registry file's mtime is the only "who wrote last" signal
-                    // the format offers, and the account just worked in owns
-                    // the freshest one, so it breaks the tie.
-                    let fresher = match created_at(&task).cmp(&created_at(existing)) {
-                        Ordering::Greater => true,
-                        Ordering::Equal => source_mtime > *existing_mtime,
-                        Ordering::Less => false,
-                    };
-                    if fresher {
-                        if *existing != task {
-                            updated += 1;
-                        }
-                        *existing = task;
-                        *existing_mtime = source_mtime;
-                    }
-                }
-                None => {
-                    tasks.push((id, task, source_mtime));
-                    added += 1;
-                }
+            if seen.insert(id.clone()) {
+                order.push(id.clone());
             }
+            candidates.entry(id).or_default().push(RoutineCandidate {
+                account: account.clone(),
+                task,
+                target: false,
+            });
         }
         for (key, value) in source_skips {
             // First recorded skip wins; a later account's copy never overrides.
@@ -483,8 +594,70 @@ pub fn plan_scheduled_merge(
         }
     }
 
+    let mut tasks = Vec::new();
+    let mut canonical_routines = BTreeMap::new();
+    let mut added = 0usize;
+    let mut updated = 0usize;
+    let mut conflicts = 0usize;
+
+    for id in order {
+        let choices = &candidates[&id];
+        let target_task = choices
+            .iter()
+            .find(|candidate| candidate.target)
+            .map(|candidate| &candidate.task);
+        let changed = unique_values(choices.iter().filter_map(|candidate| {
+            task_changed(synced, &candidate.account, &id, &candidate.task)
+                .is_some_and(|changed| changed)
+                .then_some(&candidate.task)
+        }));
+
+        let (selected, resolved) = if let Some(canonical) = prior_canonical.get(&id) {
+            let unknown_divergence = choices.iter().any(|candidate| {
+                task_changed(synced, &candidate.account, &id, &candidate.task).is_none()
+                    && candidate.task != *canonical
+            });
+            if changed.len() == 1 && !unknown_divergence {
+                (changed[0].clone(), true)
+            } else if changed.is_empty() && !unknown_divergence {
+                (canonical.clone(), true)
+            } else {
+                (target_task.unwrap_or(&choices[0].task).clone(), false)
+            }
+        } else if changed.len() == 1 {
+            (changed[0].clone(), true)
+        } else if changed.len() > 1 {
+            (target_task.unwrap_or(&choices[0].task).clone(), false)
+        } else {
+            let max_created = choices
+                .iter()
+                .map(|candidate| created_at(&candidate.task))
+                .max();
+            let newest = unique_values(choices.iter().filter_map(|candidate| {
+                (Some(created_at(&candidate.task)) == max_created).then_some(&candidate.task)
+            }));
+            if newest.len() == 1 {
+                (newest[0].clone(), true)
+            } else {
+                (target_task.unwrap_or(&choices[0].task).clone(), false)
+            }
+        };
+
+        match target_task {
+            None => added += 1,
+            Some(existing) if *existing != selected => updated += 1,
+            Some(_) => {}
+        }
+        if resolved {
+            canonical_routines.insert(id, selected.clone());
+        } else {
+            conflicts += 1;
+        }
+        tasks.push(selected);
+    }
+
     let merged = serde_json::json!({
-        "scheduledTasks": tasks.into_iter().map(|(_, task, _)| task).collect::<Vec<_>>(),
+        "scheduledTasks": tasks,
         "recordedSkips": skips,
     });
     Ok(ScheduledMerge {
@@ -492,6 +665,8 @@ pub fn plan_scheduled_merge(
         bytes: serde_json::to_vec(&merged)?,
         added,
         updated,
+        conflicts,
+        canonical_routines,
     })
 }
 
@@ -643,14 +818,6 @@ fn local_session_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn scheduled_task_files(sessions_root: &Path) -> Vec<PathBuf> {
-    account_org_dirs(sessions_root)
-        .into_iter()
-        .map(|dir| dir.join(SCHEDULED_TASKS))
-        .filter(|path| path.is_file())
-        .collect()
-}
-
 fn load_scheduled(path: &Path) -> (Vec<Value>, Map<String, Value>) {
     let Ok(bytes) = std::fs::read(path) else {
         return (Vec::new(), Map::new());
@@ -680,19 +847,6 @@ fn task_id(task: &Value) -> Option<String> {
 
 fn created_at(task: &Value) -> i64 {
     task.get("createdAt").map_or(0, json_i64)
-}
-
-/// When a registry file was last written, in epoch milliseconds. Absent or
-/// unreadable counts as the beginning of time, so a file we cannot stat never
-/// wins a tie against one we can.
-fn modified_at(path: &Path) -> i64 {
-    std::fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |since| {
-            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-        })
 }
 
 fn last_activity(path: &Path) -> i64 {
@@ -807,7 +961,7 @@ mod tests {
                 "recordedSkips":{"t1":"other","t2":"other"}}"#,
         );
 
-        let merge = plan_scheduled_merge(sessions, "A", "O1").unwrap();
+        let merge = plan_scheduled_merge(sessions, "A", "O1", &Synced::default()).unwrap();
         assert_eq!(merge.added, 1);
         let value: Value = serde_json::from_slice(&merge.bytes).unwrap();
         let tasks = value["scheduledTasks"].as_array().unwrap();
@@ -819,15 +973,28 @@ mod tests {
         assert_eq!(value["recordedSkips"]["t2"], "other");
     }
 
-    /// Set a file's mtime so a test can say which registry was written last.
-    fn touch(path: &Path, millis_since_epoch: u64) {
-        let time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis_since_epoch);
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(time))
-            .unwrap();
+    fn sync_baseline(sessions: &Path) -> Synced {
+        let mut synced = current_state(sessions);
+        let mut canonical = BTreeMap::new();
+        let mut conflicts = BTreeSet::new();
+        for account in synced.values() {
+            for (id, task) in &account.routine_definitions {
+                match canonical.get(id) {
+                    Some(existing) if existing != task => {
+                        conflicts.insert(id.clone());
+                    }
+                    Some(_) => {}
+                    None => {
+                        canonical.insert(id.clone(), task.clone());
+                    }
+                }
+            }
+        }
+        for id in conflicts {
+            canonical.remove(&id);
+        }
+        set_canonical_routines(&mut synced, &canonical);
+        synced
     }
 
     /// A schedule edited while signed into another account: same `id`, same
@@ -840,18 +1007,16 @@ mod tests {
         let sessions = root.path();
         let target = sessions.join("A/O1/scheduled-tasks.json");
         let source = sessions.join("B/O2/scheduled-tasks.json");
-        write(
-            &target,
-            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"0 5 * * *","enabled":true}]}"#,
-        );
+        let old = r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"0 5 * * *","enabled":true}]}"#;
+        write(&target, old);
+        write(&source, old);
+        let synced = sync_baseline(sessions);
         write(
             &source,
             r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"30 9 * * *","enabled":false}]}"#,
         );
-        touch(&target, 1_000);
-        touch(&source, 2_000); // edited more recently
 
-        let merge = plan_scheduled_merge(sessions, "A", "O1").unwrap();
+        let merge = plan_scheduled_merge(sessions, "A", "O1", &synced).unwrap();
 
         assert_eq!(merge.added, 0);
         assert_eq!(merge.updated, 1, "the edit must be carried across");
@@ -860,34 +1025,111 @@ mod tests {
         assert_eq!(value["scheduledTasks"][0]["enabled"], false);
     }
 
-    /// The mirror image: the target holds the fresher registry, so an older
-    /// copy sitting in another account must not overwrite it.
+    /// The mirror image: only the target changed against the shared baseline,
+    /// so the source's stale copy must not overwrite it.
     #[test]
     fn scheduled_merge_keeps_the_target_when_its_registry_is_fresher() {
         let root = tempfile::TempDir::new().unwrap();
         let sessions = root.path();
         let target = sessions.join("A/O1/scheduled-tasks.json");
         let source = sessions.join("B/O2/scheduled-tasks.json");
+        let old =
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"0 5 * * *"}]}"#;
+        write(&target, old);
+        write(&source, old);
+        let synced = sync_baseline(sessions);
         write(
             &target,
             r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"30 9 * * *"}]}"#,
         );
-        write(
-            &source,
-            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"0 5 * * *"}]}"#,
-        );
-        touch(&target, 2_000); // target edited more recently
-        touch(&source, 1_000);
 
-        let merge = plan_scheduled_merge(sessions, "A", "O1").unwrap();
+        let merge = plan_scheduled_merge(sessions, "A", "O1", &synced).unwrap();
 
         assert_eq!(merge.updated, 0);
         let value: Value = serde_json::from_slice(&merge.bytes).unwrap();
         assert_eq!(value["scheduledTasks"][0]["cronExpression"], "30 9 * * *");
     }
 
-    /// mtime only breaks ties. A genuinely newer `createdAt` — the task was
-    /// deleted and recreated — still wins even from a staler file.
+    /// Editing different tasks in different accounts is the case a file-level
+    /// mtime cannot represent: whichever file wins overwrites one valid edit.
+    #[test]
+    fn independent_task_edits_are_both_reconciled() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        let a = sessions.join("A/O1/scheduled-tasks.json");
+        let b = sessions.join("B/O2/scheduled-tasks.json");
+        let old = r#"{"scheduledTasks":[
+            {"id":"t1","createdAt":100,"name":"old-t1"},
+            {"id":"t2","createdAt":100,"name":"old-t2"}
+        ]}"#;
+        write(&a, old);
+        write(&b, old);
+        let synced = sync_baseline(sessions);
+        write(
+            &a,
+            r#"{"scheduledTasks":[
+                {"id":"t1","createdAt":100,"name":"A-edited"},
+                {"id":"t2","createdAt":100,"name":"old-t2"}
+            ]}"#,
+        );
+        write(
+            &b,
+            r#"{"scheduledTasks":[
+                {"id":"t1","createdAt":100,"name":"old-t1"},
+                {"id":"t2","createdAt":100,"name":"B-edited"}
+            ]}"#,
+        );
+
+        let merge = plan_scheduled_merge(sessions, "B", "O2", &synced).unwrap();
+        let value: Value = serde_json::from_slice(&merge.bytes).unwrap();
+        let tasks = value["scheduledTasks"].as_array().unwrap();
+
+        assert_eq!(tasks[0]["name"], "A-edited");
+        assert_eq!(tasks[1]["name"], "B-edited");
+        assert_eq!(merge.updated, 1);
+        assert_eq!(merge.conflicts, 0);
+
+        // After B receives A's edit, the canonical t2 edit must still flow
+        // back to A on the next switch; recording actual observations must not
+        // accidentally declare A's stale copy authoritative.
+        write(&b, std::str::from_utf8(&merge.bytes).unwrap());
+        let mut next = current_state(sessions);
+        set_canonical_routines(&mut next, &merge.canonical_routines);
+        let into_a = plan_scheduled_merge(sessions, "A", "O1", &next).unwrap();
+        let value: Value = serde_json::from_slice(&into_a.bytes).unwrap();
+        let tasks = value["scheduledTasks"].as_array().unwrap();
+        assert_eq!(tasks[0]["name"], "A-edited");
+        assert_eq!(tasks[1]["name"], "B-edited");
+        assert_eq!(into_a.updated, 1);
+    }
+
+    /// Without a baseline, equal-createdAt divergent definitions are
+    /// ambiguous. Preserve the target and leave the canonical entry absent so
+    /// a later switch cannot silently overwrite either side.
+    #[test]
+    fn an_unresolved_same_task_edit_is_kept_local() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"name":"A"}]}"#,
+        );
+        write(
+            &sessions.join("B/O2/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"name":"B"}]}"#,
+        );
+
+        let merge = plan_scheduled_merge(sessions, "A", "O1", &Synced::default()).unwrap();
+        let value: Value = serde_json::from_slice(&merge.bytes).unwrap();
+
+        assert_eq!(value["scheduledTasks"][0]["name"], "A");
+        assert_eq!(merge.updated, 0);
+        assert_eq!(merge.conflicts, 1);
+        assert!(!merge.canonical_routines.contains_key("t1"));
+    }
+
+    /// A genuinely newer `createdAt` means the task was deleted and recreated,
+    /// so it still wins before a three-way baseline exists.
     #[test]
     fn a_newer_created_at_wins_regardless_of_file_mtime() {
         let root = tempfile::TempDir::new().unwrap();
@@ -902,16 +1144,13 @@ mod tests {
             &source,
             r#"{"scheduledTasks":[{"id":"t1","createdAt":500,"name":"recreated"}]}"#,
         );
-        touch(&target, 9_000); // target file is much fresher…
-        touch(&source, 1_000); // …but the task itself is older
-
-        let merge = plan_scheduled_merge(sessions, "A", "O1").unwrap();
+        let merge = plan_scheduled_merge(sessions, "A", "O1", &Synced::default()).unwrap();
         let value: Value = serde_json::from_slice(&merge.bytes).unwrap();
         assert_eq!(value["scheduledTasks"][0]["name"], "recreated");
     }
 
-    /// An identical copy in a fresher file is not an edit; reporting it as one
-    /// would make every switch claim to have changed something.
+    /// An identical copy is not an edit; reporting it as one would make every
+    /// switch claim to have changed something.
     #[test]
     fn an_identical_copy_is_not_counted_as_an_edit() {
         let root = tempfile::TempDir::new().unwrap();
@@ -922,10 +1161,7 @@ mod tests {
             r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"0 5 * * *"}]}"#;
         write(&target, same);
         write(&source, same);
-        touch(&target, 1_000);
-        touch(&source, 2_000);
-
-        let merge = plan_scheduled_merge(sessions, "A", "O1").unwrap();
+        let merge = plan_scheduled_merge(sessions, "A", "O1", &Synced::default()).unwrap();
         assert_eq!(merge.added, 0);
         assert_eq!(merge.updated, 0);
     }
@@ -939,6 +1175,8 @@ mod tests {
                     SyncedAccount {
                         routines: ids.iter().map(|id| (*id).to_string()).collect(),
                         sessions: BTreeSet::new(),
+                        routine_definitions: BTreeMap::new(),
+                        canonical_routines: BTreeMap::new(),
                     },
                 )
             })
@@ -954,6 +1192,8 @@ mod tests {
                     SyncedAccount {
                         routines: BTreeSet::new(),
                         sessions: names.iter().map(|name| (*name).to_string()).collect(),
+                        routine_definitions: BTreeMap::new(),
+                        canonical_routines: BTreeMap::new(),
                     },
                 )
             })
@@ -1043,7 +1283,12 @@ mod tests {
             r#"{"scheduledTasks":[{"id":"t2","createdAt":2}]}"#,
         );
 
-        let doomed: BTreeSet<String> = ["t1".to_string()].into_iter().collect();
+        let doomed = BTreeSet::from([DeletionKey {
+            kind: ConflictKind::Routine,
+            id: "t1".to_string(),
+            deleted_by: "A".to_string(),
+            still_in: vec!["B".to_string()],
+        }]);
         let writes = plan_deletion_sweep(sessions, &doomed).unwrap().rewrites;
 
         // C never held t1, so it is not rewritten at all.
@@ -1131,12 +1376,60 @@ mod tests {
             r#"{"title":"Innocent"}"#,
         );
 
-        let doomed: BTreeSet<String> = ["local_x.json".to_string()].into_iter().collect();
+        let doomed = BTreeSet::from([DeletionKey {
+            kind: ConflictKind::Chat,
+            id: "local_x.json".to_string(),
+            deleted_by: "A".to_string(),
+            still_in: vec!["B".to_string()],
+        }]);
         let sweep = plan_deletion_sweep(sessions, &doomed).unwrap();
 
         assert!(sweep.rewrites.is_empty(), "no registry is involved");
         assert_eq!(sweep.removals.len(), 2, "{:?}", sweep.removals);
         assert!(sweep.removals.iter().all(|p| p.ends_with("local_x.json")));
+    }
+
+    /// Routine ids and chat filenames share no namespace. A verdict for one
+    /// must never authorize deleting the other even when the strings collide.
+    #[test]
+    fn a_deletion_verdict_is_scoped_to_its_conflict_kind() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"local_x.json","createdAt":1}]}"#,
+        );
+        write(
+            &sessions.join("A/O1/local_x.json"),
+            r#"{"title":"Keep chat"}"#,
+        );
+
+        let doomed = BTreeSet::from([DeletionKey {
+            kind: ConflictKind::Routine,
+            id: "local_x.json".to_string(),
+            deleted_by: "A".to_string(),
+            still_in: vec!["B".to_string()],
+        }]);
+        let sweep = plan_deletion_sweep(sessions, &doomed).unwrap();
+
+        assert_eq!(sweep.rewrites.len(), 1, "the routine is removed");
+        assert!(sweep.removals.is_empty(), "the colliding chat must survive");
+    }
+
+    #[test]
+    fn a_conflict_key_is_bound_to_the_observed_deletion() {
+        let original = DeletionCandidate {
+            kind: ConflictKind::Routine,
+            id: "t1".to_string(),
+            deleted_by: "A".to_string(),
+            still_in: vec!["B".to_string()],
+            summary: "daily".to_string(),
+        };
+        let mut later = original.clone();
+        later.deleted_by = "B".to_string();
+        later.still_in = vec!["A".to_string()];
+
+        assert_ne!(original.external_key(), later.external_key());
     }
 
     /// The record written before chats were covered was a bare id list. It has
@@ -1162,6 +1455,15 @@ mod tests {
             parsed["acct-a"].sessions,
             BTreeSet::from(["local_x.json".to_string()])
         );
+
+        let v2 = br#"{
+            "acct-a":{"routines":["t1"],"sessions":[],
+                "routine_definitions":{"t1":{"id":"t1","enabled":true}},
+                "canonical_routines":{"t1":{"id":"t1","enabled":true}}}
+        }"#;
+        let parsed = parse_synced(v2);
+        assert_eq!(parsed["acct-a"].routine_definitions["t1"]["enabled"], true);
+        assert_eq!(canonical_routines(&parsed)["t1"]["enabled"], true);
 
         assert!(parse_synced(b"not json").is_empty());
     }
@@ -1215,7 +1517,7 @@ mod tests {
             r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"name":"other"}]}"#,
         );
 
-        let merge = plan_scheduled_merge(sessions, "A", "O1").unwrap();
+        let merge = plan_scheduled_merge(sessions, "A", "O1", &Synced::default()).unwrap();
         assert_eq!(merge.added, 0);
         let value: Value = serde_json::from_slice(&merge.bytes).unwrap();
         assert_eq!(value["scheduledTasks"][0]["name"], "target");

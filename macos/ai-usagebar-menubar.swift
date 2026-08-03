@@ -938,6 +938,8 @@ struct AccountStatus: Equatable {
 }
 
 struct DeletionConflict: Equatable {
+    /// Opaque, type-scoped value accepted by `--delete-conflict`.
+    var key: String
     var id: String
     /// "routine" or "chat" — they are swept differently but answered together.
     var kind: String
@@ -970,8 +972,11 @@ func parseAccountStatus(_ data: Data) -> AccountStatus? {
     let conflicts = ((desktop as? [String: Any])?["deletion_conflicts"] as? [[String: Any]] ?? [])
         .compactMap { row -> DeletionConflict? in
             guard let id = row["id"] as? String else { return nil }
-            return DeletionConflict(id: id,
-                                   kind: row["kind"] as? String ?? "item",
+            let kind = row["kind"] as? String ?? "item"
+            guard let key = row["key"] as? String else { return nil }
+            return DeletionConflict(key: key,
+                                   id: id,
+                                   kind: kind,
                                    summary: row["summary"] as? String ?? id,
                                    deletedBy: row["deleted_by"] as? String ?? "?",
                                    stillIn: row["still_in"] as? [String] ?? [])
@@ -2578,7 +2583,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         switch alert.runModal() {
         case .alertFirstButtonReturn: return []
-        case .alertSecondButtonReturn: return conflicts.map { $0.id }
+        case .alertSecondButtonReturn: return conflicts.map { $0.key }
         default: return chooseDeletionConflicts(conflicts)
         }
     }
@@ -2613,7 +2618,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "Cancelar")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return zip(conflicts, boxes).filter { $0.1.state != .on }.map { $0.0.id }
+        return zip(conflicts, boxes).filter { $0.1.state != .on }.map { $0.0.key }
     }
 
     @objc func switchCliAccount(_ sender: NSMenuItem) {

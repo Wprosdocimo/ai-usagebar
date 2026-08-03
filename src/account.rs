@@ -1,6 +1,6 @@
 //! Administrative commands for named Claude accounts.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -163,6 +163,7 @@ fn status(json: bool) -> i32 {
         .iter()
         .map(|candidate| {
             serde_json::json!({
+                "key": candidate.external_key(),
                 "id": candidate.id,
                 "kind": candidate.kind.label(),
                 "summary": candidate.summary,
@@ -538,17 +539,21 @@ fn resolve_deletions(paths: &Paths, plan: &mut SwitchPlan, args: &SwitchArgs, in
     if !args.delete_conflict.is_empty() {
         // The caller already asked — the macOS menu bar's dialog, or a script
         // that listed `deletion_conflicts` from `account status --json`. Only
-        // ids actually in conflict are honoured, so a stale dialog answered
-        // against an older list cannot delete something new.
-        let known: BTreeSet<&str> = plan.deletions.iter().map(|c| c.id.as_str()).collect();
+        // exact opaque keys actually in conflict are honoured, so a stale
+        // dialog answered against an older observation cannot delete a later
+        // item that happens to reuse the same id.
+        let known: BTreeMap<String, claude_desktop::merge::DeletionKey> = plan
+            .deletions
+            .iter()
+            .map(|candidate| (candidate.external_key(), candidate.key()))
+            .collect();
         plan.confirmed_deletions = args
             .delete_conflict
             .iter()
-            .filter(|id| known.contains(id.as_str()))
-            .cloned()
+            .filter_map(|key| known.get(key).cloned())
             .collect();
         println!(
-            "  routines        deleting {} of {} conflict(s) everywhere, as chosen",
+            "  deletions       deleting {} of {} conflict(s) everywhere, as chosen",
             plan.confirmed_deletions.len(),
             plan.deletions.len()
         );
@@ -603,9 +608,9 @@ fn resolve_deletions(paths: &Paths, plan: &mut SwitchPlan, args: &SwitchArgs, in
     let answer = ask("> ").unwrap_or_default().to_ascii_lowercase();
     match answer.as_str() {
         "d" | "delete" => {
-            plan.confirmed_deletions = plan.deletions.iter().map(|c| c.id.clone()).collect();
+            plan.confirmed_deletions = plan.deletions.iter().map(|c| c.key()).collect();
             println!(
-                "  deleting {} routine(s) everywhere",
+                "  deleting {} item(s) everywhere",
                 plan.confirmed_deletions.len()
             );
         }
@@ -649,7 +654,7 @@ fn choose_deletions_individually(plan: &mut SwitchPlan, name: &impl Fn(&str) -> 
         .iter()
         .enumerate()
         .filter(|(index, _)| !keep.contains(&(index + 1)))
-        .map(|(_, candidate)| candidate.id.clone())
+        .map(|(_, candidate)| candidate.key())
         .collect();
     println!(
         "  keeping {}, deleting {} everywhere",
@@ -666,16 +671,21 @@ fn print_plan(plan: &SwitchPlan) {
     }
     match plan.target.org_uuid {
         Some(_) => {
-            let (new_routines, edited_routines) = plan
-                .scheduled
-                .as_ref()
-                .map_or((0, 0), |merge| (merge.added, merge.updated));
+            let (new_routines, edited_routines, conflicts) =
+                plan.scheduled.as_ref().map_or((0, 0, 0), |merge| {
+                    (merge.added, merge.updated, merge.conflicts)
+                });
             println!(
                 "  history         {} new + {} refreshed session(s)",
                 plan.sessions.copied.len(),
                 plan.sessions.updated.len(),
             );
             println!("  routines        {new_routines} new + {edited_routines} edited elsewhere");
+            if conflicts > 0 {
+                println!(
+                    "  routine conflicts {conflicts} kept local (edit the desired copy to resolve)"
+                );
+            }
         }
         None => println!("  history         skipped (no org recorded for this account yet)"),
     }
