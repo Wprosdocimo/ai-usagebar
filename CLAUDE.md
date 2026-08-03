@@ -148,6 +148,10 @@ vendor's response shape drifts:
   discovered from `/proc` (Linux only; elsewhere set `ANTIGRAVITY_LS_ADDRESS`).
   Tests must never probe `/proc` or the wall clock — use `candidate_bases_with`
   and `parse_cache_at`/`fetch_snapshot_at`, not their production wrappers.
+- `src/cursor/` — Cursor. Reads the IDE's own `state.vscdb` (read-only), with
+  a fallback to the headless `cursor-agent` CLI's `auth.json` when the IDE db
+  is absent — `db::resolve_access_token` tries both. Tests seed a temp db /
+  auth file and pass the paths in; never touch the real ones.
 - `src/anthropic/keychain.rs` — macOS-only `security(1)` fallback when
   `~/.claude/.credentials.json` is absent (Claude Code on macOS stores
   the OAuth blob in the login Keychain). Module-gated with

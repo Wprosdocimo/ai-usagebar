@@ -1,9 +1,10 @@
 //! Live API smoke test suite — DETECTS UNDOCUMENTED-ENDPOINT DRIFT.
 //!
 //! Hits the real Anthropic, OpenAI Codex, Z.AI, OpenRouter, and Kimi endpoints
-//! using credentials from your shell. Asserts only the *fields we depend on*
-//! so when a vendor renames or removes one, the failure points at the exact
-//! field rather than dumping the whole response.
+//! using credentials from your shell (API keys, or the local IDE/CLI session
+//! files for Cursor). Asserts only the *fields we depend on* so when a vendor
+//! renames or removes one, the failure points at the exact field rather than
+//! dumping the whole response.
 //!
 //! These tests are `#[ignore]` so plain `cargo test` doesn't hit external
 //! APIs (and won't fail on machines without creds). Run explicitly:
@@ -42,7 +43,8 @@
 //! - **Cursor**: reads the session token from the local `state.vscdb`, then
 //!   asserts `premium_pct` is 0..=100 and a future `premium_reset_at` was
 //!   derived from `startOfMonth`. `cursor_live` skips when there is no Cursor
-//!   install (no state DB and no `CURSOR_DB_PATH`).
+//!   credential source (no state DB, no cursor-agent `auth.json`, and neither
+//!   `CURSOR_DB_PATH` nor `CURSOR_AGENT_AUTH_PATH` set).
 
 use std::time::Duration;
 
@@ -320,19 +322,28 @@ async fn kimi_live() {
 #[tokio::test]
 #[ignore = "live API; run with --ignored"]
 async fn cursor_live() {
-    // Cursor has no API key — the credential is the session token the Cursor
-    // IDE wrote to its local state DB. So this test needs a real Cursor install
-    // (or `CURSOR_DB_PATH` pointing at a copied `state.vscdb`) and skips
-    // otherwise, the same way `kimi_live` skips without a key. Nothing to fetch
-    // on a CI box with no Cursor.
+    // Cursor has no API key — the credential is a session token, either the
+    // one the Cursor IDE wrote to its local state DB, or (headless machines
+    // with no IDE) the one the `cursor-agent` CLI wrote to its own auth.json.
+    // So this test needs one of the two installed (or `CURSOR_DB_PATH` /
+    // `CURSOR_AGENT_AUTH_PATH` pointing at a copy) and skips otherwise, the
+    // same way `kimi_live` skips without a key. Nothing to fetch on a CI box
+    // with neither.
     let db_path = match std::env::var("CURSOR_DB_PATH") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
         _ => cursor::db::default_db_path().expect("resolve platform config dir"),
     };
-    if !db_path.exists() {
+    let agent_auth_path = match std::env::var("CURSOR_AGENT_AUTH_PATH") {
+        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => cursor::db::default_agent_auth_path().expect("resolve platform config dir"),
+    };
+    if !db_path.exists() && !agent_auth_path.exists() {
         eprintln!(
-            "cursor_live: no Cursor state DB at {} — skipping (sign in to the Cursor IDE, or set CURSOR_DB_PATH)",
-            db_path.display()
+            "cursor_live: no Cursor state DB at {} and no cursor-agent auth at {} — skipping \
+             (sign in to the Cursor IDE or run `cursor-agent`, or set CURSOR_DB_PATH / \
+             CURSOR_AGENT_AUTH_PATH)",
+            db_path.display(),
+            agent_auth_path.display()
         );
         return;
     }
@@ -346,6 +357,7 @@ async fn cursor_live() {
     let out = cursor::fetch_snapshot(
         &client,
         &db_path,
+        &agent_auth_path,
         &cache,
         &endpoints,
         Duration::from_secs(0),

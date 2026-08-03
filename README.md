@@ -90,7 +90,7 @@ Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth c
 | Grok (xAI) | **Management** key (`XAI_MANAGEMENT_KEY` env or `[grok] api_key` in config) | Set either. Opt-in. This is **not** the inference key — create it under xAI Console → Management keys. See the team note below. |
 | MiniMax | **Token Plan** key (`MINIMAX_API_KEY` env or `[minimax] api_key` in config) | Set either. Opt-in. Must be the Token Plan **subscription** key — a pay-as-you-go key has no plan quota to report. Set `[minimax] region = "cn"` for `api.minimaxi.com`; the default `"global"` uses `api.minimax.io`. The two are separate instances and reject each other's keys. |
 | Google Antigravity | None — read from the local Antigravity server | Opt-in. Quota is served only while Antigravity 2.0, the Antigravity IDE, or an interactive `agy` session is running; all three share one account-wide quota. |
-| Cursor | None — read from Cursor's local `state.vscdb` | Opt-in. Sign in to the Cursor IDE at least once; ai-usagebar reads the session token it already wrote there. No key of your own to create. |
+| Cursor | None — read from Cursor's local `state.vscdb` (or the `cursor-agent` CLI's `auth.json`) | Opt-in. Sign in to the Cursor IDE at least once; ai-usagebar reads the session token it already wrote there. No key of your own to create. Headless machines with no desktop IDE work too: sign in to `cursor-agent` once and its own `auth.json` is used as a fallback when the IDE database is absent. |
 
 #### Grok: team-scoped vs organization-scoped keys
 
@@ -135,7 +135,7 @@ For each API-key vendor, ai-usagebar checks in this order:
 - If you put inline `api_key` values in config, `chmod 600 ~/.config/ai-usagebar/config.toml`. The default behavior reads only env vars, which is safer when your config might be world-readable.
 - Don't commit your config dir if you check it into dotfiles unless you've redacted `api_key` lines.
 - OAuth credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`) are managed by their respective CLIs and already chmod-protected.
-- Cursor's session token lives in its own `state.vscdb`, managed entirely by the Cursor IDE — ai-usagebar opens it read-only and never writes to it.
+- Cursor's session token lives in its own `state.vscdb`, managed entirely by the Cursor IDE — ai-usagebar opens it read-only and never writes to it. On machines without the IDE, the `cursor-agent` CLI's own `auth.json` is read as a fallback instead — same read-only treatment.
 
 #### macOS: Anthropic credentials in the Keychain
 
@@ -232,8 +232,11 @@ api_key_env = "XAI_MANAGEMENT_KEY"
 [cursor]
 enabled = true             # disabled by default; enable once you've signed in to Cursor
 # No API key: reads the session token the Cursor IDE already wrote to its own
-# state.vscdb after you signed in there.
+# state.vscdb after you signed in there. No desktop IDE (headless machine)?
+# Sign in to the cursor-agent CLI once instead — its own auth.json is the
+# fallback when the IDE database is absent.
 # db_path = "/home/you/.config/Cursor/User/globalStorage/state.vscdb"
+# agent_auth_path = "/home/you/.config/cursor/auth.json"
 ```
 
 ## Quick start

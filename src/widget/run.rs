@@ -198,13 +198,25 @@ async fn cursor_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
         Some(p) => p.to_path_buf(),
         None => cursor::db::default_db_path()?,
     };
+    let agent_auth_path = match config.cursor.agent_auth_path.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => cursor::db::default_agent_auth_path()?,
+    };
     let endpoints = cursor::fetch::Endpoints::default();
-    let outcome =
-        match cursor::fetch_snapshot(&client, &db_path, &cache, &endpoints, DEFAULT_TTL).await {
-            Ok(o) => o,
-            Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
-            Err(e) => return Err(e),
-        };
+    let outcome = match cursor::fetch_snapshot(
+        &client,
+        &db_path,
+        &agent_auth_path,
+        &cache,
+        &endpoints,
+        DEFAULT_TTL,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
+        Err(e) => return Err(e),
+    };
 
     let theme = theme_from_cli(cli);
     let snap = outcome.snapshot.clone();
