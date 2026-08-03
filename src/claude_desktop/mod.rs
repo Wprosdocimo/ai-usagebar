@@ -57,6 +57,10 @@ const TOKEN_CACHE: &str = "config-tokenCache";
 const TOKEN_CACHE_V2: &str = "config-tokenCacheV2";
 const DESKTOP_STATE: &str = "desktop-state";
 const META_JSON: &str = "meta.json";
+/// One credential mutation can include a remote OAuth refresh. Account
+/// switching waits on the same lock rather than racing or failing after the
+/// old two-second window.
+pub const ACCOUNT_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// Where the Claude Desktop app and the saved profiles live.
 ///
@@ -113,6 +117,12 @@ impl Paths {
 
     pub fn profile_dir(&self, label: &str) -> PathBuf {
         self.profiles_dir.join(label)
+    }
+
+    /// Shared by Desktop account switching and inactive-profile OAuth refresh.
+    /// Both operations can rotate or install the same saved credential.
+    pub fn account_switch_lock(&self) -> PathBuf {
+        self.backups_dir.join(".account-switch.lock")
     }
 
     /// Where [`capture`] parks the live login before clearing it, so a

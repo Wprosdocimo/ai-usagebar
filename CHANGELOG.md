@@ -11,6 +11,31 @@ Each release is also published at
 
 ### Added
 
+- **Claude Desktop accounts now report usage with no `claude` CLI login.** A
+  saved Desktop account (`account add <label> --desktop`) previously needed a
+  *second*, separate `claude` login before its quota could show — because usage
+  came only from a CLI credential. It turns out the Desktop app stores its own
+  token under the same public OAuth client as Claude Code, and that token is
+  accepted by the usage endpoint, so ai-usagebar now reads it directly. Every
+  saved Desktop profile appears as a Claude account in `ai-usagebar usage`, the
+  TUI, and the macOS menu-bar overview — labelled `· <label> (desktop)` — with
+  zero CLI involvement.
+
+  The token lives in the app's encrypted `safeStorage` blob; ai-usagebar
+  decrypts it with the login-Keychain key (macOS), picks the
+  `user:inference`-scoped entry, and maps it onto the existing OAuth path so
+  rendering are unchanged. The **active** account is read-only from the live
+  `config.json` the app keeps fresh; ai-usagebar never rotates that credential,
+  even while the app happens to be stopped. Every other account is read from
+  its profile snapshot and refreshed under the same lock as account switching,
+  with the rotation written back before a switch can install it. Desktop caches
+  are isolated by account UUID, so a reused label cannot expose another CLI or
+  Desktop account's usage. A half-finished CLI `account add <label>` no longer
+  masks a working Desktop profile of the same name: the Desktop source takes
+  over when the CLI credential can't authenticate. The menu bar consumes this
+  same Rust-resolved list, including a configured `desktop_profiles_dir`.
+  macOS-only (the Desktop app and its Keychain key exist nowhere else).
+
 - **Deleted routines and chats are now confirmed instead of silently
   resurrected.** The merge is a union, so deleting a routine or a conversation
   in one account meant it came straight back from whichever account still held a

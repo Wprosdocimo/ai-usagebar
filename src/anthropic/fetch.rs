@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
+use crate::cache::{Cache, LockGuard, MAX_STALE, acquire_lock_async};
 use crate::error::{AppError, Result};
 use crate::usage::AnthropicSnapshot;
 
@@ -65,6 +65,11 @@ pub async fn fetch_snapshot(
 ) -> Result<FetchOutcome> {
     cache.ensure_dir()?;
     let _lock = acquire_lock_async(&cache.lock_path(), LOCK_TIMEOUT).await?;
+    // Desktop snapshots and account switching can mutate the same rotating
+    // credential. Hold their shared lock from source resolution through any
+    // refresh write-back; the live config source is read-only but also uses the
+    // lock so it cannot be read halfway through our own switch transaction.
+    let credential_lock = acquire_credential_lock(creds_target, LOCK_TIMEOUT).await?;
 
     // Fast path: cache is fresh, no work needed. We still need creds for the
     // plan label though, so read them either way. `resolve` also reports where
@@ -148,6 +153,10 @@ pub async fn fetch_snapshot(
         }
     }
 
+    // Usage fetches do not mutate credentials and should not make an account
+    // switch wait on the network once refresh/write-back is complete.
+    drop(credential_lock);
+
     // Fetch usage.
     match tokio::time::timeout(
         HTTP_TIMEOUT,
@@ -181,6 +190,19 @@ pub async fn fetch_snapshot(
         }
         Err(_elapsed) => fallback_to_cache_silent(cache, plan_label),
     }
+}
+
+async fn acquire_credential_lock(
+    target: &creds::CredsTarget,
+    timeout: Duration,
+) -> Result<Option<LockGuard>> {
+    let creds::CredsTarget::Desktop(desktop) = target else {
+        return Ok(None);
+    };
+    let Some(path) = desktop.coordination_lock() else {
+        return Ok(None);
+    };
+    acquire_lock_async(path, timeout).await.map(Some)
 }
 
 fn reuse_cache(
@@ -332,6 +354,33 @@ mod tests {
         let cache = Cache::at(td.path().join("anthropic"));
         cache.ensure_dir().unwrap();
         (td, cache)
+    }
+
+    #[tokio::test]
+    async fn desktop_refresh_waits_for_the_account_switch_lock() {
+        let tmp = TempDir::new().unwrap();
+        let lock_path = tmp.path().join(".account-switch.lock");
+        let held = crate::cache::acquire_lock(&lock_path, Duration::from_secs(1)).unwrap();
+        let desktop = crate::anthropic::desktop_creds::source_for(
+            &tmp.path().join("config.json"),
+            &tmp.path().join("profile"),
+            false,
+            [0; 16],
+        )
+        .with_coordination_lock(lock_path);
+        let target = creds::CredsTarget::Desktop(desktop);
+
+        let waiter = tokio::spawn(async move {
+            acquire_credential_lock(&target, Duration::from_secs(2))
+                .await
+                .unwrap()
+                .is_some()
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiter.is_finished(), "refresh bypassed the switch lock");
+
+        drop(held);
+        assert!(waiter.await.unwrap());
     }
 
     #[tokio::test]

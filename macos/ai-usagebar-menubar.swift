@@ -812,10 +812,20 @@ func showDefaultClaudeAccount(configValue: String?, hasAccounts: Bool) -> Bool {
 
 /// Pseudo-id mapping: `anthropic@<label>` selects a named account.
 let ACCOUNT_ID_PREFIX = "anthropic@"
+// A Claude account whose usage comes from the Desktop app's own token (a saved
+// ~/.claude-acc/profiles/<label>), fetched with the widget's `--desktop` flag.
+// Distinct prefix so `vendorArgs` knows to pass it; every other helper treats it
+// as a Claude account via `accountLabel(of:)`.
+let DESKTOP_ACCOUNT_ID_PREFIX = "anthropic-desktop@"
 
 func accountLabel(of id: String) -> String? {
-    id.hasPrefix(ACCOUNT_ID_PREFIX) ? String(id.dropFirst(ACCOUNT_ID_PREFIX.count)) : nil
+    if id.hasPrefix(DESKTOP_ACCOUNT_ID_PREFIX) {
+        return String(id.dropFirst(DESKTOP_ACCOUNT_ID_PREFIX.count))
+    }
+    return id.hasPrefix(ACCOUNT_ID_PREFIX) ? String(id.dropFirst(ACCOUNT_ID_PREFIX.count)) : nil
 }
+
+func isDesktopAccountId(_ id: String) -> Bool { id.hasPrefix(DESKTOP_ACCOUNT_ID_PREFIX) }
 
 func baseVendorId(_ id: String) -> String {
     accountLabel(of: id) != nil ? "anthropic" : id
@@ -824,7 +834,9 @@ func baseVendorId(_ id: String) -> String {
 /// The subprocess arguments that select `id` (base vendor or named account).
 func vendorArgs(for id: String) -> [String] {
     if let label = accountLabel(of: id) {
-        return ["--vendor", "anthropic", "--account", label]
+        var args = ["--vendor", "anthropic", "--account", label]
+        if isDesktopAccountId(id) { args.append("--desktop") }
+        return args
     }
     return ["--vendor", id]
 }
@@ -833,6 +845,13 @@ func vendorArgs(for id: String) -> [String] {
 struct MenuEntry {
     let id: String    // "cursor", "anthropic", or "anthropic@<label>"
     let name: String  // display: "Cursor", "Claude · <label>"
+}
+
+func claudeAccountMenuEntries(_ accounts: [UsageAccount]) -> [MenuEntry] {
+    accounts.map { account in
+        let prefix = account.desktop ? DESKTOP_ACCOUNT_ID_PREFIX : ACCOUNT_ID_PREFIX
+        return MenuEntry(id: prefix + account.label, name: "Claude · \(account.label)")
+    }
 }
 
 /// Apply `[ui] overview_vendors` with the same semantics as the TUI: preserve
@@ -855,20 +874,23 @@ func filterOverviewEntries(_ entries: [MenuEntry], requested: [String]?) -> [Men
 /// with Anthropic expanded into its named accounts (the default entry kept
 /// only per `show_default_account`). `active` stays listed even when
 /// unconfigured — same rule the per-vendor list always had.
-func vendorEntries(active: String) -> [MenuEntry] {
+func vendorEntries(active: String, usageAccounts: [UsageAccount]? = nil) -> [MenuEntry] {
     var out: [MenuEntry] = []
     for v in VENDOR_AUTH where vendorEnabled(v) {
         if v.id == "anthropic" {
-            let labels = claudeAccountLabels()
+            // Once account status is available, Rust owns profile-directory
+            // resolution and CLI/Desktop dedup. The nil fallback preserves
+            // configured CLI accounts with an older binary.
+            let accounts = usageAccounts ?? claudeAccountLabels().map {
+                UsageAccount(label: $0, desktop: false)
+            }
             let showDefault = showDefaultClaudeAccount(
                 configValue: configValueTOML("anthropic", "show_default_account"),
-                hasAccounts: !labels.isEmpty)
+                hasAccounts: !accounts.isEmpty)
             if showDefault && (v.id == active || vendorConfigured(v)) {
                 out.append(MenuEntry(id: v.id, name: v.name))
             }
-            for label in labels {
-                out.append(MenuEntry(id: ACCOUNT_ID_PREFIX + label, name: "Claude · \(label)"))
-            }
+            out.append(contentsOf: claudeAccountMenuEntries(accounts))
         } else if v.id == active || vendorConfigured(v) {
             out.append(MenuEntry(id: v.id, name: v.name))
         }
@@ -899,9 +921,17 @@ struct AccountStatus: Equatable {
     var cliActive: String?
     var desktopLabels: [String] = []
     var cliLabels: [String] = []
+    /// Canonical Rust/TUI usage enumeration. Nil means an older binary, so the
+    /// menu falls back to configured CLI labels; an empty array is authoritative.
+    var usageAccounts: [UsageAccount]?
     /// Routines one account deleted that another still holds. A switch would
     /// hand them back, so the user is asked before it starts.
     var deletionConflicts: [DeletionConflict] = []
+}
+
+struct UsageAccount: Equatable {
+    var label: String
+    var desktop: Bool
 }
 
 struct DeletionConflict: Equatable {
@@ -936,6 +966,16 @@ func parseAccountStatus(_ data: Data) -> AccountStatus? {
         (side as? [String: Any])?["active_label"] as? String
     }
     let desktop = root["desktop"], cli = root["cli"]
+    let usageAccounts: [UsageAccount]?
+    if let rows = root["usage_accounts"] as? [[String: Any]] {
+        usageAccounts = rows.compactMap { row in
+            guard let label = row["label"] as? String,
+                  let desktop = row["desktop"] as? Bool else { return nil }
+            return UsageAccount(label: label, desktop: desktop)
+        }
+    } else {
+        usageAccounts = nil
+    }
     let conflicts = ((desktop as? [String: Any])?["deletion_conflicts"] as? [[String: Any]] ?? [])
         .compactMap { row -> DeletionConflict? in
             guard let id = row["id"] as? String else { return nil }
@@ -953,6 +993,7 @@ func parseAccountStatus(_ data: Data) -> AccountStatus? {
                          cliActive: active(cli),
                          desktopLabels: labels(desktop, "profiles"),
                          cliLabels: labels(cli, "accounts"),
+                         usageAccounts: usageAccounts,
                          deletionConflicts: conflicts)
 }
 
@@ -1791,7 +1832,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The swap-shortcut ring: every configured entry (vendors *and* Claude
     /// accounts) plus the synthetic "overview" target, so ⌥⌘\ cycles them all.
     func swapCycleIds() -> [String] {
-        var ids = vendorEntries(active: VENDOR).map { $0.id }
+        var ids = vendorEntries(active: VENDOR,
+                                usageAccounts: lastAccountStatus?.usageAccounts).map { $0.id }
         ids.append("overview")
         return ids
     }
@@ -2070,7 +2112,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func refreshOverview(bin: String, generation: Int) {
         // vendorEntries(active: "") keeps only configured entries — the
         // active-vendor courtesy slot has no place in an all-vendors sweep.
-        let entries = filterOverviewEntries(vendorEntries(active: ""),
+        let entries = filterOverviewEntries(vendorEntries(
+                                                active: "",
+                                                usageAccounts: lastAccountStatus?.usageAccounts),
                                             requested: configuredOverviewVendorIds())
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var results: [(name: String, id: String, snap: Snapshot?)] = []
@@ -2368,7 +2412,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func rebuildVendorSubmenu() {
         vendorSubmenu.removeAllItems()
         let active = VENDOR
-        let entries = vendorEntries(active: active)
+        let entries = vendorEntries(active: active,
+                                    usageAccounts: lastAccountStatus?.usageAccounts)
         if entries.isEmpty {
             let none = NSMenuItem(title: "Nenhum configurado", action: nil, keyEquivalent: "")
             none.isEnabled = false
@@ -2438,6 +2483,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applyAccountStatus(_ status: AccountStatus) {
         lastAccountStatus = status
         renderAccountMenus()
+        rebuildVendorSubmenu()
     }
 
     func renderAccountMenus() {

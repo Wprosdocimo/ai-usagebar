@@ -34,6 +34,7 @@ pub mod openrouter;
 pub mod pacing;
 pub mod pango;
 pub mod report;
+pub mod safe_storage;
 pub mod theme;
 pub mod tooltip;
 pub mod tui;

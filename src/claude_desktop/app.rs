@@ -66,6 +66,10 @@ fn set_private_mode(_path: &Path, _mode: u32) -> Result<()> {
 ///
 /// AppleScript answers correctly, and asking whether an application `is
 /// running` does not launch it.
+///
+/// Also gates the *active* account's usage read: while the app runs it owns and
+/// refreshes `config.json`'s token, so ai-usagebar must read it but never
+/// refresh it (that would rotate the app's live credential out from under it).
 fn query_running_with(program: &Path) -> Result<bool> {
     let output = Command::new(program)
         .args(["-e", "application \"Claude\" is running"])
@@ -98,7 +102,7 @@ fn parse_running_output(success: bool, code: Option<i32>, stdout: &[u8]) -> Resu
     }
 }
 
-fn is_running() -> Result<bool> {
+pub fn is_running() -> Result<bool> {
     query_running_with(Path::new("/usr/bin/osascript"))
 }
 
