@@ -14,12 +14,12 @@
 //!   profile ARN. Empty for AWS Builder ID accounts with no IdC profile; the
 //!   API accepts an empty `profileArn`.
 
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
+use sha1::{Digest, Sha1};
 
 use crate::error::{AppError, Result};
 
@@ -74,9 +74,7 @@ pub struct KiroCredentials {
     pub profile_arn: String,
     /// Non-plaintext cache identity for the signed-in account. Never
     /// displayed — exists so a cache written for one account is not served
-    /// for another after a `kiro-cli login` switch. Stable within a toolchain
-    /// (`DefaultHasher`'s algorithm is unspecified across rustc releases; the
-    /// worst case there is one unnecessary refetch).
+    /// for another after a `kiro-cli login` switch.
     pub account_key: String,
 }
 
@@ -97,9 +95,23 @@ pub fn read_credentials(path: &Path) -> Result<KiroCredentials> {
 
     let token: TokenRow = read_auth_kv(&conn, TOKEN_KEY)?;
     let device: DeviceRegistrationRow = read_auth_kv(&conn, DEVICE_REGISTRATION_KEY)?;
-    let profile_arn = read_state::<ProfileRow>(&conn, PROFILE_STATE_KEY)
+    let profile_arn = read_optional_state::<ProfileRow>(&conn, PROFILE_STATE_KEY)?
         .map(|p| p.arn)
         .unwrap_or_default();
+
+    for (label, value) in [
+        ("access token", token.access_token.as_str()),
+        ("refresh token", token.refresh_token.as_str()),
+        ("client id", device.client_id.as_str()),
+        ("client secret", device.client_secret.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(AppError::Credentials(format!(
+                "Kiro CLI {label} is empty. Run `{LOGIN_HINT}` again."
+            )));
+        }
+    }
+    super::oauth::validate_region(&token.region)?;
 
     let expires_at = DateTime::parse_from_rfc3339(&token.expires_at)
         .map_err(|e| {
@@ -110,15 +122,7 @@ pub fn read_credentials(path: &Path) -> Result<KiroCredentials> {
         })?
         .with_timezone(&Utc);
 
-    let account_key = {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        if profile_arn.is_empty() {
-            token.region.hash(&mut hasher);
-        } else {
-            profile_arn.hash(&mut hasher);
-        }
-        format!("{:016x}", hasher.finish())
-    };
+    let account_key = account_key(&profile_arn, &token.region, &token.refresh_token);
 
     Ok(KiroCredentials {
         access_token: token.access_token,
@@ -133,27 +137,61 @@ pub fn read_credentials(path: &Path) -> Result<KiroCredentials> {
 }
 
 fn read_auth_kv<T: for<'de> Deserialize<'de>>(conn: &Connection, key: &str) -> Result<T> {
-    let raw: String = conn
-        .query_row("SELECT value FROM auth_kv WHERE key = ?1", [key], |row| {
+    let raw: String =
+        match conn.query_row("SELECT value FROM auth_kv WHERE key = ?1", [key], |row| {
             row.get(0)
-        })
-        .map_err(|_| {
-            AppError::Credentials(format!(
-                "no Kiro CLI `{key}` entry found. Run `{LOGIN_HINT}`, then try again."
-            ))
-        })?;
+        }) {
+            Ok(raw) => raw,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(AppError::Credentials(format!(
+                    "no Kiro CLI `{key}` entry found. Run `{LOGIN_HINT}`, then try again."
+                )));
+            }
+            Err(e) => {
+                return Err(AppError::Credentials(format!(
+                    "could not read Kiro CLI `{key}` entry: {e}"
+                )));
+            }
+        };
     serde_json::from_str(&raw)
         .map_err(|e| AppError::Credentials(format!("Kiro CLI `{key}` entry is malformed: {e}")))
 }
 
-fn read_state<T: for<'de> Deserialize<'de>>(conn: &Connection, key: &str) -> Result<T> {
-    let raw: String = conn
-        .query_row("SELECT value FROM state WHERE key = ?1", [key], |row| {
-            row.get(0)
-        })
-        .map_err(|_| AppError::Credentials(format!("no Kiro CLI `{key}` entry found")))?;
+fn read_optional_state<T: for<'de> Deserialize<'de>>(
+    conn: &Connection,
+    key: &str,
+) -> Result<Option<T>> {
+    let raw: String = match conn.query_row("SELECT value FROM state WHERE key = ?1", [key], |row| {
+        row.get(0)
+    }) {
+        Ok(raw) => raw,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(e) => {
+            return Err(AppError::Credentials(format!(
+                "could not read Kiro CLI `{key}` entry: {e}"
+            )));
+        }
+    };
     serde_json::from_str(&raw)
+        .map(Some)
         .map_err(|e| AppError::Credentials(format!("Kiro CLI `{key}` entry is malformed: {e}")))
+}
+
+fn account_key(profile_arn: &str, region: &str, refresh_token: &str) -> String {
+    let mut digest = Sha1::new();
+    if profile_arn.is_empty() {
+        // Builder ID/social accounts have no profile ARN. The refresh token is
+        // the only account-specific value available locally; fingerprint it so
+        // two accounts in the same region cannot share cache state.
+        digest.update(b"builder-id\0");
+        digest.update(region.as_bytes());
+        digest.update(b"\0");
+        digest.update(refresh_token.as_bytes());
+    } else {
+        digest.update(b"profile\0");
+        digest.update(profile_arn.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
 }
 
 #[cfg(test)]
@@ -301,6 +339,21 @@ mod tests {
     }
 
     #[test]
+    fn malformed_profile_json_is_not_treated_as_a_builder_id_account() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("data.sqlite3");
+        seed_db(
+            &path,
+            Some(&token_json()),
+            Some(&device_json()),
+            Some("not json"),
+        );
+        let err = read_credentials(&path).unwrap_err();
+        assert!(matches!(err, AppError::Credentials(_)));
+        assert!(err.to_string().contains(PROFILE_STATE_KEY));
+    }
+
+    #[test]
     fn unparseable_expiry_is_a_credentials_error() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("data.sqlite3");
@@ -351,5 +404,46 @@ mod tests {
         let two = read_credentials(&path3).unwrap();
         assert_ne!(one.account_key, two.account_key);
         assert!(!one.account_key.contains("ABC"));
+    }
+
+    #[test]
+    fn builder_id_accounts_in_the_same_region_have_distinct_keys() {
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("a.sqlite3");
+        seed_db(&path1, Some(&token_json()), Some(&device_json()), None);
+        let one = read_credentials(&path1).unwrap();
+
+        let path2 = dir.path().join("b.sqlite3");
+        let other_token = serde_json::json!({
+            "access_token": "AT2",
+            "refresh_token": "OTHER-RT",
+            "expires_at": "2030-01-01T00:00:00Z",
+            "region": "us-east-1",
+        })
+        .to_string();
+        seed_db(&path2, Some(&other_token), Some(&device_json()), None);
+        let two = read_credentials(&path2).unwrap();
+
+        assert_ne!(one.account_key, two.account_key);
+        assert!(!one.account_key.contains("RT"));
+        assert!(!two.account_key.contains("OTHER-RT"));
+    }
+
+    #[test]
+    fn unsafe_region_is_rejected_before_endpoint_construction() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("data.sqlite3");
+        let token = serde_json::json!({
+            "access_token": "AT",
+            "refresh_token": "RT",
+            "expires_at": "2030-01-01T00:00:00Z",
+            "region": "evil.example/#",
+        })
+        .to_string();
+        seed_db(&path, Some(&token), Some(&device_json()), None);
+
+        let err = read_credentials(&path).unwrap_err();
+        assert!(matches!(err, AppError::Credentials(_)));
+        assert!(err.to_string().contains("region"));
     }
 }

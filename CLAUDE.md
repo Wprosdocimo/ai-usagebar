@@ -149,10 +149,11 @@ vendor's response shape drifts:
   Tests must never probe `/proc` or the wall clock — use `candidate_bases_with`
   and `parse_cache_at`/`fetch_snapshot_at`, not their production wrappers.
 - `src/kiro/` — Kiro CLI. Reads kiro-cli's own `data.sqlite3` (read-only) for
-  the AWS SSO OIDC session, refreshes the ~1h access token in-memory via the
-  documented CreateToken API (never written back to kiro-cli's db), and calls
-  the undocumented `GetUsageLimits` — same operation kiro-cli's `/usage` makes.
-  Test seams: `db::read_credentials(&path)` with a seeded temp db and
+  the AWS SSO OIDC session, refreshes the ~1h access token via the documented
+  CreateToken API, and calls the undocumented `GetUsageLimits` — same operation
+  kiro-cli's `/usage` makes. Rotated credentials go to the vendor cache's
+  account-scoped mode-0600 `oauth.json`, never back to kiro-cli's db. Test
+  seams: `db::read_credentials(&path)` with a seeded temp db and
   `fetch::fetch_snapshot_at` with an `Endpoints` override pointed at mockito.
 - `src/cursor/` — Cursor. Reads the IDE's own `state.vscdb` (read-only), with
   a fallback to the headless `cursor-agent` CLI's `auth.json` when the IDE db

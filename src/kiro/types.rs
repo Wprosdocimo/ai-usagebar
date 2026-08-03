@@ -64,10 +64,27 @@ pub struct UsageBreakdown {
 /// (`resourceType: "CREDIT"`) is what kiro-cli's own `/usage` renders, so it
 /// wins when present. A single-entry list with no `resourceType` (seen on
 /// some plans) is accepted as-is rather than rejected on a technicality.
-fn credit_breakdown(list: &[UsageBreakdown]) -> Option<&UsageBreakdown> {
-    list.iter()
+fn credit_breakdown(list: &[UsageBreakdown]) -> Result<&UsageBreakdown> {
+    if let Some(credit) = list
+        .iter()
         .find(|b| b.resource_type.as_deref() == Some("CREDIT"))
-        .or_else(|| list.first())
+    {
+        return Ok(credit);
+    }
+    if let [only] = list
+        && only.resource_type.is_none()
+    {
+        return Ok(only);
+    }
+    if list.is_empty() {
+        Err(AppError::Schema(
+            "kiro: `usageBreakdownList` is empty".into(),
+        ))
+    } else {
+        Err(AppError::Schema(
+            "kiro: no unambiguous `CREDIT` usage bucket".into(),
+        ))
+    }
 }
 
 pub fn to_snapshot(resp: UsageLimitsResponse) -> Result<KiroSnapshot> {
@@ -81,8 +98,7 @@ pub fn to_snapshot(resp: UsageLimitsResponse) -> Result<KiroSnapshot> {
         })?
         .to_string();
 
-    let breakdown = credit_breakdown(&resp.usage_breakdown_list)
-        .ok_or_else(|| AppError::Schema("kiro: `usageBreakdownList` is empty".into()))?;
+    let breakdown = credit_breakdown(&resp.usage_breakdown_list)?;
 
     let used = finite(
         "currentUsageWithPrecision",
@@ -189,6 +205,31 @@ mod tests {
         let snap = to_snapshot(resp).unwrap();
         assert_eq!(snap.used, 5.0);
         assert_eq!(snap.limit, 10.0);
+    }
+
+    #[test]
+    fn explicit_non_credit_single_bucket_is_schema_drift() {
+        let mut resp = sample();
+        resp.usage_breakdown_list[0].resource_type = Some("OTHER".into());
+        assert!(matches!(to_snapshot(resp), Err(AppError::Schema(_))));
+    }
+
+    #[test]
+    fn multiple_unknown_buckets_are_schema_drift() {
+        let mut resp = sample();
+        resp.usage_breakdown_list = vec![
+            UsageBreakdown {
+                resource_type: None,
+                current_usage_with_precision: Some(1.0),
+                usage_limit_with_precision: Some(2.0),
+            },
+            UsageBreakdown {
+                resource_type: Some("OTHER".into()),
+                current_usage_with_precision: Some(3.0),
+                usage_limit_with_precision: Some(4.0),
+            },
+        ];
+        assert!(matches!(to_snapshot(resp), Err(AppError::Schema(_))));
     }
 
     #[test]

@@ -74,7 +74,15 @@ pub fn render(
         .format
         .clone()
         .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
-    let values = build_placeholders(snap, now);
+    let mut values = build_placeholders(snap, now);
+    // Both sinks fed by this map (bar text and --tooltip-format) are Pango
+    // markup. The plan label is API-controlled, so escape its aliases at the
+    // projection boundary. The default tooltip escapes the raw snapshot.
+    for key in ["plan", "kiro_plan"] {
+        if let Some(value) = values.get_mut(key) {
+            *value = escape(value);
+        }
+    }
 
     let mut text = substitute(&format, &values);
     if outcome.stale {
@@ -280,6 +288,32 @@ mod tests {
             now(),
         );
         assert_eq!(out.tooltip, "99% of 10000 · KIRO POWER");
+    }
+
+    #[test]
+    fn api_plan_is_inert_in_custom_pango_formats() {
+        let mut snap = sample_snap();
+        snap.plan = "<b>not markup</b> & control\u{1b}".into();
+        let mut o = opts();
+        o.format = Some("{kiro_plan}".into());
+        o.tooltip_format = Some("{plan}".into());
+
+        let out = render(
+            &sample_outcome(snap.clone()),
+            &snap,
+            &Theme::default(),
+            &o,
+            now(),
+        );
+
+        assert!(!out.text.contains("<b>"));
+        assert!(!out.tooltip.contains("<b>"));
+        assert!(
+            out.text
+                .contains("&lt;b&gt;not markup&lt;/b&gt; &amp; control")
+        );
+        assert_eq!(out.tooltip, "&lt;b&gt;not markup&lt;/b&gt; &amp; control");
+        assert!(!out.text.contains('\u{1b}'));
     }
 
     #[test]

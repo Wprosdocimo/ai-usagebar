@@ -4,12 +4,12 @@
 //! unlike `fetch.rs`'s reverse-engineered `GetUsageLimits` call.
 //!
 //! kiro-cli's own cached access token lives about an hour (see `db.rs`); this
-//! refreshes it in-memory using the `refresh_token` + `client_id`/`client_secret`
+//! refreshes it using the `refresh_token` + `client_id`/`client_secret`
 //! kiro-cli already registered for itself at `kiro-cli login` time — nothing
 //! new to authenticate, just the same local credentials `db.rs` already read.
 //! The refreshed token is **not** written back to kiro-cli's own database
-//! (mirroring `db.rs`'s read-only treatment of that live file); it lives only
-//! in this process and in ai-usagebar's own snapshot cache.
+//! (mirroring `db.rs`'s read-only treatment of that live file); `fetch.rs`
+//! persists it in ai-usagebar's own account-scoped credential sidecar.
 
 use serde::{Deserialize, Serialize};
 
@@ -19,8 +19,30 @@ use crate::error::{AppError, Result};
 /// never races the token's actual death. Mirrors `openai::oauth::REFRESH_BUFFER_SECS`.
 pub const REFRESH_BUFFER_SECS: i64 = 300;
 
-pub fn token_endpoint(region: &str) -> String {
-    format!("https://oidc.{region}.amazonaws.com/token")
+pub fn validate_region(region: &str) -> Result<()> {
+    let parts: Vec<_> = region.split('-').collect();
+    let valid = (3..=5).contains(&parts.len())
+        && region.len() <= 32
+        && parts[0].chars().all(|c| c.is_ascii_lowercase())
+        && parts[parts.len() - 1].chars().all(|c| c.is_ascii_digit())
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::Credentials(
+            "Kiro CLI token contains an invalid AWS region. Run `kiro-cli login` again.".into(),
+        ))
+    }
+}
+
+pub fn token_endpoint(region: &str) -> Result<String> {
+    validate_region(region)?;
+    Ok(format!("https://oidc.{region}.amazonaws.com/token"))
 }
 
 #[derive(Debug, Serialize)]
@@ -40,11 +62,13 @@ pub struct RefreshResponse {
     #[serde(rename = "accessToken", deserialize_with = "de_nonempty_string")]
     pub access_token: String,
     #[serde(
-        rename = "expiresIn",
+        rename = "refreshToken",
         default,
-        deserialize_with = "de_opt_positive_u64"
+        deserialize_with = "de_opt_nonempty_string"
     )]
-    pub expires_in: Option<u64>,
+    pub refresh_token: Option<String>,
+    #[serde(rename = "expiresIn", deserialize_with = "de_positive_u64")]
+    pub expires_in: u64,
 }
 
 fn de_nonempty_string<'de, D>(d: D) -> std::result::Result<String, D::Error>
@@ -59,26 +83,38 @@ where
     }
 }
 
-fn de_opt_positive_u64<'de, D>(d: D) -> std::result::Result<Option<u64>, D::Error>
+fn de_opt_nonempty_string<'de, D>(d: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(d)?
+        .map(|value| {
+            if value.trim().is_empty() {
+                Err(serde::de::Error::custom("refreshToken cannot be empty"))
+            } else {
+                Ok(value)
+            }
+        })
+        .transpose()
+}
+
+fn de_positive_u64<'de, D>(d: D) -> std::result::Result<u64, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let v = serde_json::Value::deserialize(d)?;
     match v {
-        serde_json::Value::Null => Ok(None),
         serde_json::Value::Number(n) => {
             const MAX_SAFE: u64 = (i64::MAX as u64) / 2;
-            if let Some(value) = n.as_u64().filter(|value| *value <= MAX_SAFE) {
-                Ok(Some(value))
+            if let Some(value) = n.as_u64().filter(|value| (1..=MAX_SAFE).contains(value)) {
+                Ok(value)
             } else {
                 Err(serde::de::Error::custom(
-                    "expiresIn must be a non-negative integer in range",
+                    "expiresIn must be a positive integer in range",
                 ))
             }
         }
-        _ => Err(serde::de::Error::custom(
-            "expiresIn must be a number or null",
-        )),
+        _ => Err(serde::de::Error::custom("expiresIn must be a number")),
     }
 }
 
@@ -131,9 +167,25 @@ mod tests {
     #[test]
     fn token_endpoint_is_region_scoped() {
         assert_eq!(
-            token_endpoint("us-east-1"),
+            token_endpoint("us-east-1").unwrap(),
             "https://oidc.us-east-1.amazonaws.com/token"
         );
+        assert_eq!(
+            token_endpoint("us-gov-west-1").unwrap(),
+            "https://oidc.us-gov-west-1.amazonaws.com/token"
+        );
+    }
+
+    #[test]
+    fn unsafe_regions_are_rejected_before_url_construction() {
+        for region in [
+            "evil.example/#",
+            "us-east-1@evil.example",
+            "US-EAST-1",
+            "us--1",
+        ] {
+            assert!(token_endpoint(region).is_err(), "{region}");
+        }
     }
 
     #[test]
@@ -151,16 +203,20 @@ mod tests {
 
     #[test]
     fn malformed_expires_in_is_rejected_not_dropped() {
-        for value in [r#""3600""#, "-1", "true"] {
+        for value in [r#""3600""#, "-1", "0", "null", "true"] {
             let body = format!(r#"{{"accessToken":"new","expiresIn":{value}}}"#);
             assert!(
                 serde_json::from_str::<RefreshResponse>(&body).is_err(),
                 "{body}"
             );
         }
-        let response: RefreshResponse =
-            serde_json::from_str(r#"{"accessToken":"new","expiresIn":null}"#).unwrap();
-        assert_eq!(response.expires_in, None);
+        assert!(serde_json::from_str::<RefreshResponse>(r#"{"accessToken":"new"}"#).is_err());
+    }
+
+    #[test]
+    fn empty_rotated_refresh_token_is_rejected() {
+        let body = r#"{"accessToken":"new","refreshToken":" ","expiresIn":3600}"#;
+        assert!(serde_json::from_str::<RefreshResponse>(body).is_err());
     }
 
     #[tokio::test]
@@ -183,7 +239,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(r.access_token, "new-at");
-        assert_eq!(r.expires_in, Some(3600));
+        assert_eq!(r.expires_in, 3600);
+        assert_eq!(r.refresh_token, None);
         m.assert_async().await;
     }
 

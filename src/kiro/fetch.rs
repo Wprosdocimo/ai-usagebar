@@ -1,6 +1,7 @@
 //! Orchestrates a Kiro CLI snapshot: read kiro-cli's own cached AWS SSO OIDC
-//! token (`db.rs`), refresh it in-memory if it's close to expiry (`oauth.rs`
-//! — kiro-cli's own database is never written back to), then call
+//! token (`db.rs`), refresh it if it's close to expiry (`oauth.rs` — kiro-cli's
+//! own database is never written back to), persist the refreshed credential in
+//! ai-usagebar's account-scoped cache, then call
 //! `AmazonCodeWhispererService.GetUsageLimits` — the exact operation kiro-cli's
 //! own `/usage` slash command invokes. Cache/stale/error-fallback shape
 //! mirrors `cursor::fetch`.
@@ -9,8 +10,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
-use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
+use crate::cache::{Cache, MAX_STALE, acquire_lock_async, atomic_write};
 use crate::error::{AppError, Result};
 use crate::usage::KiroSnapshot;
 use crate::vendor::{MAX_BODY_BYTES, read_body_capped};
@@ -23,6 +25,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TARGET: &str = "AmazonCodeWhispererService.GetUsageLimits";
+const OAUTH_CACHE_FILE: &str = "oauth.json";
 
 #[derive(Debug, Clone)]
 pub struct Endpoints {
@@ -37,12 +40,21 @@ impl Endpoints {
     /// proxied through `management.<region>.kiro.dev` (observed in kiro-cli's
     /// own request trace for the same operation); both speak the same
     /// request/response shape, so either is a config override away.
-    pub fn for_region(region: &str) -> Self {
-        Self {
+    pub fn for_region(region: &str) -> Result<Self> {
+        oauth::validate_region(region)?;
+        Ok(Self {
             usage_limits: format!("https://codewhisperer.{region}.amazonaws.com/"),
-            token: oauth::token_endpoint(region),
-        }
+            token: oauth::token_endpoint(region)?,
+        })
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct PersistedOAuth {
+    account: String,
+    access_token: String,
+    refresh_token: String,
+    expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,7 +97,7 @@ async fn fetch_snapshot_at(
 
     // Resolve identity before accepting a cache hit — a `kiro-cli login`
     // switch mid-session must not keep serving the previous account's cache.
-    let creds = db::read_credentials(db_path)?;
+    let mut creds = db::read_credentials(db_path)?;
 
     if let Some(bytes) = cache.fresh_payload(cache_ttl)?
         && let Ok(outcome) = reuse_cache(&bytes, cache, false, &creds.account_key, now)
@@ -93,15 +105,17 @@ async fn fetch_snapshot_at(
         return Ok(outcome);
     }
 
+    apply_persisted_oauth(cache, &mut creds)?;
+
     let derived;
     let endpoints = match endpoints_override {
         Some(e) => e,
         None => {
-            derived = Endpoints::for_region(&creds.region);
+            derived = Endpoints::for_region(&creds.region)?;
             &derived
         }
     };
-    match fetch_live(client, endpoints, &creds, now).await {
+    match fetch_live(client, endpoints, cache, &creds, now).await {
         Ok(snap) => {
             let bytes = serde_json::to_vec(&snap_to_json(&snap, &creds.account_key))?;
             cache.write_payload(&bytes)?;
@@ -242,14 +256,71 @@ fn snap_to_json(snap: &KiroSnapshot, account: &str) -> serde_json::Value {
     })
 }
 
+fn oauth_cache_path(cache: &Cache) -> std::path::PathBuf {
+    cache.dir().join(OAUTH_CACHE_FILE)
+}
+
+fn read_persisted_oauth(cache: &Cache, account: &str) -> Result<Option<PersistedOAuth>> {
+    let path = oauth_cache_path(cache);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(AppError::io_at(&path, e)),
+    };
+    let persisted: PersistedOAuth = serde_json::from_slice(&bytes).map_err(|e| {
+        AppError::Credentials(format!(
+            "ai-usagebar's cached Kiro credentials at {} are malformed ({e}); remove that file and try again",
+            path.display()
+        ))
+    })?;
+    if persisted.account != account {
+        return Ok(None);
+    }
+    if persisted.access_token.trim().is_empty() || persisted.refresh_token.trim().is_empty() {
+        return Err(AppError::Credentials(format!(
+            "ai-usagebar's cached Kiro credentials at {} are incomplete; remove that file and try again",
+            path.display()
+        )));
+    }
+    Ok(Some(persisted))
+}
+
+fn apply_persisted_oauth(cache: &Cache, creds: &mut KiroCredentials) -> Result<()> {
+    let Some(persisted) = read_persisted_oauth(cache, &creds.account_key)? else {
+        return Ok(());
+    };
+    // Kiro may refresh its own database independently. Prefer whichever
+    // account-matched credential has the later expiry.
+    if persisted.expires_at > creds.expires_at {
+        creds.access_token = persisted.access_token;
+        creds.refresh_token = persisted.refresh_token;
+        creds.expires_at = persisted.expires_at;
+    }
+    Ok(())
+}
+
+fn write_persisted_oauth(cache: &Cache, persisted: &PersistedOAuth) -> Result<()> {
+    let path = oauth_cache_path(cache);
+    let bytes = serde_json::to_vec_pretty(persisted)?;
+    atomic_write(&path, &bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| AppError::io_at(&path, e))?;
+    }
+    Ok(())
+}
+
 async fn fetch_live(
     client: &reqwest::Client,
     endpoints: &Endpoints,
+    cache: &Cache,
     creds: &KiroCredentials,
     now: DateTime<Utc>,
 ) -> Result<KiroSnapshot> {
     let access_token = if oauth::needs_refresh(creds.expires_at.timestamp(), now.timestamp()) {
-        tokio::time::timeout(
+        let refreshed = tokio::time::timeout(
             REFRESH_TIMEOUT,
             oauth::refresh(
                 client,
@@ -267,8 +338,29 @@ async fn fetch_live(
             AppError::Credentials(format!(
                 "Kiro CLI token refresh failed ({e}). Run `kiro-cli login` again."
             ))
-        })?
-        .access_token
+        })?;
+        let expires_in = i64::try_from(refreshed.expires_in)
+            .map_err(|_| AppError::Schema("kiro token refresh expiry is out of range".into()))?;
+        let expires_at_secs = now
+            .timestamp()
+            .checked_add(expires_in)
+            .ok_or_else(|| AppError::Schema("kiro token refresh expiry overflowed".into()))?;
+        let expires_at = DateTime::from_timestamp(expires_at_secs, 0)
+            .ok_or_else(|| AppError::Schema("kiro token refresh expiry is out of range".into()))?;
+        let persisted = PersistedOAuth {
+            account: creds.account_key.clone(),
+            access_token: refreshed.access_token,
+            refresh_token: refreshed
+                .refresh_token
+                .unwrap_or_else(|| creds.refresh_token.clone()),
+            expires_at,
+        };
+        write_persisted_oauth(cache, &persisted).map_err(|e| {
+            AppError::Credentials(format!(
+                "refreshed Kiro CLI credentials could not be saved ({e}); run `kiro-cli login` again if the refresh token was rotated"
+            ))
+        })?;
+        persisted.access_token
     } else {
         creds.access_token.clone()
     };
@@ -395,12 +487,14 @@ mod tests {
         let endpoints_url = server.url();
 
         let creds = db::read_credentials(&db_path).unwrap();
+        let (_cache_dir, cache) = cache_fixture();
         let out = fetch_live(
             &client,
             &Endpoints {
                 usage_limits: endpoints_url,
                 token: "unused".into(),
             },
+            &cache,
             &creds,
             Utc::now(),
         )
@@ -434,6 +528,7 @@ mod tests {
         // Already expired — must trigger a refresh.
         let db_path = seed_db(&db_dir, "2000-01-01T00:00:00Z");
         let creds = db::read_credentials(&db_path).unwrap();
+        let (_cache_dir, cache) = cache_fixture();
         let client = reqwest::Client::new();
 
         let out = fetch_live(
@@ -442,6 +537,7 @@ mod tests {
                 usage_limits: server.url(),
                 token: format!("{}/token", server.url()),
             },
+            &cache,
             &creds,
             Utc::now(),
         )
@@ -451,6 +547,100 @@ mod tests {
         assert_eq!(out.used, 40.0);
         token_mock.assert_async().await;
         usage_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn refreshed_credentials_are_reused_and_rotated_token_is_retained() {
+        let mut server = mockito::Server::new_async().await;
+        let token_mock = server
+            .mock("POST", "/token")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "clientId": "CID",
+                "clientSecret": "CSECRET",
+                "grantType": "refresh_token",
+                "refreshToken": "RT",
+            })))
+            .with_status(200)
+            .with_body(r#"{"accessToken":"NEW-AT","refreshToken":"ROTATED-RT","expiresIn":3600}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let usage_mock = server
+            .mock("POST", "/")
+            .match_header("authorization", "Bearer NEW-AT")
+            .with_status(200)
+            .with_body(usage_json())
+            .expect(2)
+            .create_async()
+            .await;
+
+        let db_dir = TempDir::new().unwrap();
+        let db_path = seed_db(&db_dir, "2000-01-01T00:00:00Z");
+        let (_cache_dir, cache) = cache_fixture();
+        let endpoints = Endpoints {
+            usage_limits: server.url(),
+            token: format!("{}/token", server.url()),
+        };
+        let now = DateTime::parse_from_rfc3339("2026-08-03T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        for _ in 0..2 {
+            let out = fetch_snapshot_at(
+                &reqwest::Client::new(),
+                &db_path,
+                &cache,
+                Duration::ZERO,
+                Some(&endpoints),
+                now,
+            )
+            .await
+            .unwrap();
+            assert_eq!(out.snapshot.used, 40.0);
+        }
+
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(oauth_cache_path(&cache)).unwrap()).unwrap();
+        assert_eq!(persisted["access_token"], "NEW-AT");
+        assert_eq!(persisted["refresh_token"], "ROTATED-RT");
+        assert_eq!(persisted["account"], account_key(&db_dir));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(oauth_cache_path(&cache))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0);
+        }
+
+        token_mock.assert_async().await;
+        usage_mock.assert_async().await;
+    }
+
+    #[test]
+    fn persisted_credentials_from_another_account_are_ignored() {
+        let db_dir = TempDir::new().unwrap();
+        let db_path = seed_db(&db_dir, "2099-01-01T00:00:00Z");
+        let mut creds = db::read_credentials(&db_path).unwrap();
+        let (_cache_dir, cache) = cache_fixture();
+        write_persisted_oauth(
+            &cache,
+            &PersistedOAuth {
+                account: "another-account".into(),
+                access_token: "OTHER-AT".into(),
+                refresh_token: "OTHER-RT".into(),
+                expires_at: DateTime::parse_from_rfc3339("2100-01-01T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            },
+        )
+        .unwrap();
+
+        apply_persisted_oauth(&cache, &mut creds).unwrap();
+
+        assert_eq!(creds.access_token, "AT");
+        assert_eq!(creds.refresh_token, "RT");
     }
 
     #[tokio::test]
@@ -466,6 +656,7 @@ mod tests {
         let db_dir = TempDir::new().unwrap();
         let db_path = seed_db(&db_dir, "2000-01-01T00:00:00Z");
         let creds = db::read_credentials(&db_path).unwrap();
+        let (_cache_dir, cache) = cache_fixture();
         let client = reqwest::Client::new();
 
         let err = fetch_live(
@@ -474,6 +665,7 @@ mod tests {
                 usage_limits: server.url(),
                 token: format!("{}/token", server.url()),
             },
+            &cache,
             &creds,
             Utc::now(),
         )

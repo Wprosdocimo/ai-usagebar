@@ -782,5 +782,4 @@ mod tests {
         };
         assert_eq!(snap.pct(), 33);
     }
-
 }

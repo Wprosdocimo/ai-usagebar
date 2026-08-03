@@ -246,6 +246,8 @@ api_key_env = "MINIMAX_API_KEY"    # checked first; if set + non-empty, used
 # Disabled by default — enable once you've run `kiro-cli login` at least once
 # (it needs no key from you, but it does need that one-time login to exist).
 enabled = false
+# Refreshed/rotated credentials are stored atomically in ai-usagebar's own
+# account-scoped Kiro cache (mode 0600 on Unix), never in kiro-cli's database.
 # Override kiro-cli's local database path. Leave commented out to use the
 # platform default:
 #   Linux:   ~/.local/share/kiro-cli/data.sqlite3

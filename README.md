@@ -137,7 +137,7 @@ For each API-key vendor, ai-usagebar checks in this order:
 - Don't commit your config dir if you check it into dotfiles unless you've redacted `api_key` lines.
 - OAuth credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`) are managed by their respective CLIs and already chmod-protected.
 - Cursor's session token lives in its own `state.vscdb`, managed entirely by the Cursor IDE — ai-usagebar opens it read-only and never writes to it. On machines without the IDE, the `cursor-agent` CLI's own `auth.json` is read as a fallback instead — same read-only treatment.
-- kiro-cli's AWS SSO OIDC session lives in its own `data.sqlite3`, managed entirely by kiro-cli — ai-usagebar opens it read-only; refreshed credentials are stored only in ai-usagebar's own cache, never written back to kiro-cli's database.
+- kiro-cli's AWS SSO OIDC session lives in its own `data.sqlite3`, managed entirely by kiro-cli — ai-usagebar opens it read-only; refreshed credentials are stored atomically in an account-scoped `kiro/oauth.json` cache file (mode 0600 on Unix), never written back to kiro-cli's database.
 
 #### macOS: Anthropic credentials in the Keychain
 
@@ -238,12 +238,13 @@ enabled = true             # disabled by default; enable once you've signed in t
 # Sign in to the cursor-agent CLI once instead — its own auth.json is the
 # fallback when the IDE database is absent.
 # db_path = "/home/you/.config/Cursor/User/globalStorage/state.vscdb"
+# agent_auth_path = "/home/you/.config/cursor/auth.json"
+
 [kiro]
 enabled = true             # disabled by default; enable once you've run `kiro-cli login`
 # No API key: reads the AWS SSO OIDC session kiro-cli already wrote to its own
 # data.sqlite3 after you logged in there.
 # db_path = "/home/you/.local/share/kiro-cli/data.sqlite3"
-# agent_auth_path = "/home/you/.config/cursor/auth.json"
 ```
 
 ## Quick start
@@ -743,7 +744,7 @@ When an endpoint drifts, **run `make smoke`**. It runs all ignored vendor tests,
 
 `{kiro_plan}`, `{kiro_pct}`, `{kiro_used}`, `{kiro_limit}`, `{kiro_reset}` — this cycle's credit pool from `AmazonCodeWhispererService.GetUsageLimits`, the same call kiro-cli's own `/usage` slash command makes. `kiro_used`/`kiro_limit` are the raw credit counts (two decimals only when the API sends a fraction, e.g. `9943.38`); `kiro_pct` is the rounded percentage consumed. The default bar format is `{kiro_pct}%`. Generic aliases: `{session_pct}` = `{weekly_pct}` = `kiro_pct` (one pool fills both generic slots), `{plan}` = the subscription title (e.g. "KIRO POWER").
 
-> Unlike every other reverse-engineered vendor here, the credential source is a *token that expires* (~1h) rather than a long-lived session — ai-usagebar refreshes it itself via the documented AWS SSO OIDC `CreateToken` API when it's close to expiry, using the refresh token kiro-cli already has. The refreshed token lives only in ai-usagebar's own process/cache, never written back to kiro-cli's database.
+> Unlike every other reverse-engineered vendor here, the credential source is a *token that expires* (~1h) rather than a long-lived session — ai-usagebar refreshes it via the documented AWS SSO OIDC `CreateToken` API when it's close to expiry, using the refresh token kiro-cli already has. Refreshed access and rotated refresh tokens are saved atomically in ai-usagebar's account-scoped `kiro/oauth.json` cache file with mode 0600 on Unix, never written back to kiro-cli's database.
 
 ## Local development
 
