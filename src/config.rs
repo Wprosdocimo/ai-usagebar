@@ -678,6 +678,11 @@ pub struct CursorConfig {
     /// platform-standard `.../User/globalStorage/state.vscdb` — see
     /// `cursor::db::default_db_path`).
     pub db_path: Option<PathBuf>,
+    /// Override the headless `cursor-agent` CLI's own login file (defaults to
+    /// `.../cursor/auth.json` — see `cursor::db::default_agent_auth_path`).
+    /// Used as a fallback when `db_path` doesn't exist, so a text-only
+    /// machine that never runs the desktop IDE still gets usage.
+    pub agent_auth_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -778,6 +783,7 @@ impl Config {
         expand_tilde_opt(&mut self.anthropic.desktop_profiles_dir);
         expand_tilde_opt(&mut self.openai.codex_auth_path);
         expand_tilde_opt(&mut self.cursor.db_path);
+        expand_tilde_opt(&mut self.cursor.agent_auth_path);
         for account in &mut self.anthropic.accounts {
             account.credentials_path = expand_tilde(&account.credentials_path);
         }
@@ -1803,6 +1809,22 @@ enabled = false
         let c = Config::load_from(f.path()).unwrap();
         let home = crate::cache::home_dir().unwrap();
         assert_eq!(c.cursor.db_path, Some(home.join("cursor-state.vscdb")));
+    }
+
+    #[test]
+    fn cursor_agent_auth_path_is_tilde_expanded() {
+        let f = write_toml(
+            r#"
+            [cursor]
+            agent_auth_path = "~/cursor-agent-auth.json"
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        let home = crate::cache::home_dir().unwrap();
+        assert_eq!(
+            c.cursor.agent_auth_path,
+            Some(home.join("cursor-agent-auth.json"))
+        );
     }
 
     #[test]

@@ -9,6 +9,15 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- **Cursor: `cursor-agent` fallback credential** (`[cursor] agent_auth_path`).
+  Text-only machines that never open the desktop IDE now get usage too: when
+  the IDE's `state.vscdb` is absent, the vendor falls back to the session
+  token the headless `cursor-agent` CLI wrote to its own
+  `~/.config/cursor/auth.json`. The IDE database stays the preferred source
+  when both exist.
+
 ## [0.21.0] — 2026-08-03
 
 ### Added
