@@ -84,7 +84,7 @@ pub fn read_access_token(path: &Path) -> Result<String> {
 
 /// Default location of the `cursor-agent` CLI's own login state — a plain
 /// JSON file, not the IDE's `state.vscdb`. Written by the headless
-/// `cursor-agent` tool (and read by nothing else today), so it stays
+/// `cursor-agent` tool, so it stays
 /// populated on machines that never run the desktop IDE at all.
 pub fn default_agent_auth_path() -> Result<PathBuf> {
     let base = directories::BaseDirs::new().ok_or_else(|| {
@@ -125,12 +125,15 @@ pub fn read_agent_access_token(path: &Path) -> Result<String> {
 /// is tried first (it is the live, continuously-refreshed source when the
 /// desktop app is actually running); a text-only / headless machine that has
 /// never opened the IDE falls back to whatever `cursor-agent` last wrote to
-/// its own `auth.json`. The IDE's error is the one surfaced when both are
-/// missing, since it names the more commonly expected path.
+/// its own `auth.json`. If the agent file exists but cannot be used, its error
+/// is surfaced so a headless user gets an actionable diagnostic. The IDE's
+/// error remains the one surfaced when both sources are absent, since it names
+/// the more commonly expected path.
 pub fn resolve_access_token(db_path: &Path, agent_auth_path: &Path) -> Result<String> {
     match read_access_token(db_path) {
         Ok(token) => Ok(token),
-        Err(ide_err) => read_agent_access_token(agent_auth_path).or(Err(ide_err)),
+        Err(_) if agent_auth_path.exists() => read_agent_access_token(agent_auth_path),
+        Err(ide_err) => Err(ide_err),
     }
 }
 
@@ -415,6 +418,23 @@ mod tests {
         let err = resolve_access_token(&db_path, &agent_path).unwrap_err();
         match err {
             AppError::Credentials(m) => assert!(m.contains(&db_path.display().to_string())),
+            other => panic!("expected Credentials error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_surfaces_the_agent_error_when_its_file_exists_but_is_malformed() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("state.vscdb");
+        let agent_path = dir.path().join("auth.json");
+        std::fs::write(&agent_path, "not json").unwrap();
+
+        let err = resolve_access_token(&db_path, &agent_path).unwrap_err();
+        match err {
+            AppError::Credentials(m) => {
+                assert!(m.contains(&agent_path.display().to_string()));
+                assert!(m.contains("could not parse"));
+            }
             other => panic!("expected Credentials error, got {other:?}"),
         }
     }
