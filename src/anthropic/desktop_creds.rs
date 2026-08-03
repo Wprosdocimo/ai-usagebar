@@ -19,17 +19,16 @@
 //! so that is the one we lift.
 //!
 //! **Refresh safety.** Refreshing rotates the refresh token and invalidates the
-//! old one, so it must never run against a token the Desktop app is actively
-//! using. The active account is therefore constructed read-only *while the app
-//! runs* (`allow_refresh = false`), which blanks the refresh token so the
-//! generic fetch path never refreshes it — it just uses the app-maintained
-//! access token or falls back to cache. Non-active snapshots (and the active
-//! account when the app is stopped) refresh freely and write the rotation back
-//! to the same blob they came from, keeping the snapshot switch-ready.
+//! old one. The live `config.json` source is therefore always read-only: an app
+//! can start after any liveness check. Inactive snapshots refresh under the
+//! same lock as account switching, held from credential read through encrypted
+//! write-back, so a switch cannot install a stale token mid-rotation.
 
 use std::path::PathBuf;
 
 use serde_json::Value;
+#[cfg(any(target_os = "macos", test))]
+use sha1::{Digest, Sha1};
 
 use crate::error::{AppError, Result};
 use crate::safe_storage;
@@ -45,8 +44,9 @@ const CONFIG_KEYS: [&str; 2] = ["oauth:tokenCacheV2", "oauth:tokenCache"];
 const SNAPSHOT_FILES: [&str; 2] = ["config-tokenCacheV2", "config-tokenCache"];
 
 /// Where a Desktop token blob lives.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BlobSource {
+enum BlobSource {
     /// The live `config.json`; the blob is a string value under one of
     /// [`CONFIG_KEYS`], with the rest of the file preserved on write-back.
     ConfigJson(PathBuf),
@@ -59,11 +59,13 @@ pub enum BlobSource {
 /// inside [`super::creds::CredsTarget`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopCreds {
-    pub source: BlobSource,
-    pub key: [u8; 16],
-    /// False for the active account while the app runs — blanks the refresh
-    /// token so nothing refreshes the app's live credential out from under it.
-    pub allow_refresh: bool,
+    source: BlobSource,
+    key: [u8; 16],
+    /// False for the active account — blanks the refresh token so nothing can
+    /// refresh the app's live credential out from under it.
+    allow_refresh: bool,
+    /// Shared account-switch lock. `None` only in pure unit fixtures.
+    coordination_lock: Option<PathBuf>,
 }
 
 /// Enough to put a refreshed token back exactly where it was read from.
@@ -99,12 +101,16 @@ pub fn account_target(
         &paths.config_json(),
         &paths.profile_dir(label),
         is_active,
-        crate::claude_desktop::app::is_running(),
         key,
-    );
-    // Plain `anthropic/<label>` cache — one usage source per label — so the
-    // widget, menu bar and `claude-acc list` all read the same file.
-    let cache = crate::cache::Cache::for_vendor_account("anthropic", label)?;
+    )
+    .with_coordination_lock(paths.account_switch_lock());
+    // Desktop is a distinct credential source, and the account UUID—not its
+    // reusable display label—owns the cache. This prevents a broken CLI entry
+    // or a newly captured profile from inheriting another identity's usage.
+    let cache = crate::cache::Cache::for_vendor_account(
+        "anthropic-desktop",
+        &desktop_cache_key(&profile.account_uuid),
+    )?;
     Ok((super::creds::CredsTarget::Desktop(source), cache))
 }
 
@@ -120,33 +126,51 @@ pub fn account_target(
 
 /// Build the credential source for a saved Desktop profile, applying the
 /// refresh-safety policy. The *active* account (the one `config.json` currently
-/// points at) is read from the live `config.json` — kept fresh by the app — and
-/// is refreshable only while the app is stopped. Every other account is read
-/// from its own snapshot and refreshes freely. Pure: the key and the app-running
-/// flag are injected, so it is testable without a Keychain or a running app.
-pub fn source_for(
+/// points at) is read from the live `config.json` and is always read-only.
+/// Every other account is read from its own refreshable snapshot. Pure: the
+/// key is injected, so it is testable without a Keychain.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn source_for(
     config_json: &std::path::Path,
     profile_dir: &std::path::Path,
     is_active: bool,
-    app_running: bool,
     key: [u8; 16],
 ) -> DesktopCreds {
     if is_active {
         DesktopCreds {
             source: BlobSource::ConfigJson(config_json.to_path_buf()),
             key,
-            allow_refresh: !app_running,
+            allow_refresh: false,
+            coordination_lock: None,
         }
     } else {
         DesktopCreds {
             source: BlobSource::ProfileDir(profile_dir.to_path_buf()),
             key,
             allow_refresh: true,
+            coordination_lock: None,
         }
     }
 }
 
+/// Stable, path-safe cache identity. SHA-1 is already required by Chromium's
+/// PBKDF2 format here; this use is namespacing, not a security signature.
+#[cfg(any(target_os = "macos", test))]
+fn desktop_cache_key(account_uuid: &str) -> String {
+    format!("{:x}", Sha1::digest(account_uuid.as_bytes()))
+}
+
 impl DesktopCreds {
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn with_coordination_lock(mut self, path: PathBuf) -> Self {
+        self.coordination_lock = Some(path);
+        self
+    }
+
+    pub fn coordination_lock(&self) -> Option<&std::path::Path> {
+        self.coordination_lock.as_deref()
+    }
+
     /// The file this source decrypts from, for diagnostics only.
     pub fn blob_path(&self) -> &std::path::Path {
         match &self.source {
@@ -357,6 +381,27 @@ mod tests {
     }
 
     #[test]
+    fn the_live_config_source_is_never_refreshable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let active = source_for(tmp.path(), tmp.path(), true, key());
+        let snapshot = source_for(tmp.path(), tmp.path(), false, key());
+
+        assert!(!active.allow_refresh);
+        assert!(snapshot.allow_refresh);
+    }
+
+    #[test]
+    fn desktop_cache_identity_is_account_scoped_and_path_safe() {
+        let a = desktop_cache_key("account-a");
+        let b = desktop_cache_key("account-b");
+
+        assert_eq!(a, desktop_cache_key("account-a"));
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 40);
+        assert!(a.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
     fn lifts_the_inference_token_from_a_snapshot() {
         let tmp = tempfile::tempdir().unwrap();
         let k = key();
@@ -370,6 +415,7 @@ mod tests {
             source: BlobSource::ProfileDir(tmp.path().to_path_buf()),
             key: k,
             allow_refresh: true,
+            coordination_lock: None,
         };
         let (creds, _wb) = d.read().unwrap();
         let o = creds.claude_ai_oauth;
@@ -391,6 +437,7 @@ mod tests {
             source: BlobSource::ProfileDir(tmp.path().to_path_buf()),
             key: k,
             allow_refresh: false,
+            coordination_lock: None,
         };
         let (creds, wb) = d.read().unwrap();
         assert_eq!(creds.claude_ai_oauth.refresh_token, "");
@@ -407,6 +454,7 @@ mod tests {
             source: BlobSource::ProfileDir(tmp.path().to_path_buf()),
             key: k,
             allow_refresh: true,
+            coordination_lock: None,
         };
         let (mut creds, wb) = d.read().unwrap();
         creds.claude_ai_oauth.access_token = "new-at".into();
@@ -450,6 +498,7 @@ mod tests {
             source: BlobSource::ConfigJson(cfg.clone()),
             key: k,
             allow_refresh: true,
+            coordination_lock: None,
         };
         let (mut creds, wb) = d.read().unwrap();
         assert_eq!(creds.claude_ai_oauth.access_token, "cfg-at");
@@ -470,6 +519,7 @@ mod tests {
             source: BlobSource::ProfileDir(tmp.path().to_path_buf()),
             key: key(),
             allow_refresh: true,
+            coordination_lock: None,
         };
         assert!(d.read().is_err());
     }

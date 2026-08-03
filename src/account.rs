@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use crate::anthropic::cli_account::{self, CliSwitchOpts, CliSwitchOutcome, KeychainStore};
 use crate::claude_desktop::{self, Paths, SwitchOpts, SwitchPlan};
@@ -206,7 +205,23 @@ fn status(json: bool) -> i32 {
         "accounts": cli_rows,
     });
 
-    let report = serde_json::json!({ "desktop": desktop, "cli": cli });
+    // The menu bar consumes this exact TUI enumeration instead of duplicating
+    // profile paths and CLI/Desktop dedup policy in Swift.
+    let usage_accounts: Vec<serde_json::Value> = crate::tui::app::tabs_with_desktop(&config)
+        .into_iter()
+        .filter(|tab| tab.vendor == crate::vendor::VendorId::Anthropic)
+        .filter_map(|tab| {
+            Some(serde_json::json!({
+                "label": tab.account?,
+                "desktop": tab.desktop,
+            }))
+        })
+        .collect();
+    let report = serde_json::json!({
+        "desktop": desktop,
+        "cli": cli,
+        "usage_accounts": usage_accounts,
+    });
     if json {
         println!("{report}");
         return 0;
@@ -477,8 +492,8 @@ fn switch_desktop(config: &Config, args: &SwitchArgs, tolerant: bool) -> Result<
     // Keep planning and mutation in one process-wide transaction. Two menu or
     // terminal switches planned against the same live identity must not race.
     let _lock = crate::cache::acquire_lock(
-        &paths.backups_dir.join(".account-switch.lock"),
-        Duration::from_secs(2),
+        &paths.account_switch_lock(),
+        claude_desktop::ACCOUNT_LOCK_TIMEOUT,
     )?;
 
     let plan = match claude_desktop::plan_switch(&paths, args.label, args.opts.clone()) {
