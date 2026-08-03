@@ -26,7 +26,8 @@ Each release is also published at
   the IDE's `state.vscdb` is absent, the vendor falls back to the session
   token the headless `cursor-agent` CLI wrote to its own
   `~/.config/cursor/auth.json`. The IDE database stays the preferred source
-  when both exist.
+  when both exist; an existing but unreadable or malformed IDE database still
+  surfaces its own error instead of silently switching to another login.
 
 ## [0.21.0] — 2026-08-03
 

@@ -132,7 +132,9 @@ pub fn read_agent_access_token(path: &Path) -> Result<String> {
 pub fn resolve_access_token(db_path: &Path, agent_auth_path: &Path) -> Result<String> {
     match read_access_token(db_path) {
         Ok(token) => Ok(token),
-        Err(_) if agent_auth_path.exists() => read_agent_access_token(agent_auth_path),
+        Err(_) if !db_path.exists() && agent_auth_path.exists() => {
+            read_agent_access_token(agent_auth_path)
+        }
         Err(ide_err) => Err(ide_err),
     }
 }
@@ -408,6 +410,28 @@ mod tests {
             resolve_access_token(&db_path, &agent_path).unwrap(),
             "agent-token"
         );
+    }
+
+    #[test]
+    fn resolve_does_not_hide_an_existing_broken_ide_db_with_the_agent_file() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("state.vscdb");
+        seed_db(&db_path, None);
+        let agent_path = dir.path().join("auth.json");
+        std::fs::write(
+            &agent_path,
+            serde_json::json!({"accessToken": "agent-token"}).to_string(),
+        )
+        .unwrap();
+
+        let err = resolve_access_token(&db_path, &agent_path).unwrap_err();
+        match err {
+            AppError::Credentials(m) => {
+                assert!(m.contains(&db_path.display().to_string()));
+                assert!(!m.contains(&agent_path.display().to_string()));
+            }
+            other => panic!("expected Credentials error, got {other:?}"),
+        }
     }
 
     #[test]
