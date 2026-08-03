@@ -1,8 +1,8 @@
 # ai-usagebar
 
-Waybar widget and tabbed TUI for AI plan usage across **Anthropic Claude**, **OpenAI Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, and **Kimi**.
+Waybar widget and tabbed TUI for AI plan usage across **Anthropic Claude**, **OpenAI Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, **Kimi**, and other supported AI coding services.
 
-This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar) and stays drop-in compatible with it. It keeps the minimalist Pango-bordered tooltip, Omarchy theme auto-detection, and flock-protected OAuth refresh, then adds five more vendors and a proper testable codebase instead of one long shell script.
+This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar) and stays drop-in compatible with it. It keeps the minimalist Pango-bordered tooltip, Omarchy theme auto-detection, and flock-protected OAuth refresh, then adds broad multi-vendor support and a proper testable codebase instead of one long shell script.
 
 ![Waybar widget showing `cld 29% Â· 1h 12m` in the top-right, with the hover tooltip showing Claude Max 20x session/weekly/sonnet/extra-usage progress bars](screenshot.png)
 
@@ -73,7 +73,7 @@ API-key vendors work unchanged via environment variables or `config.toml`.
 
 ## Authentication
 
-Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth credentials that their official CLIs already wrote to disk, so **no env vars are needed.** Every other vendor uses an API key. You can pass those through env vars or, if you don't source secrets in your shell, put them inline in `config.toml`.
+Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth credentials that their official CLIs already wrote to disk, several vendors use API keys, and local-product integrations reuse their own signed-in session or local server. The table below is authoritative; API keys can come from environment variables or, if you do not source secrets in your shell, inline `config.toml` values.
 
 | Vendor | Method | Action required |
 |---|---|---|
@@ -154,7 +154,8 @@ On macOS, recent Claude Code builds don't write `~/.claude/.credentials.json` â€
 # Only a vendor that is enabled can be primary.
 # primary = "anthropic"   # anthropic | anthropic_api | openai | zai
 #                         # | openrouter | deepseek | kimi | kilo | novita
-#                         # | moonshot | grok | antigravity | cursor
+#                         # | moonshot | grok | antigravity | cursor | minimax
+#                         # | kiro
 
 [context]
 enabled = false           # opt in, then press c in ai-usagebar-tui
@@ -258,6 +259,7 @@ ai-usagebar --vendor zai
 ai-usagebar --vendor openrouter
 ai-usagebar --vendor deepseek
 ai-usagebar --vendor kimi
+ai-usagebar --vendor kiro
 
 # Force Waybar JSON (e.g. piping into jq).
 ai-usagebar --json
