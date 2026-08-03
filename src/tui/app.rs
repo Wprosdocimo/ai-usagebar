@@ -686,6 +686,18 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             .await?;
             Ok(outcome.into())
         }
+        VendorId::Kiro => {
+            let cache = crate::cache::Cache::for_vendor("kiro")?;
+            let db_path = config
+                .kiro
+                .db_path
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(crate::kiro::db::default_db_path)?;
+            let outcome =
+                crate::kiro::fetch_snapshot(client, &db_path, &cache, DEFAULT_TTL).await?;
+            Ok(outcome.into())
+        }
     }
 }
 

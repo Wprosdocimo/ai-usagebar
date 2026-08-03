@@ -237,3 +237,20 @@ api_key_env = "MINIMAX_API_KEY"    # checked first; if set + non-empty, used
 # at the wrong one reads as an invalid key, not an empty plan:
 #   global -> api.minimax.io   |   cn -> api.minimaxi.com
 # region = "global"
+
+# Kiro CLI — no separate login step: reads the AWS SSO OIDC session kiro-cli
+# already wrote to its own local database after `kiro-cli login`. Shows the
+# credit pool from AmazonCodeWhispererService.GetUsageLimits — the same call
+# kiro-cli's own `/usage` slash command makes.
+[kiro]
+# Disabled by default — enable once you've run `kiro-cli login` at least once
+# (it needs no key from you, but it does need that one-time login to exist).
+enabled = false
+# Refreshed/rotated credentials are stored atomically in ai-usagebar's own
+# account-scoped Kiro cache (mode 0600 on Unix), never in kiro-cli's database.
+# Override kiro-cli's local database path. Leave commented out to use the
+# platform default:
+#   Linux:   ~/.local/share/kiro-cli/data.sqlite3
+#   macOS:   ~/Library/Application Support/kiro-cli/data.sqlite3
+#   Windows: %APPDATA%\kiro-cli\data.sqlite3
+# db_path = "/home/you/.local/share/kiro-cli/data.sqlite3"

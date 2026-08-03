@@ -1,10 +1,10 @@
 //! Live API smoke test suite — DETECTS UNDOCUMENTED-ENDPOINT DRIFT.
 //!
-//! Hits the real Anthropic, OpenAI Codex, Z.AI, OpenRouter, and Kimi endpoints
-//! using credentials from your shell (API keys, or the local IDE/CLI session
-//! files for Cursor). Asserts only the *fields we depend on* so when a vendor
-//! renames or removes one, the failure points at the exact field rather than
-//! dumping the whole response.
+//! Hits the real vendor endpoints using credentials from your shell (API keys,
+//! or the local CLI/IDE session files for Cursor and Kiro CLI).
+//! Asserts only the *fields we depend on* so when a vendor renames or removes
+//! one, the failure points at the exact field rather than dumping the whole
+//! response.
 //!
 //! These tests are `#[ignore]` so plain `cargo test` doesn't hit external
 //! APIs (and won't fail on machines without creds). Run explicitly:
@@ -45,6 +45,10 @@
 //!   derived from `startOfMonth`. `cursor_live` skips when there is no Cursor
 //!   credential source (no state DB, no cursor-agent `auth.json`, and neither
 //!   `CURSOR_DB_PATH` nor `CURSOR_AGENT_AUTH_PATH` set).
+//! - **Kiro CLI**: reads the AWS SSO OIDC session from kiro-cli's local
+//!   `data.sqlite3`, then asserts the credit counters are non-negative and the
+//!   plan label is non-empty. `kiro_live` skips when there is no kiro-cli
+//!   install (no db and no `KIRO_DB_PATH`).
 
 use std::time::Duration;
 
@@ -53,6 +57,7 @@ use ai_usagebar::cache::Cache;
 use ai_usagebar::cursor;
 use ai_usagebar::error::AppError;
 use ai_usagebar::kimi;
+use ai_usagebar::kiro;
 use ai_usagebar::minimax;
 use ai_usagebar::openai;
 use ai_usagebar::openrouter;
@@ -389,6 +394,59 @@ async fn cursor_live() {
         out.snapshot.api_pct,
         out.snapshot.total_pct,
         out.snapshot.on_demand_enabled,
+        out.snapshot.reset_at,
+    );
+}
+
+#[tokio::test]
+#[ignore = "live API; run with --ignored"]
+async fn kiro_live() {
+    // Kiro has no API key — the credential is the AWS SSO OIDC session
+    // kiro-cli wrote to its own local database after `kiro-cli login`. So this
+    // test needs kiro-cli installed and signed in (or `KIRO_DB_PATH` pointing
+    // at a copied `data.sqlite3`) and skips otherwise, like `cursor_live`.
+    let db_path = match std::env::var("KIRO_DB_PATH") {
+        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => kiro::db::default_db_path().expect("resolve platform data dir"),
+    };
+    if !db_path.exists() {
+        eprintln!(
+            "kiro_live: no kiro-cli database at {} — skipping (run `kiro-cli login`, or set KIRO_DB_PATH)",
+            db_path.display()
+        );
+        return;
+    }
+
+    let cache = xdg_cache_for("kiro");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap();
+    let out = kiro::fetch_snapshot(&client, &db_path, &cache, Duration::from_secs(0))
+        .await
+        .expect("kiro fetch should succeed against the real API");
+
+    // The fields the widget depends on: non-negative credit counters, a
+    // non-empty plan label, and (when reported) a future reset.
+    assert!(
+        out.snapshot.used >= 0.0 && out.snapshot.limit >= 0.0,
+        "kiro: negative credit counter — shape changed? used={} limit={}",
+        out.snapshot.used,
+        out.snapshot.limit
+    );
+    assert!(!out.snapshot.plan.is_empty(), "kiro plan label empty");
+    if let Some(reset) = out.snapshot.reset_at {
+        assert!(
+            reset > chrono::Utc::now(),
+            "kiro: reset_at should be a future instant, got {reset:?}"
+        );
+    }
+    println!(
+        "✅ kiro — plan={}, credits {} / {} ({}%), reset {:?}",
+        out.snapshot.plan,
+        out.snapshot.used,
+        out.snapshot.limit,
+        out.snapshot.pct(),
         out.snapshot.reset_at,
     );
 }

@@ -11,6 +11,16 @@ Each release is also published at
 
 ### Added
 
+- **Kiro CLI vendor** (`--vendor kiro`, `[kiro]`, opt-in). Reads the credit
+  pool from `AmazonCodeWhispererService.GetUsageLimits` — the exact call
+  kiro-cli's own `/usage` slash command makes — using the AWS SSO OIDC
+  session kiro-cli already cached in its local `data.sqlite3` after
+  `kiro-cli login`. No separate login step; the OIDC access token (valid
+  ~1h) is refreshed via the documented AWS SSO OIDC `CreateToken` API when
+  close to expiry, using the refresh token + client credentials kiro-cli
+  registered for itself. Refreshed and rotated credentials are kept in an
+  atomic, mode-0600, account-scoped ai-usagebar sidecar and are never written
+  back to kiro-cli's own database.
 - **Cursor: `cursor-agent` fallback credential** (`[cursor] agent_auth_path`).
   Text-only machines that never open the desktop IDE now get usage too: when
   the IDE's `state.vscdb` is absent, the vendor falls back to the session

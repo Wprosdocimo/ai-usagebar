@@ -19,6 +19,7 @@ use crate::error::{AppError, Result};
 use crate::grok;
 use crate::kilo;
 use crate::kimi;
+use crate::kiro;
 use crate::minimax;
 use crate::moonshot;
 use crate::novita;
@@ -153,6 +154,7 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
         Vendor::Antigravity => antigravity_output(cli, &config).await,
         Vendor::Cursor => cursor_output(cli, &config).await,
         Vendor::Minimax => minimax_output(cli, &config).await,
+        Vendor::Kiro => kiro_output(cli, &config).await,
     }
 }
 
@@ -223,6 +225,35 @@ async fn cursor_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
     let vendor_outcome: VendorOutcome = outcome.into();
     let opts = RenderOpts::from_cli(cli);
     Ok(cursor::vendor::render(
+        &vendor_outcome,
+        &snap,
+        &theme,
+        &opts,
+        chrono::Utc::now(),
+    ))
+}
+
+/// Kiro CLI authenticates via the AWS SSO OIDC session kiro-cli already wrote
+/// to its own local `data.sqlite3` — no API key to resolve, but (like Cursor)
+/// a real on-disk path that can be overridden.
+async fn kiro_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
+    let client = http_client()?;
+    let cache = vendor_cache(cli, "kiro")?;
+    let db_path = match config.kiro.db_path.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => kiro::db::default_db_path()?,
+    };
+    let outcome = match kiro::fetch_snapshot(&client, &db_path, &cache, DEFAULT_TTL).await {
+        Ok(o) => o,
+        Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
+        Err(e) => return Err(e),
+    };
+
+    let theme = theme_from_cli(cli);
+    let snap = outcome.snapshot.clone();
+    let vendor_outcome: VendorOutcome = outcome.into();
+    let opts = RenderOpts::from_cli(cli);
+    Ok(kiro::vendor::render(
         &vendor_outcome,
         &snap,
         &theme,
