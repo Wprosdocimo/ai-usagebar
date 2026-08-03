@@ -85,6 +85,8 @@ fn vendor_label(id: VendorId) -> &'static str {
         VendorId::Antigravity => "Antigravity",
         VendorId::Cursor => "Cursor",
         VendorId::Minimax => "MiniMax",
+        VendorId::Kiro => "Kiro",
+        VendorId::Copilot => "Copilot",
     }
 }
 
@@ -104,6 +106,8 @@ fn compact_vendor_label(id: VendorId) -> &'static str {
         VendorId::Antigravity => "Antigravity",
         VendorId::Cursor => "Cursor",
         VendorId::Minimax => "MiniMax",
+        VendorId::Kiro => "Kiro",
+        VendorId::Copilot => "Copilot",
     }
 }
 

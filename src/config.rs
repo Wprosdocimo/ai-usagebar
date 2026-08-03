@@ -49,6 +49,8 @@ pub struct Config {
     pub antigravity: AntigravityConfig,
     pub cursor: CursorConfig,
     pub minimax: MinimaxConfig,
+    pub kiro: KiroConfig,
+    pub copilot: CopilotConfig,
 }
 
 /// UI / dispatch preferences. Currently just `primary` — which vendor the
@@ -680,6 +682,41 @@ pub struct CursorConfig {
     pub db_path: Option<PathBuf>,
 }
 
+/// Kiro CLI reads its quota through the AWS SSO OIDC session kiro-cli already
+/// wrote to its own local `data.sqlite3` — no API key, but (like Cursor) a
+/// real on-disk path that can need overriding.
+///
+/// Opt-in like Cursor/DeepSeek/Kilo/etc (`enabled` defaults to `false`):
+/// calls a reverse-engineered CodeWhisperer endpoint via a session token
+/// scraped from a local CLI database, so it stays off until the user
+/// explicitly turns it on.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct KiroConfig {
+    pub enabled: bool,
+    /// Override kiro-cli's local database path (defaults to the
+    /// platform-standard `.../kiro-cli/data.sqlite3` — see
+    /// `kiro::db::default_db_path`).
+    pub db_path: Option<PathBuf>,
+}
+
+/// GitHub Copilot has no existing CLI/IDE credential ai-usagebar can read —
+/// `copilot_internal/*` is gated by which OAuth App issued the token, and the
+/// `gh` CLI's own token doesn't qualify (confirmed live). So `ai-usagebar
+/// login copilot` performs its own device-code login and keeps the resulting
+/// GitHub token in its own file (see `copilot::creds`); this struct only
+/// tracks the on/off switch and an override for that file's location.
+///
+/// Opt-in like Cursor/Kiro (`enabled` defaults to `false`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CopilotConfig {
+    pub enabled: bool,
+    /// Override where the GitHub token from `ai-usagebar login copilot` is
+    /// stored (defaults to `copilot::creds::default_path`).
+    pub credentials_path: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AnthropicApiConfig {
@@ -778,6 +815,8 @@ impl Config {
         expand_tilde_opt(&mut self.anthropic.desktop_profiles_dir);
         expand_tilde_opt(&mut self.openai.codex_auth_path);
         expand_tilde_opt(&mut self.cursor.db_path);
+        expand_tilde_opt(&mut self.kiro.db_path);
+        expand_tilde_opt(&mut self.copilot.credentials_path);
         for account in &mut self.anthropic.accounts {
             account.credentials_path = expand_tilde(&account.credentials_path);
         }
@@ -799,6 +838,8 @@ impl Config {
             VendorId::Antigravity => self.antigravity.enabled,
             VendorId::Cursor => self.cursor.enabled,
             VendorId::Minimax => self.minimax.enabled,
+            VendorId::Kiro => self.kiro.enabled,
+            VendorId::Copilot => self.copilot.enabled,
         }
     }
 
@@ -965,6 +1006,8 @@ mod tests {
             VendorId::Grok,
             VendorId::Cursor,
             VendorId::Minimax,
+            VendorId::Kiro,
+            VendorId::Copilot,
         ] {
             assert!(!c.is_enabled(opt_in), "{opt_in:?}");
         }
@@ -1790,6 +1833,63 @@ enabled = false
         assert!(!cfg.moonshot.enabled && cfg.moonshot.api_key.is_none());
         assert!(!cfg.grok.enabled && cfg.grok.api_key.is_none());
         assert!(!cfg.cursor.enabled && cfg.cursor.db_path.is_none());
+        assert!(!cfg.kiro.enabled && cfg.kiro.db_path.is_none());
+        assert!(!cfg.copilot.enabled && cfg.copilot.credentials_path.is_none());
+    }
+
+    #[test]
+    fn copilot_credentials_path_is_tilde_expanded() {
+        let f = write_toml(
+            r#"
+            [copilot]
+            credentials_path = "~/copilot-creds.json"
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        let home = crate::cache::home_dir().unwrap();
+        assert_eq!(
+            c.copilot.credentials_path,
+            Some(home.join("copilot-creds.json"))
+        );
+    }
+
+    #[test]
+    fn copilot_appears_when_enabled() {
+        let f = write_toml(
+            r#"
+            [copilot]
+            enabled = true
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        assert!(c.is_enabled(VendorId::Copilot));
+        assert!(c.enabled_vendors().contains(&VendorId::Copilot));
+    }
+
+    #[test]
+    fn kiro_db_path_is_tilde_expanded() {
+        let f = write_toml(
+            r#"
+            [kiro]
+            db_path = "~/kiro-data.sqlite3"
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        let home = crate::cache::home_dir().unwrap();
+        assert_eq!(c.kiro.db_path, Some(home.join("kiro-data.sqlite3")));
+    }
+
+    #[test]
+    fn kiro_appears_when_enabled() {
+        let f = write_toml(
+            r#"
+            [kiro]
+            enabled = true
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        assert!(c.is_enabled(VendorId::Kiro));
+        assert!(c.enabled_vendors().contains(&VendorId::Kiro));
     }
 
     #[test]

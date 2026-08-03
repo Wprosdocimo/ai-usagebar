@@ -263,6 +263,78 @@ impl CursorSnapshot {
     }
 }
 
+/// Kiro CLI (AWS CodeWhisperer / Q Developer backend) — a single credit pool
+/// from `AmazonCodeWhispererService.GetUsageLimits`, the same call kiro-cli's
+/// own `/usage` slash command makes. Authenticated with the AWS SSO OIDC
+/// bearer token kiro-cli already cached locally, refreshed with the paired
+/// refresh token when it's close to expiry — see `kiro::db` and `kiro::oauth`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KiroSnapshot {
+    /// Subscription tier label (`subscriptionInfo.subscriptionTitle`, e.g.
+    /// "KIRO POWER").
+    pub plan: String,
+    /// Credits consumed this cycle (`currentUsageWithPrecision`).
+    pub used: f64,
+    /// Credits included in the plan (`usageLimitWithPrecision`).
+    pub limit: f64,
+    /// When the credit pool resets (`nextDateReset`).
+    pub reset_at: Option<DateTime<Utc>>,
+}
+
+impl Eq for KiroSnapshot {}
+
+impl KiroSnapshot {
+    /// Percentage of the credit pool consumed, rounded. `0` when `limit` is
+    /// not positive — defensive; the API has not been observed to send that.
+    pub fn pct(&self) -> i32 {
+        if self.limit <= 0.0 {
+            return 0;
+        }
+        ((self.used / self.limit) * 100.0)
+            .round()
+            .clamp(0.0, 9999.0) as i32
+    }
+}
+
+/// GitHub Copilot — premium-request quota from `copilot_internal/user`'s
+/// `quota_snapshots.premium_interactions`, the same call `oh-my-posh`'s
+/// Copilot segment and several VS Code quota-monitor extensions make.
+/// Authenticated with a GitHub OAuth token `ai-usagebar login copilot`
+/// obtained via device-code flow — see `copilot::device_flow` and
+/// `copilot::creds`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopilotSnapshot {
+    /// Premium-request allowance this cycle (`entitlement`).
+    pub entitlement: f64,
+    /// Premium requests left this cycle (`remaining`).
+    pub remaining: f64,
+    /// `true` when the plan has no premium-request cap.
+    pub unlimited: bool,
+    /// When the quota resets (`quota_reset_date`).
+    pub reset_at: Option<DateTime<Utc>>,
+}
+
+impl Eq for CopilotSnapshot {}
+
+impl CopilotSnapshot {
+    /// Premium requests consumed this cycle.
+    pub fn used(&self) -> f64 {
+        (self.entitlement - self.remaining).max(0.0)
+    }
+
+    /// Percentage of the premium-request allowance consumed. `0` on an
+    /// unlimited plan or a non-positive entitlement — neither has a
+    /// meaningful percentage.
+    pub fn pct(&self) -> i32 {
+        if self.unlimited || self.entitlement <= 0.0 {
+            return 0;
+        }
+        ((self.used() / self.entitlement) * 100.0)
+            .round()
+            .clamp(0.0, 9999.0) as i32
+    }
+}
+
 /// Kimi Code — weekly subscription quota plus a 5h rolling rate-limit window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KimiSnapshot {
@@ -319,6 +391,8 @@ pub enum VendorSnapshot {
     Antigravity(AntigravitySnapshot),
     Cursor(CursorSnapshot),
     Minimax(MinimaxSnapshot),
+    Kiro(KiroSnapshot),
+    Copilot(CopilotSnapshot),
 }
 
 /// Google Antigravity 2.0 / CLI snapshot. The API groups models into Gemini
@@ -725,5 +799,50 @@ mod tests {
         };
         assert_eq!(snap.weekly_pct(), 50);
         assert_eq!(snap.window_pct(), 100);
+    }
+
+    #[test]
+    fn kiro_pct_is_zero_without_a_positive_limit() {
+        let snap = KiroSnapshot {
+            plan: "FREE".into(),
+            used: 5.0,
+            limit: 0.0,
+            reset_at: None,
+        };
+        assert_eq!(snap.pct(), 0);
+    }
+
+    #[test]
+    fn kiro_pct_rounds_the_credit_ratio() {
+        let snap = KiroSnapshot {
+            plan: "KIRO POWER".into(),
+            used: 1.0,
+            limit: 3.0,
+            reset_at: None,
+        };
+        assert_eq!(snap.pct(), 33);
+    }
+
+    #[test]
+    fn copilot_used_never_goes_negative_when_remaining_exceeds_entitlement() {
+        let snap = CopilotSnapshot {
+            entitlement: 100.0,
+            remaining: 150.0,
+            unlimited: false,
+            reset_at: None,
+        };
+        assert_eq!(snap.used(), 0.0);
+        assert_eq!(snap.pct(), 0);
+    }
+
+    #[test]
+    fn copilot_unlimited_has_no_meaningful_percentage() {
+        let snap = CopilotSnapshot {
+            entitlement: 0.0,
+            remaining: 0.0,
+            unlimited: true,
+            reset_at: None,
+        };
+        assert_eq!(snap.pct(), 0);
     }
 }

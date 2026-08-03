@@ -139,6 +139,15 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
                 pct("W", s.weekly.utilization_pct),
             ],
         ),
+        VendorSnapshot::Kiro(s) => (s.plan.clone(), vec![pct("credits", s.pct())]),
+        VendorSnapshot::Copilot(s) => (
+            String::new(),
+            vec![if s.unlimited {
+                ("unlimited".to_string(), PaceSeverity::Low)
+            } else {
+                pct("premium", s.pct())
+            }],
+        ),
     };
     for (text, _) in &mut cells {
         *text = crate::display::sanitize_untrusted_field(text);
@@ -181,6 +190,8 @@ pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
         }
         VendorSnapshot::Cursor(s) => (!s.unlimited).then_some(s.total_pct),
         VendorSnapshot::Minimax(s) => Some(s.session.utilization_pct.max(s.weekly.utilization_pct)),
+        VendorSnapshot::Kiro(s) => Some(s.pct()),
+        VendorSnapshot::Copilot(s) => (!s.unlimited).then_some(s.pct()),
         VendorSnapshot::Openrouter(_)
         | VendorSnapshot::Deepseek(_)
         | VendorSnapshot::Kilo(_)
@@ -230,6 +241,8 @@ pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> 
                 VendorSnapshot::Antigravity(s) => antigravity_sections(s, now),
                 VendorSnapshot::Cursor(s) => cursor_sections(s, now),
                 VendorSnapshot::Minimax(s) => minimax_sections(s, now, pace_tolerance),
+                VendorSnapshot::Kiro(s) => kiro_sections(s, now),
+                VendorSnapshot::Copilot(s) => copilot_sections(s, now),
             };
             // Inject the (already-absolute) fetched-at instant into the title
             // row, right-aligned. Pre-snapshotted in app::refresh_one so it
@@ -590,6 +603,64 @@ fn cursor_sections(s: &crate::usage::CursorSnapshot, now: DateTime<Utc>) -> Vec<
         value: countdown::format(s.reset_at, now),
     });
     v
+}
+
+/// GitHub Copilot has a single premium-request pool, plus an unlimited
+/// branch (mirrors `cursor_sections`'s handling of Cursor's unlimited plans).
+fn copilot_sections(s: &crate::usage::CopilotSnapshot, now: DateTime<Utc>) -> Vec<Section> {
+    let mut v = vec![Section::Title {
+        left: "GitHub Copilot".into(),
+        right: None,
+    }];
+    v.push(Section::Spacer);
+    if s.unlimited {
+        v.push(Section::Text {
+            label: "Premium requests".into(),
+            value: "Unlimited".into(),
+        });
+    } else {
+        let pct = s.pct();
+        v.push(Section::Metric {
+            label: "Premium requests".into(),
+            pct: pct.clamp(0, 100) as u16,
+            severity: severity_for(pct),
+            value_label: format!("{pct}%"),
+            footnote: format!("{:.0} of {:.0}", s.used(), s.entitlement),
+        });
+    }
+    v.push(Section::Spacer);
+    v.push(Section::Text {
+        label: "Resets".into(),
+        value: countdown::format(s.reset_at, now),
+    });
+    v
+}
+
+/// Kiro has a single credit pool, so the panel is a single metric bar plus
+/// the reset row — the same shape as `anthropic_api_sections` but with a
+/// real percentage (Kiro always reports both used and limit) instead of an
+/// optional configured one.
+fn kiro_sections(s: &crate::usage::KiroSnapshot, now: DateTime<Utc>) -> Vec<Section> {
+    let pct = s.pct();
+    vec![
+        Section::Title {
+            left: format!("Kiro {}", s.plan),
+            right: None,
+        },
+        Section::Spacer,
+        Section::Metric {
+            label: "Credits".into(),
+            pct: pct.clamp(0, 100) as u16,
+            severity: severity_for(pct),
+            value_label: format!("{pct}%"),
+            footnote: format!("{:.2} of {:.0}", s.used, s.limit),
+        },
+        Section::Spacer,
+        Section::Text {
+            label: "Resets".into(),
+            value: countdown::format(s.reset_at, now),
+        },
+    ]
 }
 
 /// MiniMax groups quota by model bucket, so the panel is laid out by window
@@ -1491,6 +1562,122 @@ mod tests {
         assert!(sections.iter().any(|s| matches!(
             s,
             Section::Text { value, .. } if value.contains("Unlimited")
+        )));
+    }
+
+    fn kiro_snap() -> crate::usage::KiroSnapshot {
+        crate::usage::KiroSnapshot {
+            plan: "KIRO POWER".into(),
+            used: 9943.38,
+            limit: 10000.0,
+            reset_at: Some(now() + chrono::Duration::days(1)),
+        }
+    }
+
+    #[test]
+    fn kiro_compact_cell_shows_the_credit_percentage() {
+        let (plan, cells) = compact_cells(&VendorSnapshot::Kiro(kiro_snap()));
+        assert_eq!(plan, "KIRO POWER");
+        assert_eq!(
+            cells,
+            vec![("credits 99%".to_string(), PaceSeverity::Critical)]
+        );
+    }
+
+    #[test]
+    fn kiro_headline_pct_is_the_credit_percentage() {
+        assert_eq!(headline_pct(&VendorSnapshot::Kiro(kiro_snap())), Some(99));
+    }
+
+    #[test]
+    fn kiro_sections_show_the_credit_metric_and_reset() {
+        let sections = sections_for(&ready(VendorSnapshot::Kiro(kiro_snap())), now(), 5);
+        let metrics: Vec<_> = sections
+            .iter()
+            .filter_map(|s| match s {
+                Section::Metric {
+                    label, value_label, ..
+                } => Some((label.clone(), value_label.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(metrics, vec![("Credits".to_string(), "99%".to_string())]);
+        assert!(sections.iter().any(|s| matches!(
+            s,
+            Section::Text { label, value } if label == "Resets" && value.contains("1d")
+        )));
+    }
+
+    fn copilot_snap() -> crate::usage::CopilotSnapshot {
+        crate::usage::CopilotSnapshot {
+            entitlement: 300.0,
+            remaining: 40.0,
+            unlimited: false,
+            reset_at: Some(now() + chrono::Duration::days(3)),
+        }
+    }
+
+    #[test]
+    fn copilot_compact_cell_shows_the_premium_percentage() {
+        let (plan, cells) = compact_cells(&VendorSnapshot::Copilot(copilot_snap()));
+        assert!(plan.is_empty());
+        assert_eq!(cells, vec![("premium 87%".to_string(), PaceSeverity::High)]);
+    }
+
+    #[test]
+    fn copilot_compact_cell_shows_unlimited() {
+        let mut snap = copilot_snap();
+        snap.unlimited = true;
+        let (_, cells) = compact_cells(&VendorSnapshot::Copilot(snap));
+        assert_eq!(cells, vec![("unlimited".to_string(), PaceSeverity::Low)]);
+    }
+
+    #[test]
+    fn copilot_headline_pct_is_none_when_unlimited() {
+        assert_eq!(
+            headline_pct(&VendorSnapshot::Copilot(copilot_snap())),
+            Some(87)
+        );
+        let mut snap = copilot_snap();
+        snap.unlimited = true;
+        assert_eq!(headline_pct(&VendorSnapshot::Copilot(snap)), None);
+    }
+
+    #[test]
+    fn copilot_sections_show_the_premium_metric_and_reset() {
+        let sections = sections_for(&ready(VendorSnapshot::Copilot(copilot_snap())), now(), 5);
+        let metrics: Vec<_> = sections
+            .iter()
+            .filter_map(|s| match s {
+                Section::Metric {
+                    label, value_label, ..
+                } => Some((label.clone(), value_label.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            metrics,
+            vec![("Premium requests".to_string(), "87%".to_string())]
+        );
+        assert!(sections.iter().any(|s| matches!(
+            s,
+            Section::Text { label, value } if label == "Resets" && value.contains("3d")
+        )));
+    }
+
+    #[test]
+    fn copilot_unlimited_plan_shows_no_metric_bar() {
+        let mut snap = copilot_snap();
+        snap.unlimited = true;
+        let sections = sections_for(&ready(VendorSnapshot::Copilot(snap)), now(), 5);
+        let metric_count = sections
+            .iter()
+            .filter(|s| matches!(s, Section::Metric { .. }))
+            .count();
+        assert_eq!(metric_count, 0);
+        assert!(sections.iter().any(|s| matches!(
+            s,
+            Section::Text { value, .. } if value == "Unlimited"
         )));
     }
 

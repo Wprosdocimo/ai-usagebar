@@ -91,6 +91,8 @@ Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth c
 | MiniMax | **Token Plan** key (`MINIMAX_API_KEY` env or `[minimax] api_key` in config) | Set either. Opt-in. Must be the Token Plan **subscription** key — a pay-as-you-go key has no plan quota to report. Set `[minimax] region = "cn"` for `api.minimaxi.com`; the default `"global"` uses `api.minimax.io`. The two are separate instances and reject each other's keys. |
 | Google Antigravity | None — read from the local Antigravity server | Opt-in. Quota is served only while Antigravity 2.0, the Antigravity IDE, or an interactive `agy` session is running; all three share one account-wide quota. |
 | Cursor | None — read from Cursor's local `state.vscdb` | Opt-in. Sign in to the Cursor IDE at least once; ai-usagebar reads the session token it already wrote there. No key of your own to create. |
+| Kiro CLI | None — read from kiro-cli's local `data.sqlite3` | Opt-in. Run `kiro-cli login` at least once; ai-usagebar reads the AWS SSO OIDC session it already wrote there and refreshes it itself when close to expiry. No key of your own to create. |
+| GitHub Copilot | ai-usagebar's own GitHub OAuth token, saved to `copilot-credentials.json` | Opt-in. Run `ai-usagebar login copilot` once — a device-code login (open a URL, enter a code). Unlike every other vendor here, there's no existing CLI/IDE credential to read; see below for why. |
 
 #### Grok: team-scoped vs organization-scoped keys
 
@@ -108,10 +110,45 @@ team_id = "your-team-id"
 Without it, an organization-scoped key reports an error saying exactly this
 rather than silently querying the wrong URL.
 
+#### GitHub Copilot: why it needs its own login
+
+Every other local-credential vendor here (Cursor, Kiro CLI) reads a session
+an existing IDE/CLI already wrote to disk — ai-usagebar never authenticates
+on its own. Copilot is the exception: `api.github.com/copilot_internal/*` is
+gated by *which OAuth App issued the bearer token*, not just its scopes.
+Confirmed live against this project's own already-authenticated `gh` CLI: a
+valid `gh auth token` (verified working against `GET /user`) still gets a 403
+"scraping" response from `copilot_internal/user`, because the `gh` CLI's
+OAuth App isn't on GitHub's allow-list for that endpoint. A small set of
+editor/tool integrations are, so:
+
+```
+ai-usagebar login copilot
+```
+
+does its own GitHub OAuth **device-code** flow using one such public client
+id (the one `opencode`'s Copilot plugin uses) — open the printed URL, enter
+the printed code, and the resulting token is saved to
+`copilot-credentials.json` (chmod 600) next to `config.toml`. That token is a
+classic GitHub OAuth token and does not expire on its own; revoking Copilot's
+access under
+[github.com/settings/applications](https://github.com/settings/applications)
+is the only normal invalidation path (`ai-usagebar login copilot` again if
+that happens).
+
+> Not every Copilot-capable client id behaves the same under an
+> organization's third-party-application access policy. An earlier attempt
+> using VS Code Copilot Chat's own client id (`Iv1.b507a08c87ecfe98` — what
+> `oh-my-posh` and other community tools use) got stuck indefinitely at
+> `authorization_pending` on an organization-owned seat even after the
+> browser step was completed; GitHub's device flow gives no distinct error
+> for "held pending admin approval," it just never resolves. The client id
+> this vendor uses instead resolved that on the same account.
+
 ### Enabling a vendor
 
 `enabled = true` is what makes a vendor fetch. Anthropic (API), DeepSeek, Kimi,
-Kilo, Novita, Moonshot, Grok, Antigravity, Cursor, and MiniMax all default to **disabled** so that existing
+Kilo, Novita, Moonshot, Grok, Antigravity, Cursor, MiniMax, Kiro CLI, and GitHub Copilot all default to **disabled** so that existing
 installs are unaffected until you opt in. Two ways to do it:
 
 - **Via the TUI Settings overlay** (`ai-usagebar-tui`, then `s`): saving a
@@ -136,6 +173,8 @@ For each API-key vendor, ai-usagebar checks in this order:
 - Don't commit your config dir if you check it into dotfiles unless you've redacted `api_key` lines.
 - OAuth credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`) are managed by their respective CLIs and already chmod-protected.
 - Cursor's session token lives in its own `state.vscdb`, managed entirely by the Cursor IDE — ai-usagebar opens it read-only and never writes to it.
+- kiro-cli's AWS SSO OIDC session lives in its own `data.sqlite3`, managed entirely by kiro-cli — ai-usagebar opens it read-only; a refreshed access token lives only in ai-usagebar's own cache, never written back to kiro-cli's database.
+- `ai-usagebar login copilot`'s GitHub token is the one credential ai-usagebar itself creates and stores — it's saved to `copilot-credentials.json`, chmod 600 like a Settings-overlay-saved API key.
 
 #### macOS: Anthropic credentials in the Keychain
 
@@ -234,6 +273,18 @@ enabled = true             # disabled by default; enable once you've signed in t
 # No API key: reads the session token the Cursor IDE already wrote to its own
 # state.vscdb after you signed in there.
 # db_path = "/home/you/.config/Cursor/User/globalStorage/state.vscdb"
+
+[kiro]
+enabled = true             # disabled by default; enable once you've run `kiro-cli login`
+# No API key: reads the AWS SSO OIDC session kiro-cli already wrote to its own
+# data.sqlite3 after you logged in there.
+# db_path = "/home/you/.local/share/kiro-cli/data.sqlite3"
+
+[copilot]
+enabled = true             # disabled by default; enable once you've run `ai-usagebar login copilot`
+# No API key: `ai-usagebar login copilot` does its own device-code login and
+# saves the resulting GitHub token here.
+# credentials_path = "/home/you/.config/ai-usagebar/copilot-credentials.json"
 ```
 
 ## Quick start
@@ -308,7 +359,7 @@ Use one bar item and scroll through your vendors. The TUI on-click still shows t
 }
 ```
 
-The `{vendor_short}` placeholder always expands to a 3-letter vendor ID (`cld` / `gpt` / `zai` / `opr` / `dsk` / `kmi` / `klo` / `nvt` / `msh` / `grk` / `aac` / `agy` / `cur` / `mmx`), so the bar text tells you which vendor is active. The other usage placeholders (`{session_pct}` for Anthropic, `{oai_session_pct}` for OpenAI, etc.) are vendor-specific. If you want one format string for every cycled vendor, prefer the generic aliases: `{session_pct}`, `{session_reset}`, `{weekly_pct}`, and `{weekly_reset}` are implemented by all nine usage vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Antigravity, Cursor, and MiniMax; OpenRouter and DeepSeek use `0` / `—` for the windows they don't expose). Cursor has no time windows but two usage *pools*, so it maps them onto the two generic slots: `session_pct` = **Cursor Models** (Auto + Composer), `weekly_pct` = **Other Models** (named / API), both resetting on the billing cycle. Anthropic and OpenAI add `*_elapsed`, `*_pace`, and `*_bar` families; Antigravity adds `*_elapsed` for all four of its windows, plus `{session_model}` / `{weekly_model}` / `{scoped_model}` / `{extra_model}`, which name the model group each row belongs to (vendors with a single quota pool leave them empty). The established API-backed vendors also expose their own `{oai_*}` / `{zai_*}` / `{or_*}` / `{ds_*}` / `{kimi_*}` / `{minimax_*}` families, which expand to empty strings for vendors that don't define them.
+The `{vendor_short}` placeholder always expands to a 3-letter vendor ID (`cld` / `gpt` / `zai` / `opr` / `dsk` / `kmi` / `klo` / `nvt` / `msh` / `grk` / `aac` / `agy` / `cur` / `mmx` / `kir` / `cop`), so the bar text tells you which vendor is active. The other usage placeholders (`{session_pct}` for Anthropic, `{oai_session_pct}` for OpenAI, etc.) are vendor-specific. If you want one format string for every cycled vendor, prefer the generic aliases: `{session_pct}`, `{session_reset}`, `{weekly_pct}`, and `{weekly_reset}` are implemented by all eleven usage vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Antigravity, Cursor, MiniMax, Kiro CLI, and GitHub Copilot; OpenRouter and DeepSeek use `0` / `—` for the windows they don't expose). Cursor has no time windows but two usage *pools*, so it maps them onto the two generic slots: `session_pct` = **Cursor Models** (Auto + Composer), `weekly_pct` = **Other Models** (named / API), both resetting on the billing cycle. Kiro CLI and GitHub Copilot each have a single pool, so both generic slots map to the same `kiro_pct` / `copilot_pct`. Anthropic and OpenAI add `*_elapsed`, `*_pace`, and `*_bar` families; Antigravity adds `*_elapsed` for all four of its windows, plus `{session_model}` / `{weekly_model}` / `{scoped_model}` / `{extra_model}`, which name the model group each row belongs to (vendors with a single quota pool leave them empty). The established API-backed vendors also expose their own `{oai_*}` / `{zai_*}` / `{or_*}` / `{ds_*}` / `{kimi_*}` / `{minimax_*}` families, which expand to empty strings for vendors that don't define them.
 
 `signal: 13` lets the scroll-cycle commands refresh the bar instantly (via `SIGRTMIN+13`) instead of waiting for the next 300s interval.
 
@@ -653,10 +704,12 @@ Then `hyprctl reload` (no logout needed).
 | **Grok (xAI)** | `management-api.x.ai/v1/billing/teams/{team}/prepaid/balance` (Management API; documented) | Prepaid credit balance ($) | No — widget/TUI only |
 | **Anthropic (API)** | `api.anthropic.com/v1/organizations/cost_report` (Admin API; documented) | Month-to-date spend ($, excludes Priority Tier), optional spend-vs-limit % | No — widget/TUI only |
 | **Cursor** | `cursor.com/api/usage-summary` (undocumented; the dashboard's own frontend) | Two included-usage pools this billing cycle — Cursor Models (Auto/Composer) % and Other Models (named/API) % — plus plan, reset, on-demand | Yes |
+| **Kiro CLI** | `codewhisperer.<region>.amazonaws.com` `GetUsageLimits` (undocumented; the same call kiro-cli's own `/usage` slash command makes) | Single credit pool this cycle — used/limit/%, plan, reset | No — widget/TUI only |
+| **GitHub Copilot** | `api.github.com/copilot_internal/user` (undocumented) | Single premium-request pool this cycle — used/entitlement/%, reset | No — widget/TUI only |
 
 ### Endpoint stability
 
-Several endpoints are undocumented. The Anthropic and OpenAI endpoints are used by their official CLIs (`claude` and `codex`), so removing them would break those tools too. That makes them less shaky than scraped web endpoints. Z.AI's monitor endpoint is reverse-engineered from a third-party plugin; treat it as the most fragile one. Kimi's `/coding/v1/usages` is community-confirmed and used by third-party quota tools; treat it as drift-prone. Cursor's `/api/usage-summary` has no official docs and is the endpoint the dashboard's own frontend calls — treat it as drift-prone too (its shape tracks Cursor's pricing, which has changed before). MiniMax officially publishes its Token Plan quota route, but not a formal response schema, so the parser still treats its wire shape defensively.
+Several endpoints are undocumented. The Anthropic and OpenAI endpoints are used by their official CLIs (`claude` and `codex`), so removing them would break those tools too. That makes them less shaky than scraped web endpoints. Z.AI's monitor endpoint is reverse-engineered from a third-party plugin; treat it as the most fragile one. Kimi's `/coding/v1/usages` is community-confirmed and used by third-party quota tools; treat it as drift-prone. Cursor's `/api/usage-summary` has no official docs and is the endpoint the dashboard's own frontend calls — treat it as drift-prone too (its shape tracks Cursor's pricing, which has changed before). MiniMax officially publishes its Token Plan quota route, but not a formal response schema, so the parser still treats its wire shape defensively. Kiro CLI's `GetUsageLimits` is the same undocumented CodeWhisperer/Q Developer operation kiro-cli's own `/usage` command calls (confirmed by tracing its request), and several community reverse-engineering projects independently confirm the same request/response shape — but it carries AWS's own "no public API" disclaimer for CodeWhisperer, so treat it as drift-prone too. The token-refresh call (AWS SSO OIDC `CreateToken`) is, unlike the usage call itself, a documented public API. Copilot's `copilot_internal/user` is undocumented too, but it's the same call multiple independent status-line/monitor tools (`oh-my-posh`'s Copilot segment among them) already rely on, and this vendor's schema matches `oh-my-posh`'s field-for-field.
 
 OpenAI's known 5-hour and 7-day windows are identified from each window's
 reported duration, not from `primary_window` / `secondary_window` position.
@@ -727,6 +780,18 @@ When an endpoint drifts, **run `make smoke`**. It runs all ignored vendor tests,
 `{cursor_plan}`, `{cursor_auto_pct}`, `{cursor_api_pct}`, `{cursor_total_pct}`, `{cursor_reset}`, `{cursor_on_demand}`, `{cursor_unlimited}` — this billing cycle's two included-usage pools from `cursor.com/api/usage-summary`: `cursor_auto_pct` is **Cursor Models** (Auto + Composer) and `cursor_api_pct` is **Other Models** (named / API), matching the two bars on the Cursor dashboard. `cursor_total_pct` is the overall included-usage headline; `cursor_on_demand` is `on`/`off`; `cursor_unlimited` is `yes`/`no`. A pool can read above 100% when it is over its included allowance. The default bar format is `{cursor_auto_pct}·{cursor_api_pct}%` (e.g. `98·100%`), colored by whichever pool is worst. Generic aliases: `{session_pct}` = Cursor Models, `{weekly_pct}` = Other Models, `{plan}` = `Cursor <Plan>`.
 
 > Cursor's dashboard also reports usage-based (overage) spend and, for team accounts, per-member spend. Neither is tracked here — this vendor mirrors the two included-usage bars the dashboard shows. Team accounts (which report no `individualUsage.plan`) are parsed too, falling back to the payload's "You've used N%…" display-message strings for the two pools — the plan label gets a `(team)` suffix so it's visibly a best-effort path, since this has not been verified against a live team account.
+
+### Kiro CLI
+
+`{kiro_plan}`, `{kiro_pct}`, `{kiro_used}`, `{kiro_limit}`, `{kiro_reset}` — this cycle's credit pool from `AmazonCodeWhispererService.GetUsageLimits`, the same call kiro-cli's own `/usage` slash command makes. `kiro_used`/`kiro_limit` are the raw credit counts (two decimals only when the API sends a fraction, e.g. `9943.38`); `kiro_pct` is the rounded percentage consumed. The default bar format is `{kiro_pct}%`. Generic aliases: `{session_pct}` = `{weekly_pct}` = `kiro_pct` (one pool fills both generic slots), `{plan}` = the subscription title (e.g. "KIRO POWER").
+
+> Unlike every other reverse-engineered vendor here, the credential source is a *token that expires* (~1h) rather than a long-lived session — ai-usagebar refreshes it itself via the documented AWS SSO OIDC `CreateToken` API when it's close to expiry, using the refresh token kiro-cli already has. The refreshed token lives only in ai-usagebar's own process/cache, never written back to kiro-cli's database.
+
+### GitHub Copilot
+
+`{copilot_pct}`, `{copilot_used}`, `{copilot_entitlement}`, `{copilot_remaining}`, `{copilot_reset}`, `{copilot_unlimited}` — this cycle's premium-request pool from `copilot_internal/user`'s `quota_snapshots.premium_interactions`. `copilot_used`/`copilot_entitlement`/`copilot_remaining` are the raw request counts; `copilot_pct` is the rounded percentage consumed. The default bar format is `{copilot_pct}%`. Generic aliases: `{session_pct}` = `{weekly_pct}` = `copilot_pct` (one pool fills both generic slots), `{plan}` = `"GitHub Copilot"` (the API reports no plan-tier name).
+
+> Run `ai-usagebar login copilot` first — see "GitHub Copilot: why it needs its own login" above. Only the *premium-request* pool is tracked (what `quota_snapshots.premium_interactions` reports); Copilot's separate completions/chat request buckets (visible on some plans) are not.
 
 ## Local development
 

@@ -148,6 +148,18 @@ vendor's response shape drifts:
   discovered from `/proc` (Linux only; elsewhere set `ANTIGRAVITY_LS_ADDRESS`).
   Tests must never probe `/proc` or the wall clock — use `candidate_bases_with`
   and `parse_cache_at`/`fetch_snapshot_at`, not their production wrappers.
+- `src/kiro/` — Kiro CLI. Reads kiro-cli's own `data.sqlite3` (read-only) for
+  the AWS SSO OIDC session, refreshes the ~1h access token in-memory via the
+  documented CreateToken API (never written back to kiro-cli's db), and calls
+  the undocumented `GetUsageLimits` — same operation kiro-cli's `/usage` makes.
+  Test seams: `db::read_credentials(&path)` with a seeded temp db and
+  `fetch::fetch_snapshot_at` with an `Endpoints` override pointed at mockito.
+- `src/copilot/` — GitHub Copilot. The one vendor with no existing CLI/IDE
+  credential to read (`copilot_internal/*` is gated by which OAuth App issued
+  the token), so `ai-usagebar login copilot` does its own device-code login and
+  keeps the token in `copilot-credentials.json` (chmod 600). Test seams:
+  `creds::read_from`/`write_to` with a temp path and the fetch functions with
+  an `Endpoints` override pointed at mockito.
 - `src/anthropic/keychain.rs` — macOS-only `security(1)` fallback when
   `~/.claude/.credentials.json` is absent (Claude Code on macOS stores
   the OAuth blob in the login Keychain). Module-gated with

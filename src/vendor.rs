@@ -96,6 +96,8 @@ pub enum VendorId {
     Antigravity,
     Cursor,
     Minimax,
+    Kiro,
+    Copilot,
 }
 
 impl VendorId {
@@ -115,6 +117,8 @@ impl VendorId {
             VendorId::Antigravity => "antigravity",
             VendorId::Cursor => "cursor",
             VendorId::Minimax => "minimax",
+            VendorId::Kiro => "kiro",
+            VendorId::Copilot => "copilot",
         }
     }
 
@@ -134,6 +138,8 @@ impl VendorId {
             VendorId::Antigravity,
             VendorId::Cursor,
             VendorId::Minimax,
+            VendorId::Kiro,
+            VendorId::Copilot,
         ]
     }
 }

@@ -1,9 +1,10 @@
 //! Live API smoke test suite — DETECTS UNDOCUMENTED-ENDPOINT DRIFT.
 //!
-//! Hits the real Anthropic, OpenAI Codex, Z.AI, OpenRouter, and Kimi endpoints
-//! using credentials from your shell. Asserts only the *fields we depend on*
-//! so when a vendor renames or removes one, the failure points at the exact
-//! field rather than dumping the whole response.
+//! Hits the real vendor endpoints using credentials from your shell (API keys,
+//! or the local CLI/IDE session files for Cursor, Kiro CLI and Copilot).
+//! Asserts only the *fields we depend on* so when a vendor renames or removes
+//! one, the failure points at the exact field rather than dumping the whole
+//! response.
 //!
 //! These tests are `#[ignore]` so plain `cargo test` doesn't hit external
 //! APIs (and won't fail on machines without creds). Run explicitly:
@@ -43,14 +44,24 @@
 //!   asserts `premium_pct` is 0..=100 and a future `premium_reset_at` was
 //!   derived from `startOfMonth`. `cursor_live` skips when there is no Cursor
 //!   install (no state DB and no `CURSOR_DB_PATH`).
+//! - **Kiro CLI**: reads the AWS SSO OIDC session from kiro-cli's local
+//!   `data.sqlite3`, then asserts the credit counters are non-negative and the
+//!   plan label is non-empty. `kiro_live` skips when there is no kiro-cli
+//!   install (no db and no `KIRO_DB_PATH`).
+//! - **GitHub Copilot**: reads the GitHub token `ai-usagebar login copilot`
+//!   saved, then asserts the premium-request counters are non-negative.
+//!   `copilot_live` skips when there is no credentials file (and no
+//!   `COPILOT_CREDENTIALS_PATH`).
 
 use std::time::Duration;
 
 use ai_usagebar::anthropic;
 use ai_usagebar::cache::Cache;
+use ai_usagebar::copilot;
 use ai_usagebar::cursor;
 use ai_usagebar::error::AppError;
 use ai_usagebar::kimi;
+use ai_usagebar::kiro;
 use ai_usagebar::minimax;
 use ai_usagebar::openai;
 use ai_usagebar::openrouter;
@@ -377,6 +388,118 @@ async fn cursor_live() {
         out.snapshot.api_pct,
         out.snapshot.total_pct,
         out.snapshot.on_demand_enabled,
+        out.snapshot.reset_at,
+    );
+}
+
+#[tokio::test]
+#[ignore = "live API; run with --ignored"]
+async fn kiro_live() {
+    // Kiro has no API key — the credential is the AWS SSO OIDC session
+    // kiro-cli wrote to its own local database after `kiro-cli login`. So this
+    // test needs kiro-cli installed and signed in (or `KIRO_DB_PATH` pointing
+    // at a copied `data.sqlite3`) and skips otherwise, like `cursor_live`.
+    let db_path = match std::env::var("KIRO_DB_PATH") {
+        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => kiro::db::default_db_path().expect("resolve platform data dir"),
+    };
+    if !db_path.exists() {
+        eprintln!(
+            "kiro_live: no kiro-cli database at {} — skipping (run `kiro-cli login`, or set KIRO_DB_PATH)",
+            db_path.display()
+        );
+        return;
+    }
+
+    let cache = xdg_cache_for("kiro");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap();
+    let out = kiro::fetch_snapshot(&client, &db_path, &cache, Duration::from_secs(0))
+        .await
+        .expect("kiro fetch should succeed against the real API");
+
+    // The fields the widget depends on: non-negative credit counters, a
+    // non-empty plan label, and (when reported) a future reset.
+    assert!(
+        out.snapshot.used >= 0.0 && out.snapshot.limit >= 0.0,
+        "kiro: negative credit counter — shape changed? used={} limit={}",
+        out.snapshot.used,
+        out.snapshot.limit
+    );
+    assert!(!out.snapshot.plan.is_empty(), "kiro plan label empty");
+    if let Some(reset) = out.snapshot.reset_at {
+        assert!(
+            reset > chrono::Utc::now(),
+            "kiro: reset_at should be a future instant, got {reset:?}"
+        );
+    }
+    println!(
+        "✅ kiro — plan={}, credits {} / {} ({}%), reset {:?}",
+        out.snapshot.plan,
+        out.snapshot.used,
+        out.snapshot.limit,
+        out.snapshot.pct(),
+        out.snapshot.reset_at,
+    );
+}
+
+#[tokio::test]
+#[ignore = "live API; run with --ignored"]
+async fn copilot_live() {
+    // Copilot has no API key — the credential is the GitHub OAuth token
+    // `ai-usagebar login copilot` saved to its own file. So this test needs
+    // that one-time login (or `COPILOT_CREDENTIALS_PATH` pointing at a copy)
+    // and skips otherwise.
+    let creds_path = match std::env::var("COPILOT_CREDENTIALS_PATH") {
+        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => copilot::creds::default_path().expect("resolve platform config dir"),
+    };
+    if !creds_path.exists() {
+        eprintln!(
+            "copilot_live: no Copilot credentials at {} — skipping (run `ai-usagebar login copilot`, or set COPILOT_CREDENTIALS_PATH)",
+            creds_path.display()
+        );
+        return;
+    }
+
+    let cache = xdg_cache_for("copilot");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap();
+    let endpoints = copilot::fetch::Endpoints::default();
+    let out = copilot::fetch_snapshot(
+        &client,
+        &creds_path,
+        &cache,
+        &endpoints,
+        Duration::from_secs(0),
+    )
+    .await
+    .expect("copilot fetch should succeed against the real API");
+
+    // The fields the widget depends on: non-negative premium-request counters
+    // and (when reported) a future reset.
+    assert!(
+        out.snapshot.entitlement >= 0.0 && out.snapshot.remaining >= 0.0,
+        "copilot: negative premium-request counter — shape changed? entitlement={} remaining={}",
+        out.snapshot.entitlement,
+        out.snapshot.remaining
+    );
+    if let Some(reset) = out.snapshot.reset_at {
+        assert!(
+            reset > chrono::Utc::now(),
+            "copilot: reset_at should be a future instant, got {reset:?}"
+        );
+    }
+    println!(
+        "✅ copilot — premium requests {} of {} used ({}%, unlimited={}), reset {:?}",
+        out.snapshot.used(),
+        out.snapshot.entitlement,
+        out.snapshot.pct(),
+        out.snapshot.unlimited,
         out.snapshot.reset_at,
     );
 }

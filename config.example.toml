@@ -229,3 +229,32 @@ api_key_env = "MINIMAX_API_KEY"    # checked first; if set + non-empty, used
 # at the wrong one reads as an invalid key, not an empty plan:
 #   global -> api.minimax.io   |   cn -> api.minimaxi.com
 # region = "global"
+
+# Kiro CLI — no separate login step: reads the AWS SSO OIDC session kiro-cli
+# already wrote to its own local database after `kiro-cli login`. Shows the
+# credit pool from AmazonCodeWhispererService.GetUsageLimits — the same call
+# kiro-cli's own `/usage` slash command makes.
+[kiro]
+# Disabled by default — enable once you've run `kiro-cli login` at least once
+# (it needs no key from you, but it does need that one-time login to exist).
+enabled = false
+# Override kiro-cli's local database path. Leave commented out to use the
+# platform default:
+#   Linux:   ~/.local/share/kiro-cli/data.sqlite3
+#   macOS:   ~/Library/Application Support/kiro-cli/data.sqlite3
+#   Windows: %APPDATA%\kiro-cli\data.sqlite3
+# db_path = "/home/you/.local/share/kiro-cli/data.sqlite3"
+
+# GitHub Copilot — no existing CLI/IDE credential to read (GitHub gates the
+# quota endpoint by which OAuth App issued the token; the `gh` CLI's own
+# token doesn't qualify). Run `ai-usagebar login copilot` once first — it
+# does its own device-code login and saves the token this vendor reads.
+[copilot]
+# Disabled by default — enable once you've run `ai-usagebar login copilot`.
+enabled = false
+# Override where the login command saved the token. Leave commented out to
+# use the platform default (config dir, alongside this file):
+#   Linux:   ~/.config/ai-usagebar/copilot-credentials.json
+#   macOS:   ~/Library/Application Support/ai-usagebar/copilot-credentials.json
+#   Windows: %APPDATA%\ai-usagebar\copilot-credentials.json
+# credentials_path = "/home/you/.config/ai-usagebar/copilot-credentials.json"
