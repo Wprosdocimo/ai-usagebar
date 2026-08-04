@@ -419,11 +419,14 @@ fn normalize_base(addr: &str) -> String {
 /// matching on the server binary alone would miss a CLI-only install. `comm` is
 /// truncated to 15 bytes by the kernel, which `language_server` exactly fills.
 fn is_antigravity_process(comm: &str, exe: Option<&str>) -> bool {
-    let comm = comm.trim();
+    let comm = comm.trim().to_lowercase();
     if comm.contains("language_server") || comm == "agy" || comm == "antigravity" {
         return true;
     }
-    exe.is_some_and(|p| p.contains("antigravity") || p.ends_with("/agy"))
+    exe.is_some_and(|p| {
+        let p = p.to_lowercase();
+        p.contains("antigravity") || p.ends_with("/agy")
+    })
 }
 
 /// Loopback ports listened on by any running Antigravity product.
@@ -488,7 +491,51 @@ fn discover_ls_ports() -> Vec<u16> {
     ports
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS has no `/proc`, so fall back to `lsof` (present on every macOS
+/// install by default, unlike Linux where shelling out was deliberately
+/// avoided — see the doc comment above). `-F pcn` asks for machine-parsable
+/// output: one `p<pid>` line per process, one `c<command>` line for its name,
+/// then an `n<address>` line per matching socket already filtered down to
+/// listening TCP sockets by `-iTCP -sTCP:LISTEN`.
+#[cfg(target_os = "macos")]
+fn discover_ls_ports() -> Vec<u16> {
+    let Ok(output) = std::process::Command::new("lsof")
+        .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    // A non-zero exit still emits usable output for the fds it *could* read,
+    // so parse regardless of status — an empty/garbled stdout just parses to
+    // an empty port list.
+    parse_lsof_pcn(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Pure parser for `lsof -F pcn` output, kept separate from process spawning
+/// so the parsing logic is unit-testable without shelling out.
+#[cfg(target_os = "macos")]
+fn parse_lsof_pcn(output: &str) -> Vec<u16> {
+    let mut ports = Vec::new();
+    let mut current_matches = false;
+    for line in output.lines() {
+        let Some(rest) = line.get(1..) else { continue };
+        match line.as_bytes().first() {
+            Some(b'p') => current_matches = false,
+            Some(b'c') => current_matches = is_antigravity_process(rest, None),
+            Some(b'n') if current_matches => {
+                if let Some(port) = rest.rsplit(':').next().and_then(|p| p.parse::<u16>().ok())
+                    && !ports.contains(&port)
+                {
+                    ports.push(port);
+                }
+            }
+            _ => {}
+        }
+    }
+    ports
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn discover_ls_ports() -> Vec<u16> {
     Vec::new()
 }
@@ -1124,6 +1171,30 @@ mod tests {
         // "legacy" ends in a substring of "/agy" but is not the CLI.
         assert!(!is_antigravity_process("legacy", Some("/usr/bin/legacy")));
         assert!(!is_antigravity_process("", None));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lsof_parser_keeps_only_ports_owned_by_antigravity_processes() {
+        // `agy` (pid 74101) has three listening sockets; `sshd` (pid 200) has
+        // one that must be excluded even though it sorts right after `c`.
+        let output = "p74101\ncagy\nf10\nn127.0.0.1:8829\nf11\nn127.0.0.1:61289\nf12\nn127.0.0.1:61290\np200\ncsshd\nf5\nn*:22\n";
+        assert_eq!(parse_lsof_pcn(output), vec![8829, 61289, 61290]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lsof_parser_matches_the_capitalised_macos_app_name() {
+        let output = "p900\ncAntigravity\nf7\nn127.0.0.1:54321\n";
+        assert_eq!(parse_lsof_pcn(output), vec![54321]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lsof_parser_deduplicates_and_handles_empty_output() {
+        let output = "p1\ncagy\nf3\nn127.0.0.1:9000\nf4\nn127.0.0.1:9000\n";
+        assert_eq!(parse_lsof_pcn(output), vec![9000]);
+        assert!(parse_lsof_pcn("").is_empty());
     }
 
     /// First run with Antigravity closed: no cache to serve, so the user must

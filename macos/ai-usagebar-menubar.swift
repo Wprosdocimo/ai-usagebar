@@ -79,14 +79,16 @@ let POINT_CRITICAL_MIN = 10
 // (16) lets balance-only vendors suppress meaningless quota rows. The balance
 // fields (17-22) carry the per-vendor credits — only the selected vendor's is
 // populated — and the `aapi_*` fields (23-26) carry the Anthropic API headline
-// plus its spend-vs-limit bar. A final literal sentinel absorbs the widget's
-// stale suffix, preserving these fields.
+// plus its spend-vs-limit bar. `cursor_total_pct` (27) is followed by the
+// Antigravity-only fourth-window fields (28-30). A final literal sentinel
+// absorbs the widget's stale suffix, preserving these fields.
 let FORMAT = "{plan};;{session_pct};;{session_reset};;{weekly_pct};;{weekly_reset};;" +
              "{sonnet_pct};;{sonnet_reset};;{extra_pct};;{extra_spent};;{extra_limit};;" +
              "{scoped_model};;{scoped_pct};;{scoped_reset};;" +
              "{session_elapsed};;{weekly_elapsed};;{scoped_elapsed};;{vendor_short};;{or_balance};;" +
              "{ds_balance};;{kilo_balance};;{nv_balance};;{km_balance};;{grok_balance};;" +
-             "{aapi_headline};;{aapi_pct};;{aapi_spent};;{aapi_limit};;{cursor_total_pct}"
+             "{aapi_headline};;{aapi_pct};;{aapi_spent};;{aapi_limit};;{cursor_total_pct};;" +
+             "{extra_model};;{extra_reset};;{extra_elapsed}"
 
 let FORMAT_WITH_SENTINEL = FORMAT + ";;__aiub_end__"
 
@@ -359,6 +361,10 @@ struct Snapshot {
     /// Label for that bar: the scoped model name ("Fable") or "Sonnet only".
     let sonnetLabel: String
     let extra: (pct: Int, spent: String, limit: String)?
+    /// Antigravity's optional fourth rate-limit window (Claude & GPT OSS
+    /// weekly). This is distinct from `extra`, which is a monetary budget.
+    var secondaryWeekly: Window? = nil
+    var secondaryWeeklyLabel: String = ""
     /// Overridable labels for the session/weekly bars. Default to the
     /// time-window names; a vendor whose two windows aren't time-based (Cursor:
     /// "Cursor Models" / "Other Models") sets its own. Tags are the 2-char
@@ -388,6 +394,7 @@ func stripMarkup(_ s: String) -> String {
 func parse(_ text: String, vendor: String) -> Snapshot? {
     let f = stripMarkup(text).components(separatedBy: ";;")
     guard f.count >= 10 else { return nil }
+    let isAntigravity = vendor == "antigravity"
     func unknownPlaceholder(_ s: String) -> Bool {
         s.hasPrefix("{") && s.hasSuffix("}")
     }
@@ -424,7 +431,7 @@ func parse(_ text: String, vendor: String) -> Snapshot? {
         if let p = n(11), (0...100).contains(p) {
             let reset = scopedReset.isEmpty ? "—" : scopedReset
             sonnet = Window(pct: p, reset: reset, elapsed: markerElapsed(reset: reset, elapsed: n(15)))
-            sonnetLabel = scopedModel
+            sonnetLabel = isAntigravity ? "\(scopedModel) 5h" : scopedModel
         }
     } else if !sonnetReset.isEmpty, sonnetReset != "—", let p = n(5) {
         sonnet = Window(pct: p, reset: sonnetReset, elapsed: nil)
@@ -471,6 +478,15 @@ func parse(_ text: String, vendor: String) -> Snapshot? {
     // time windows), so relabel those bars rather than call them "Session"/
     // "Weekly". Every other vendor keeps the default time-window labels.
     let isCursor = vendor == "cursor"
+    let secondaryWeekly: Window?
+    let secondaryWeeklyLabel: String
+    if isAntigravity, !t(28).isEmpty {
+        secondaryWeekly = quotaWindow(7, 29, 30)
+        secondaryWeeklyLabel = "\(t(28)) Weekly"
+    } else {
+        secondaryWeekly = nil
+        secondaryWeeklyLabel = ""
+    }
     return Snapshot(plan: t(0),
                     hasUsageWindows: !balanceOnly,
                     creditBalance: displayBalance,
@@ -479,10 +495,12 @@ func parse(_ text: String, vendor: String) -> Snapshot? {
                     sonnet: sonnet,
                     sonnetLabel: sonnetLabel,
                     extra: aapiExtra ?? extra,
+                    secondaryWeekly: secondaryWeekly,
+                    secondaryWeeklyLabel: secondaryWeeklyLabel,
                     sessionTag: isCursor ? "auto" : "5h",
                     weeklyTag: isCursor ? "premium" : "7d",
-                    sessionLabel: isCursor ? "Cursor Models" : "Session",
-                    weeklyLabel: isCursor ? "Other Models" : "Weekly",
+                    sessionLabel: isCursor ? "Cursor Models" : (isAntigravity ? "Gemini 5h" : "Session"),
+                    weeklyLabel: isCursor ? "Other Models" : (isAntigravity ? "Gemini Weekly" : "Weekly"),
                     cursorTotalPct: isCursor ? n(27) : nil)
 }
 
@@ -528,9 +546,15 @@ let VENDOR_AUTH: [VendorAuth] = [
     VendorAuth(id: "anthropic_api", name: "Anthropic (API)", kind: "apikey", cli: "", login: "", pkg: "", env: "ANTHROPIC_ADMIN_KEY"),
     // Cursor has no API key: the binary reads the session token the Cursor IDE
     // wrote to its own state.vscdb. `kind: "local"` marks the "configured =
-    // signed in to the app" case (like Antigravity in the GNOME extension),
-    // with no login CLI or env var of its own.
+    // signed in to the app" case (like Antigravity below), with no login CLI
+    // or env var of its own.
     VendorAuth(id: "cursor", name: "Cursor", kind: "local", cli: "", login: "", pkg: "", env: ""),
+    // Antigravity 2.0, the `agy` CLI and the IDE are separate products
+    // sharing one account-wide quota; any combination may be installed and
+    // there is no credential file to check — the binary probes whichever
+    // local server is running. `kind: "local"` mirrors Cursor and the GNOME
+    // extension (gnome-extension/prefs.js).
+    VendorAuth(id: "antigravity", name: "Google Antigravity", kind: "local", cli: "agy", login: "", pkg: "", env: ""),
 ]
 
 // The config file the Rust binary would actually read. On macOS
@@ -1043,7 +1067,7 @@ func addAccountScript(binary: String, label: String, desktop: Bool) -> String {
 func defaultEnabled(_ id: String) -> Bool {
     switch id {
     case "anthropic", "openai", "zai", "openrouter": return true
-    case "deepseek", "kimi", "kilo", "novita", "moonshot", "grok", "anthropic_api", "cursor": return false
+    case "deepseek", "kimi", "kilo", "novita", "moonshot", "grok", "anthropic_api", "cursor", "antigravity": return false
     default: return true
     }
 }
@@ -1086,6 +1110,16 @@ func vendorConfigured(_ v: VendorAuth) -> Bool {
         let dbPath = configValueTOML("cursor", "db_path")
             ?? "\(home)/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
         return fm.fileExists(atPath: dbPath)
+    }
+    if v.id == "antigravity" {
+        // Same check as gnome-extension/prefs.js: having any of the three
+        // products' state directories is enough — there is no credential
+        // file, and the binary itself probes whichever local server answers.
+        return ["antigravity", "antigravity-cli", "antigravity-ide"]
+            .contains { d in
+                var isDir: ObjCBool = false
+                return fm.fileExists(atPath: "\(home)/.gemini/\(d)", isDirectory: &isDir) && isDir.boolValue
+            }
     }
     if let e = ProcessInfo.processInfo.environment[apiKeyEnvironment(v)], !e.isEmpty { return true }
     return configHasApiKeyTOML(v.id)
@@ -1209,8 +1243,11 @@ struct VendorsSection: View {
             if cliPresent[v.id] == false { return "⚠ \(v.cli) não instalado" }
             return "⚠ Não logado — \(v.login)"
         }
-        // Local vendors (Cursor) have no key: "configured" means signed in to
-        // the app AND [cursor] enabled in config.
+        // Local vendors have no key: "configured" means signed in to the app
+        // AND the vendor's own section enabled in config.
+        if v.id == "antigravity" {
+            return "⚠ Abra o Antigravity (app, IDE ou agy) e ative [antigravity] no config"
+        }
         if v.kind == "local" {
             return "⚠ Entre no app Cursor e ative [cursor] no config"
         }
@@ -1223,12 +1260,14 @@ struct VendorsSection: View {
             if cliPresent[v.id] == false { return "Instalar + logar" }
             return "Logar"
         }
+        if v.id == "antigravity" { return "Abrir Antigravity" }
         if v.kind == "local" { return "Abrir Cursor" }
         return "Configurar (TUI)"
     }
 
     private func action(_ v: VendorAuth) {
         if v.kind == "oauth" { runInTerminal(oauthScript(v)) }
+        else if v.id == "antigravity" { openApp("Antigravity") }
         else if v.kind == "local" { openApp(v.name) }
         else { openTuiInTerminal() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { refresh() }
@@ -2162,7 +2201,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let t = s.cursorTotalPct {
             return (t, "\(t)%", s.weekly?.reset ?? s.session?.reset, nil)
         }
-        let windows = [s.session, s.weekly, s.sonnet].compactMap { $0 }
+        let windows = [s.session, s.weekly, s.sonnet, s.secondaryWeekly].compactMap { $0 }
         if let w = windows.max(by: { $0.pct < $1.pct }) {
             return (w.pct, "\(w.pct)%", w.reset, w.elapsed)
         }
@@ -2401,8 +2440,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let sn = s.sonnet { row("sonnet", s.sonnetLabel, sn.pct, "\(sn.pct)%", sn.reset, sn.elapsed) }
         else { rows["sonnet"]?.isHidden = true }
-        if let e = s.extra { row("extra", "Extra usage", e.pct, "\(e.spent) / \(e.limit)", nil, nil) }
-        else { rows["extra"]?.isHidden = true }
+        if let weekly = s.secondaryWeekly {
+            row("extra", s.secondaryWeeklyLabel, weekly.pct, "\(weekly.pct)%", weekly.reset, weekly.elapsed)
+        } else if let e = s.extra {
+            row("extra", "Extra usage", e.pct, "\(e.spent) / \(e.limit)", nil, nil)
+        } else {
+            rows["extra"]?.isHidden = true
+        }
         rebuildVendorSubmenu()
     }
 

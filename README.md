@@ -12,7 +12,7 @@ This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar)
 - **Tabbed TUI** (`ai-usagebar-tui`) with Tab/h/l switching, per-tab refresh, and 60-second auto-refresh. Native ratatui widgets fill the available terminal width and keep the vendor tabs visually consistent. Opens on an **Overview** tab summarizing every vendor at once (one compact row each); `[ui] overview_vendors` picks which vendors it lists, while `[ui] vendor_box = "sidebar" | "navbar" | "none"` controls the navigation layout.
 - **Optional local Claude Code context monitor** in the TUI, with a bounded,
   compaction-aware view of recent session input-context usage.
-- **Native desktop integrations** for GNOME Shell and the macOS menu bar. The macOS app supports twelve vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok, Anthropic API, Cursor); the GNOME extension covers Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, and Google Antigravity. (Antigravity is Linux-only; Cursor isn't in the GNOME extension yet.)
+- **Native desktop integrations** for GNOME Shell and the macOS menu bar. The macOS app supports thirteen vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok, Anthropic API, Cursor, Google Antigravity); the GNOME extension covers Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, and Google Antigravity. (Cursor isn't in the GNOME extension yet.)
 - **Scroll-to-cycle on the bar**: wire `on-scroll-up` / `on-scroll-down`, and one bar item cycles through your enabled vendors.
 - **Config-driven primary vendor**: set `[ui] primary` once; the widget shows that vendor by default and the TUI opens on its tab.
 - **Local testing tools**: `--pretty` renders ANSI-colored terminal output (auto-detects TTY), and `--watch N` re-renders every N seconds.
@@ -298,7 +298,7 @@ The Waybar widget is optional. The TUI is the best way to see every enabled vend
 
 ## Native desktop integrations
 
-The [macOS menu bar app](macos/README.md) supports twelve vendors — **Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok (xAI), Anthropic (API), and Cursor**. The [GNOME Shell extension](gnome-extension/README.md) supports **Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, and Google Antigravity**, whose two independent quota pools it renders as grouped rows. macOS does not support Antigravity: the binary only discovers its local server on Linux. Cursor is not in the GNOME extension yet — use `ai-usagebar --vendor cursor` or the TUI there.
+The [macOS menu bar app](macos/README.md) supports thirteen vendors — **Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok (xAI), Anthropic (API), Cursor, and Google Antigravity**. The [GNOME Shell extension](gnome-extension/README.md) supports **Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, and Google Antigravity**, whose two independent quota pools it renders as grouped rows. Cursor is not in the GNOME extension yet — use `ai-usagebar --vendor cursor` or the TUI there.
 
 ## Waybar config
 

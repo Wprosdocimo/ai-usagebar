@@ -198,7 +198,7 @@ func testDefaultEnabled() {
     for id in ["anthropic", "openai", "zai", "openrouter"] {
         assertEqual(defaultEnabled(id), true, "\(id) defaults enabled")
     }
-    for id in ["deepseek", "kimi", "kilo", "novita", "moonshot", "grok", "anthropic_api", "cursor"] {
+    for id in ["deepseek", "kimi", "kilo", "novita", "moonshot", "grok", "anthropic_api", "cursor", "antigravity"] {
         assertEqual(defaultEnabled(id), false, "\(id) defaults disabled (opt-in)")
     }
 }
@@ -303,6 +303,28 @@ func testParserBalances() {
     assertEqual(cur?.sessionTag, "auto", "cursor session tag")
     assertEqual(cur?.weeklyTag, "premium", "cursor weekly tag")
 
+    // Antigravity has two independent model pools, each with a 5h and weekly
+    // window. The fourth window reuses `extra_pct`, but it is not a spend bar:
+    // its model/reset/elapsed fields follow Cursor's total at the FORMAT tail.
+    let agy = snapshot(FORMAT, vendor: "antigravity",
+                       fields: fields(through: 30, set: [
+                          0: "Pro", 1: "12", 2: "4h", 3: "34", 4: "5d",
+                          7: "78", 10: "Claude & GPT OSS", 11: "56", 12: "3h",
+                          13: "20", 14: "30", 15: "40", 16: "agy",
+                          28: "Claude & GPT OSS", 29: "6d", 30: "50"
+                       ]))
+    assertEqual(agy?.session?.pct, 12, "antigravity Gemini 5h pct")
+    assertEqual(agy?.weekly?.pct, 34, "antigravity Gemini weekly pct")
+    assertEqual(agy?.sonnet?.pct, 56, "antigravity third-party 5h pct")
+    assertEqual(agy?.secondaryWeekly?.pct, 78, "antigravity third-party weekly pct")
+    assertEqual(agy?.secondaryWeekly?.reset, "6d", "antigravity fourth reset")
+    assertEqual(agy?.secondaryWeekly?.elapsed, 50, "antigravity fourth elapsed")
+    assertEqual(agy?.sessionLabel, "Gemini 5h", "antigravity primary 5h label")
+    assertEqual(agy?.weeklyLabel, "Gemini Weekly", "antigravity primary weekly label")
+    assertEqual(agy?.sonnetLabel, "Claude & GPT OSS 5h", "antigravity third-party 5h label")
+    assertEqual(agy?.secondaryWeeklyLabel, "Claude & GPT OSS Weekly", "antigravity fourth label")
+    assertNil(agy?.extra, "antigravity fourth window is not a spend bar")
+
     // A non-Cursor vendor keeps the default time-window labels.
     assertEqual(cld?.sessionLabel, "Session", "anthropic keeps the Session label")
     assertEqual(cld?.weeklyTag, "7d", "anthropic keeps the 7d tag")
@@ -310,7 +332,7 @@ func testParserBalances() {
 
 // ─── Run ─────────────────────────────────────────────────────────────────
 func testOverviewHeadline() {
-    print("overview headline (cursor combined, anthropic biggest-of-three)")
+    print("overview headline (cursor combined, rate-limit worst window)")
     let app = AppDelegate()  // overviewHeadline reads only the snapshot
     // Anthropic-style: biggest of 5h / weekly / scoped model (Fable), not the first.
     let anthropic = Snapshot(
@@ -319,6 +341,16 @@ func testOverviewHeadline() {
         weekly: Window(pct: 55, reset: "5d", elapsed: nil),
         sonnet: Window(pct: 80, reset: "5d", elapsed: nil), sonnetLabel: "Fable", extra: nil)
     assertEqual(app.overviewHeadline(anthropic).pct, 80, "anthropic = biggest of 5h/weekly/Fable")
+    let antigravity = Snapshot(
+        plan: "Pro", hasUsageWindows: true, creditBalance: nil,
+        session: Window(pct: 20, reset: "3h", elapsed: nil),
+        weekly: Window(pct: 40, reset: "4d", elapsed: nil),
+        sonnet: Window(pct: 60, reset: "2h", elapsed: nil),
+        sonnetLabel: "Claude & GPT OSS", extra: nil,
+        secondaryWeekly: Window(pct: 95, reset: "6d", elapsed: nil),
+        secondaryWeeklyLabel: "Claude & GPT OSS")
+    assertEqual(app.overviewHeadline(antigravity).pct, 95,
+                "antigravity overview includes fourth window")
     // Cursor: the combined total, not the worse of the two pools.
     let cursor = Snapshot(
         plan: "Cursor Ultra", hasUsageWindows: true, creditBalance: nil,
