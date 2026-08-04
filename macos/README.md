@@ -15,10 +15,11 @@ A single Swift file (`NSStatusItem` + `NSAttributedString`); no Xcode project.
 
 ## Vendor scope
 
-The selector supports **twelve vendors** that ship in the binary:
+The selector supports **thirteen vendors** that ship in the binary:
 
-- **Rate-limit windows (5h / weekly):** Anthropic (Claude), OpenAI (Codex), and
-  Z.AI (GLM).
+- **Rate-limit windows (5h / weekly):** Anthropic (Claude), OpenAI (Codex),
+  Z.AI (GLM), and Google Antigravity (two independent pools — Gemini, and
+  Claude & GPT OSS — each with its own 5h/weekly pair).
 - **Included-usage pools:** Cursor (Cursor Models and Other Models, both reset
   on the billing cycle).
 - **Balance-only:** OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok
@@ -27,14 +28,17 @@ The selector supports **twelve vendors** that ship in the binary:
   session/weekly rows. Anthropic (API) additionally renders a spend-vs-limit
   bar when a monthly limit is configured.
 
-Only **enabled** vendors appear in the selector. The opt-in balance vendors
-(DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok, Anthropic API, Cursor) default to
-disabled in the Rust config, matching `src/config.rs`; set
+Only **enabled** vendors appear in the selector. The opt-in vendors (DeepSeek,
+Kimi, Kilo, Novita, Moonshot, Grok, Anthropic API, Cursor, Antigravity) default
+to disabled in the Rust config, matching `src/config.rs`; set
 `[vendor].enabled = true` (or save an API key via the TUI) to turn one on.
 
-Google Antigravity is **not** supported in the macOS app: the binary only
-discovers its local language server on Linux, so on macOS it has no reachable
-quota source.
+Antigravity has no credential file to check, so the Vendors pane treats it as
+**configured** once it finds any of Antigravity 2.0/IDE/`agy`'s state
+directories (`~/.gemini/{antigravity,antigravity-cli,antigravity-ide}`) — the
+binary itself discovers whichever local server is actually reachable
+(Antigravity 2.0, the IDE, or an interactive `agy` session) via `lsof` at fetch
+time, so one of those must be running for quota to load.
 
 ## Requirements
 

@@ -28,6 +28,20 @@ Each release is also published at
 
 ### Fixed
 
+- **Antigravity now works on macOS, in both the CLI and the menu-bar app.**
+  Local-server discovery (`discover_ls_ports`) only ever walked `/proc`, so on
+  macOS — which has no `/proc` — it silently returned nothing and every
+  Antigravity fetch failed with "no local server found" even while Antigravity
+  was running. It now shells out to `lsof -iTCP -sTCP:LISTEN -F pcn`, the
+  macOS equivalent, and matches listening processes with the same predicate
+  the Linux path already used (now case-insensitive, since the packaged macOS
+  app's process name is capitalized). Separately, the menu-bar app's own
+  vendor list (`VENDOR_AUTH` in `macos/ai-usagebar-menubar.swift`) had never
+  been updated when Antigravity shipped, so it stayed invisible there even
+  after enabling `[antigravity]` — it's now a `local`-kind entry alongside
+  Cursor, "configured" the same way the GNOME extension already detects it
+  (any of `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}`).
+
 - **TUI refresh flicker.** Auto-refresh and manual refresh now keep the last
   successful vendor snapshot visible with a `↻` indicator while revalidating.
   Initial loads still show `fetching…`; failed revalidation preserves the old

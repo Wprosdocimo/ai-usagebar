@@ -528,9 +528,15 @@ let VENDOR_AUTH: [VendorAuth] = [
     VendorAuth(id: "anthropic_api", name: "Anthropic (API)", kind: "apikey", cli: "", login: "", pkg: "", env: "ANTHROPIC_ADMIN_KEY"),
     // Cursor has no API key: the binary reads the session token the Cursor IDE
     // wrote to its own state.vscdb. `kind: "local"` marks the "configured =
-    // signed in to the app" case (like Antigravity in the GNOME extension),
-    // with no login CLI or env var of its own.
+    // signed in to the app" case (like Antigravity below), with no login CLI
+    // or env var of its own.
     VendorAuth(id: "cursor", name: "Cursor", kind: "local", cli: "", login: "", pkg: "", env: ""),
+    // Antigravity 2.0, the `agy` CLI and the IDE are separate products
+    // sharing one account-wide quota; any combination may be installed and
+    // there is no credential file to check — the binary probes whichever
+    // local server is running. `kind: "local"` mirrors Cursor and the GNOME
+    // extension (gnome-extension/prefs.js).
+    VendorAuth(id: "antigravity", name: "Google Antigravity", kind: "local", cli: "agy", login: "", pkg: "", env: ""),
 ]
 
 // The config file the Rust binary would actually read. On macOS
@@ -958,7 +964,7 @@ func addAccountScript(binary: String, label: String, desktop: Bool) -> String {
 func defaultEnabled(_ id: String) -> Bool {
     switch id {
     case "anthropic", "openai", "zai", "openrouter": return true
-    case "deepseek", "kimi", "kilo", "novita", "moonshot", "grok", "anthropic_api", "cursor": return false
+    case "deepseek", "kimi", "kilo", "novita", "moonshot", "grok", "anthropic_api", "cursor", "antigravity": return false
     default: return true
     }
 }
@@ -1001,6 +1007,16 @@ func vendorConfigured(_ v: VendorAuth) -> Bool {
         let dbPath = configValueTOML("cursor", "db_path")
             ?? "\(home)/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
         return fm.fileExists(atPath: dbPath)
+    }
+    if v.id == "antigravity" {
+        // Same check as gnome-extension/prefs.js: having any of the three
+        // products' state directories is enough — there is no credential
+        // file, and the binary itself probes whichever local server answers.
+        return ["antigravity", "antigravity-cli", "antigravity-ide"]
+            .contains { d in
+                var isDir: ObjCBool = false
+                return fm.fileExists(atPath: "\(home)/.gemini/\(d)", isDirectory: &isDir) && isDir.boolValue
+            }
     }
     if let e = ProcessInfo.processInfo.environment[apiKeyEnvironment(v)], !e.isEmpty { return true }
     return configHasApiKeyTOML(v.id)
@@ -1124,8 +1140,11 @@ struct VendorsSection: View {
             if cliPresent[v.id] == false { return "⚠ \(v.cli) não instalado" }
             return "⚠ Não logado — \(v.login)"
         }
-        // Local vendors (Cursor) have no key: "configured" means signed in to
-        // the app AND [cursor] enabled in config.
+        // Local vendors have no key: "configured" means signed in to the app
+        // AND the vendor's own section enabled in config.
+        if v.id == "antigravity" {
+            return "⚠ Abra o Antigravity (app, IDE ou agy) e ative [antigravity] no config"
+        }
         if v.kind == "local" {
             return "⚠ Entre no app Cursor e ative [cursor] no config"
         }
@@ -1138,12 +1157,14 @@ struct VendorsSection: View {
             if cliPresent[v.id] == false { return "Instalar + logar" }
             return "Logar"
         }
+        if v.id == "antigravity" { return "Abrir Antigravity" }
         if v.kind == "local" { return "Abrir Cursor" }
         return "Configurar (TUI)"
     }
 
     private func action(_ v: VendorAuth) {
         if v.kind == "oauth" { runInTerminal(oauthScript(v)) }
+        else if v.id == "antigravity" { openApp("Antigravity") }
         else if v.kind == "local" { openApp(v.name) }
         else { openTuiInTerminal() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { refresh() }
