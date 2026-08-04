@@ -33,13 +33,13 @@ Each release is also published at
 
 - **A routine renamed in one account now converges to one title everywhere.** A
   scheduled task has no `updatedAt`, so a rename leaves `createdAt` untouched and
-  the merge — which resolves ties by registry-file mtime — only ever carried the
-  freshest title into the account you switched *to*, never settling: an unrelated
-  edit could even drag a stale name back. A switch now pushes that same
-  freshest-wins title into *every* account's registry, so the name stops
-  flip-flopping. Name-only: no other field is touched, there is no prompt (it
-  reconciles like any other merged field), and it applies to the terminal and the
-  menu bar alike since both drive the one switch path. Mirrored in claude-acc.
+  previously only reached the account you switched *to*. A switch now carries
+  the title selected by the baseline-aware routine merge into *every* account's
+  registry, so the name stops disagreeing across accounts. The convergence pass
+  changes only `displayName` and preserves the rest of each registry, including
+  unknown top-level fields. There is no prompt, and it applies to the terminal
+  and menu bar alike since both drive the same switch path. Mirrored in
+  claude-acc.
 
 ## [0.21.0] — 2026-08-03
 

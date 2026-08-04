@@ -463,6 +463,14 @@ fn apply_switch_while_stopped(
     plan: &SwitchPlan,
     notes: &mut Vec<String>,
 ) -> Result<()> {
+    // Derive convergence input from the immutable plan before touching any
+    // registries. Later writes must not be able to change the selected title.
+    let display_names = plan
+        .scheduled
+        .as_ref()
+        .map(ScheduledMerge::display_names)
+        .transpose()?;
+
     // History merges abort too — a partial merge is recoverable, but doing it
     // after the credential swap would strand the user on an account whose
     // history never arrived.
@@ -498,30 +506,33 @@ fn apply_switch_while_stopped(
         }
         Err(error) => notes.push(format!("deletion sweep skipped: {error}")),
     }
-    // Make every account agree on each routine's name. A rename doesn't touch
-    // `createdAt`, so the merge alone never lets titles settle — it only carries
-    // the freshest into the account being switched to. This pushes that same
-    // winner to every registry, so the name converges instead of flip-flopping.
+    // Make every account agree on each routine's name. The merge selects the
+    // winning definitions while the switch is planned; carry those names into
+    // every registry so writes above cannot change the decision.
     // Runs after the merge and the deletion sweep so it neither renames a
     // just-deleted routine nor is undone by a re-added copy.
-    match merge::plan_name_convergence(&paths.sessions_root()) {
-        Ok(convergence) => {
-            for (path, bytes) in convergence.rewrites {
-                if let Err(error) = crate::cache::atomic_write(&path, &bytes) {
+    if let Some(display_names) = &display_names {
+        match merge::plan_name_convergence(&paths.sessions_root(), display_names) {
+            Ok(convergence) => {
+                let mut fully_applied = true;
+                for (path, bytes) in convergence.rewrites {
+                    if let Err(error) = crate::cache::atomic_write(&path, &bytes) {
+                        fully_applied = false;
+                        notes.push(format!(
+                            "could not converge routine names in {}: {error}",
+                            path.display()
+                        ));
+                    }
+                }
+                if fully_applied && convergence.converged > 0 {
                     notes.push(format!(
-                        "could not converge routine names in {}: {error}",
-                        path.display()
+                        "converged {} routine name(s) across accounts",
+                        convergence.converged
                     ));
                 }
             }
-            if convergence.converged > 0 {
-                notes.push(format!(
-                    "converged {} routine name(s) across accounts",
-                    convergence.converged
-                ));
-            }
+            Err(error) => notes.push(format!("name convergence skipped: {error}")),
         }
-        Err(error) => notes.push(format!("name convergence skipped: {error}")),
     }
     // Record what every account holds now, so the next switch can tell an
     // intentional deletion from a task that account simply never received.
