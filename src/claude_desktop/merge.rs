@@ -429,6 +429,83 @@ pub fn plan_deletion_sweep(
     Ok(sweep)
 }
 
+/// Registry rewrites that make every account agree on each routine's
+/// `displayName`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct NameConvergence {
+    pub rewrites: Vec<(PathBuf, Vec<u8>)>,
+    /// How many distinct routines had a name reconciled.
+    pub converged: usize,
+}
+
+/// The name every account should agree on, per routine id: the `displayName`
+/// from the copy the merge itself would keep — freshest by `createdAt`, then by
+/// registry mtime. Only ids that actually carry a name appear.
+///
+/// A rename leaves `createdAt` untouched, so without this a routine's title only
+/// ever propagates into the account you switch *to* (and by coarse file mtime,
+/// so an unrelated edit can drag a stale name back), and the accounts never
+/// settle on one name.
+fn canonical_display_names(sessions_root: &Path) -> BTreeMap<String, String> {
+    // id -> (createdAt, mtime, name) of the freshest holder seen so far.
+    let mut best: BTreeMap<String, (i64, i64, String)> = BTreeMap::new();
+    for (_, path) in scheduled_registries(sessions_root) {
+        let mtime = modified_at(&path);
+        let (tasks, _) = load_scheduled(&path);
+        for task in tasks {
+            let (Some(id), Some(name)) = (task_id(&task), display_name(&task)) else {
+                continue;
+            };
+            let rank = (created_at(&task), mtime);
+            match best.get(&id) {
+                Some((c, m, _)) if (*c, *m) >= rank => {}
+                _ => {
+                    best.insert(id, (rank.0, rank.1, name));
+                }
+            }
+        }
+    }
+    best.into_iter()
+        .map(|(id, (.., name))| (id, name))
+        .collect()
+}
+
+/// Rewrite every registry so a routine present in more than one account shows
+/// the same `displayName` everywhere — the [`canonical_display_names`] winner.
+/// No prompt: renames converge on the next switch the way the merge already
+/// converges every other field. Only registries that actually change are
+/// returned; other task fields are left exactly as they were.
+pub fn plan_name_convergence(sessions_root: &Path) -> Result<NameConvergence> {
+    let canonical = canonical_display_names(sessions_root);
+    let mut out = NameConvergence::default();
+    let mut converged_ids: BTreeSet<String> = BTreeSet::new();
+    for (_, path) in scheduled_registries(sessions_root) {
+        let (tasks, skips) = load_scheduled(&path);
+        let mut changed = false;
+        let tasks: Vec<Value> = tasks
+            .into_iter()
+            .map(|mut task| {
+                if let Some(id) = task_id(&task)
+                    && let Some(name) = canonical.get(&id)
+                    && display_name(&task).as_deref() != Some(name.as_str())
+                    && let Some(obj) = task.as_object_mut()
+                {
+                    obj.insert("displayName".into(), Value::String(name.clone()));
+                    changed = true;
+                    converged_ids.insert(id);
+                }
+                task
+            })
+            .collect();
+        if changed {
+            let merged = serde_json::json!({ "scheduledTasks": tasks, "recordedSkips": skips });
+            out.rewrites.push((path, serde_json::to_vec(&merged)?));
+        }
+    }
+    out.converged = converged_ids.len();
+    Ok(out)
+}
+
 /// `(account uuid, org dir)` for every account/org folder.
 fn account_dirs(sessions_root: &Path) -> Vec<(String, PathBuf)> {
     account_org_dirs(sessions_root)
@@ -845,8 +922,31 @@ fn task_id(task: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A routine's user-visible title. Empty is treated as absent so a blank name
+/// never becomes the value every account converges to.
+fn display_name(task: &Value) -> Option<String> {
+    task.get("displayName")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
 fn created_at(task: &Value) -> i64 {
     task.get("createdAt").map_or(0, json_i64)
+}
+
+/// When a registry file was last written, in epoch milliseconds — the freshness
+/// signal name convergence uses to pick the winning title (a rename touches the
+/// file but not the task's `createdAt`). Absent or unreadable counts as the
+/// beginning of time, so a file we cannot stat never wins a tie.
+fn modified_at(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
 }
 
 fn last_activity(path: &Path) -> i64 {
@@ -875,6 +975,19 @@ mod tests {
     fn write(path: &Path, contents: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
+    }
+
+    /// Set a file's mtime deterministically, so name-convergence freshness never
+    /// depends on wall-clock write order.
+    fn touch(path: &Path, mtime_millis: u64) {
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(mtime_millis);
+        let times = std::fs::FileTimes::new().set_modified(time);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
     }
 
     fn session(activity: i64) -> String {
@@ -1023,6 +1136,93 @@ mod tests {
         let value: Value = serde_json::from_slice(&merge.bytes).unwrap();
         assert_eq!(value["scheduledTasks"][0]["cronExpression"], "30 9 * * *");
         assert_eq!(value["scheduledTasks"][0]["enabled"], false);
+    }
+
+    // Reads a registry's first task's displayName back off disk.
+    fn first_display_name(path: &Path) -> String {
+        let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        value["scheduledTasks"][0]["displayName"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn name_convergence_pushes_the_freshest_title_to_every_account() {
+        // Same routine id, two different titles — the classic "renamed in one
+        // account, never settles" case. The freshest (by mtime, since a rename
+        // leaves createdAt alone) must win *everywhere*, not just in the target.
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        let a = sessions.join("A/O1/scheduled-tasks.json");
+        let b = sessions.join("B/O2/scheduled-tasks.json");
+        write(
+            &a,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Old name","cronExpression":"0 5 * * *"}]}"#,
+        );
+        write(
+            &b,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"New name","cronExpression":"0 5 * * *"}]}"#,
+        );
+        touch(&a, 1_000);
+        touch(&b, 2_000); // renamed more recently
+
+        let plan = plan_name_convergence(sessions).unwrap();
+        assert_eq!(plan.converged, 1);
+        // Only the stale registry (A) is rewritten; B already holds the winner.
+        assert_eq!(plan.rewrites.len(), 1);
+        for (path, bytes) in &plan.rewrites {
+            std::fs::write(path, bytes).unwrap();
+        }
+        assert_eq!(first_display_name(&a), "New name");
+        assert_eq!(first_display_name(&b), "New name");
+    }
+
+    #[test]
+    fn name_convergence_touches_only_the_title() {
+        // Converging the name must not disturb any other field.
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        let a = sessions.join("A/O1/scheduled-tasks.json");
+        let b = sessions.join("B/O2/scheduled-tasks.json");
+        write(
+            &a,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Stale","cronExpression":"0 5 * * *","enabled":true,"model":"opus"}]}"#,
+        );
+        write(
+            &b,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Fresh","cronExpression":"30 9 * * *","enabled":false}]}"#,
+        );
+        touch(&a, 5_000); // A is fresher, so A's name wins and B is rewritten
+        touch(&b, 1_000);
+
+        let plan = plan_name_convergence(sessions).unwrap();
+        for (path, bytes) in &plan.rewrites {
+            std::fs::write(path, bytes).unwrap();
+        }
+        // B took A's name…
+        assert_eq!(first_display_name(&b), "Stale");
+        // …but kept its own cron/enabled — convergence is name-only.
+        let vb: Value = serde_json::from_slice(&std::fs::read(&b).unwrap()).unwrap();
+        assert_eq!(vb["scheduledTasks"][0]["cronExpression"], "30 9 * * *");
+        assert_eq!(vb["scheduledTasks"][0]["enabled"], false);
+    }
+
+    #[test]
+    fn name_convergence_is_a_noop_when_titles_already_agree() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Same"}]}"#,
+        );
+        write(
+            &sessions.join("B/O2/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Same"}]}"#,
+        );
+        let plan = plan_name_convergence(sessions).unwrap();
+        assert_eq!(plan.converged, 0);
+        assert!(plan.rewrites.is_empty());
     }
 
     /// The mirror image: only the target changed against the shared baseline,

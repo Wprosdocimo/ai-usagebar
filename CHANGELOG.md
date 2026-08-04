@@ -29,6 +29,18 @@ Each release is also published at
   when both exist; an existing but unreadable or malformed IDE database still
   surfaces its own error instead of silently switching to another login.
 
+### Fixed
+
+- **A routine renamed in one account now converges to one title everywhere.** A
+  scheduled task has no `updatedAt`, so a rename leaves `createdAt` untouched and
+  the merge — which resolves ties by registry-file mtime — only ever carried the
+  freshest title into the account you switched *to*, never settling: an unrelated
+  edit could even drag a stale name back. A switch now pushes that same
+  freshest-wins title into *every* account's registry, so the name stops
+  flip-flopping. Name-only: no other field is touched, there is no prompt (it
+  reconciles like any other merged field), and it applies to the terminal and the
+  menu bar alike since both drive the one switch path. Mirrored in claude-acc.
+
 ## [0.21.0] — 2026-08-03
 
 ### Added
