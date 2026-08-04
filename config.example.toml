@@ -8,7 +8,9 @@
 [ui]
 # Which vendor the widget shows when `--vendor` is omitted, AND which tab
 # is selected when the TUI opens. Comment out to default to Anthropic.
-# Valid: anthropic | openai | zai | openrouter | deepseek | kimi
+# Valid: anthropic | anthropic_api | openai | zai | openrouter | deepseek
+#        | kimi | kilo | novita | moonshot | grok | antigravity | cursor
+#        | minimax | kiro
 # When unset, the TUI opens on the Overview (all vendors at once); set this to
 # open directly on a vendor's tab instead.
 # primary = "anthropic"
@@ -205,7 +207,9 @@ enabled = false
 [cursor]
 # Disabled by default — enable once you've signed in to the Cursor IDE at
 # least once (it needs no key from you, but it does need that one-time login
-# to exist).
+# to exist). Headless machines with no desktop IDE work too: sign in to the
+# `cursor-agent` CLI once instead — its own auth.json is used as a fallback
+# when the IDE database below is absent.
 enabled = false
 # Override Cursor's local state database path. Leave commented out to use the
 # platform default:
@@ -214,6 +218,12 @@ enabled = false
 #   Windows: %APPDATA%\Cursor\User\globalStorage\state.vscdb
 # Set this if you use a portable Cursor install or a renamed profile dir.
 # db_path = "/home/you/.config/Cursor/User/globalStorage/state.vscdb"
+# Override the cursor-agent CLI's own login file, tried only when db_path
+# does not exist. Leave commented out to use the platform default:
+#   Linux:   ~/.config/cursor/auth.json
+#   macOS:   ~/Library/Application Support/cursor/auth.json
+#   Windows: %APPDATA%\cursor\auth.json
+# agent_auth_path = "/home/you/.config/cursor/auth.json"
 
 [minimax]
 # Disabled by default — enable once you've set a key (env var or inline).
@@ -229,3 +239,20 @@ api_key_env = "MINIMAX_API_KEY"    # checked first; if set + non-empty, used
 # at the wrong one reads as an invalid key, not an empty plan:
 #   global -> api.minimax.io   |   cn -> api.minimaxi.com
 # region = "global"
+
+# Kiro CLI — no separate login step: reads the AWS SSO OIDC session kiro-cli
+# already wrote to its own local database after `kiro-cli login`. Shows the
+# credit pool from AmazonCodeWhispererService.GetUsageLimits — the same call
+# kiro-cli's own `/usage` slash command makes.
+[kiro]
+# Disabled by default — enable once you've run `kiro-cli login` at least once
+# (it needs no key from you, but it does need that one-time login to exist).
+enabled = false
+# Refreshed/rotated credentials are stored atomically in ai-usagebar's own
+# account-scoped Kiro cache (mode 0600 on Unix), never in kiro-cli's database.
+# Override kiro-cli's local database path. Leave commented out to use the
+# platform default:
+#   Linux:   ~/.local/share/kiro-cli/data.sqlite3
+#   macOS:   ~/Library/Application Support/kiro-cli/data.sqlite3
+#   Windows: %APPDATA%\kiro-cli\data.sqlite3
+# db_path = "/home/you/.local/share/kiro-cli/data.sqlite3"

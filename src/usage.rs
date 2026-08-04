@@ -263,6 +263,39 @@ impl CursorSnapshot {
     }
 }
 
+/// Kiro CLI (AWS CodeWhisperer / Q Developer backend) — a single credit pool
+/// from `AmazonCodeWhispererService.GetUsageLimits`, the same call kiro-cli's
+/// own `/usage` slash command makes. Authenticated with the AWS SSO OIDC
+/// bearer token kiro-cli already cached locally, refreshed with the paired
+/// refresh token when it's close to expiry — see `kiro::db` and `kiro::oauth`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KiroSnapshot {
+    /// Subscription tier label (`subscriptionInfo.subscriptionTitle`, e.g.
+    /// "KIRO POWER").
+    pub plan: String,
+    /// Credits consumed this cycle (`currentUsageWithPrecision`).
+    pub used: f64,
+    /// Credits included in the plan (`usageLimitWithPrecision`).
+    pub limit: f64,
+    /// When the credit pool resets (`nextDateReset`).
+    pub reset_at: Option<DateTime<Utc>>,
+}
+
+impl Eq for KiroSnapshot {}
+
+impl KiroSnapshot {
+    /// Percentage of the credit pool consumed, rounded. `0` when `limit` is
+    /// not positive — defensive; the API has not been observed to send that.
+    pub fn pct(&self) -> i32 {
+        if self.limit <= 0.0 {
+            return 0;
+        }
+        ((self.used / self.limit) * 100.0)
+            .round()
+            .clamp(0.0, 9999.0) as i32
+    }
+}
+
 /// Kimi Code — weekly subscription quota plus a 5h rolling rate-limit window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KimiSnapshot {
@@ -319,6 +352,7 @@ pub enum VendorSnapshot {
     Antigravity(AntigravitySnapshot),
     Cursor(CursorSnapshot),
     Minimax(MinimaxSnapshot),
+    Kiro(KiroSnapshot),
 }
 
 /// Google Antigravity 2.0 / CLI snapshot. The API groups models into Gemini
@@ -725,5 +759,27 @@ mod tests {
         };
         assert_eq!(snap.weekly_pct(), 50);
         assert_eq!(snap.window_pct(), 100);
+    }
+
+    #[test]
+    fn kiro_pct_is_zero_without_a_positive_limit() {
+        let snap = KiroSnapshot {
+            plan: "FREE".into(),
+            used: 5.0,
+            limit: 0.0,
+            reset_at: None,
+        };
+        assert_eq!(snap.pct(), 0);
+    }
+
+    #[test]
+    fn kiro_pct_rounds_the_credit_ratio() {
+        let snap = KiroSnapshot {
+            plan: "KIRO POWER".into(),
+            used: 1.0,
+            limit: 3.0,
+            reset_at: None,
+        };
+        assert_eq!(snap.pct(), 33);
     }
 }

@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime};
 use ai_usagebar::config::Config;
 use ai_usagebar::tui::app::{
     ANTHROPIC_REFRESH_STAGGER, App, REFRESH_INTERVAL, TabId, TabState, refresh_one,
-    refresh_stagger, tabs_from_config,
+    refresh_stagger, tabs_with_desktop,
 };
 use ai_usagebar::tui::view::draw;
 use ai_usagebar::vendor::HTTP_CLIENT_TIMEOUT;
@@ -51,7 +51,7 @@ async fn run() -> io::Result<()> {
             ai_usagebar::config::config_path_hint()
         ))
     })?;
-    let tabs = tabs_from_config(&config);
+    let tabs = tabs_with_desktop(&config);
     if tabs.is_empty() {
         eprintln!(
             "No vendors are enabled in {}. Exiting.",
@@ -166,7 +166,7 @@ fn reload_config(
     app.context_enabled = config.context.enabled;
     app.overview_vendors = config.ui.overview_vendors.clone();
     app.vendor_box = config.ui.vendor_box();
-    app.set_tabs(tabs_from_config(config));
+    app.set_tabs(tabs_with_desktop(config));
     if reselect_primary {
         app.select_primary(config.ui.primary);
     }

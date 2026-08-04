@@ -818,10 +818,20 @@ func showDefaultClaudeAccount(configValue: String?, hasAccounts: Bool) -> Bool {
 
 /// Pseudo-id mapping: `anthropic@<label>` selects a named account.
 let ACCOUNT_ID_PREFIX = "anthropic@"
+// A Claude account whose usage comes from the Desktop app's own token (a saved
+// ~/.claude-acc/profiles/<label>), fetched with the widget's `--desktop` flag.
+// Distinct prefix so `vendorArgs` knows to pass it; every other helper treats it
+// as a Claude account via `accountLabel(of:)`.
+let DESKTOP_ACCOUNT_ID_PREFIX = "anthropic-desktop@"
 
 func accountLabel(of id: String) -> String? {
-    id.hasPrefix(ACCOUNT_ID_PREFIX) ? String(id.dropFirst(ACCOUNT_ID_PREFIX.count)) : nil
+    if id.hasPrefix(DESKTOP_ACCOUNT_ID_PREFIX) {
+        return String(id.dropFirst(DESKTOP_ACCOUNT_ID_PREFIX.count))
+    }
+    return id.hasPrefix(ACCOUNT_ID_PREFIX) ? String(id.dropFirst(ACCOUNT_ID_PREFIX.count)) : nil
 }
+
+func isDesktopAccountId(_ id: String) -> Bool { id.hasPrefix(DESKTOP_ACCOUNT_ID_PREFIX) }
 
 func baseVendorId(_ id: String) -> String {
     accountLabel(of: id) != nil ? "anthropic" : id
@@ -830,7 +840,9 @@ func baseVendorId(_ id: String) -> String {
 /// The subprocess arguments that select `id` (base vendor or named account).
 func vendorArgs(for id: String) -> [String] {
     if let label = accountLabel(of: id) {
-        return ["--vendor", "anthropic", "--account", label]
+        var args = ["--vendor", "anthropic", "--account", label]
+        if isDesktopAccountId(id) { args.append("--desktop") }
+        return args
     }
     return ["--vendor", id]
 }
@@ -839,6 +851,13 @@ func vendorArgs(for id: String) -> [String] {
 struct MenuEntry {
     let id: String    // "cursor", "anthropic", or "anthropic@<label>"
     let name: String  // display: "Cursor", "Claude · <label>"
+}
+
+func claudeAccountMenuEntries(_ accounts: [UsageAccount]) -> [MenuEntry] {
+    accounts.map { account in
+        let prefix = account.desktop ? DESKTOP_ACCOUNT_ID_PREFIX : ACCOUNT_ID_PREFIX
+        return MenuEntry(id: prefix + account.label, name: "Claude · \(account.label)")
+    }
 }
 
 /// Apply `[ui] overview_vendors` with the same semantics as the TUI: preserve
@@ -861,20 +880,23 @@ func filterOverviewEntries(_ entries: [MenuEntry], requested: [String]?) -> [Men
 /// with Anthropic expanded into its named accounts (the default entry kept
 /// only per `show_default_account`). `active` stays listed even when
 /// unconfigured — same rule the per-vendor list always had.
-func vendorEntries(active: String) -> [MenuEntry] {
+func vendorEntries(active: String, usageAccounts: [UsageAccount]? = nil) -> [MenuEntry] {
     var out: [MenuEntry] = []
     for v in VENDOR_AUTH where vendorEnabled(v) {
         if v.id == "anthropic" {
-            let labels = claudeAccountLabels()
+            // Once account status is available, Rust owns profile-directory
+            // resolution and CLI/Desktop dedup. The nil fallback preserves
+            // configured CLI accounts with an older binary.
+            let accounts = usageAccounts ?? claudeAccountLabels().map {
+                UsageAccount(label: $0, desktop: false)
+            }
             let showDefault = showDefaultClaudeAccount(
                 configValue: configValueTOML("anthropic", "show_default_account"),
-                hasAccounts: !labels.isEmpty)
+                hasAccounts: !accounts.isEmpty)
             if showDefault && (v.id == active || vendorConfigured(v)) {
                 out.append(MenuEntry(id: v.id, name: v.name))
             }
-            for label in labels {
-                out.append(MenuEntry(id: ACCOUNT_ID_PREFIX + label, name: "Claude · \(label)"))
-            }
+            out.append(contentsOf: claudeAccountMenuEntries(accounts))
         } else if v.id == active || vendorConfigured(v) {
             out.append(MenuEntry(id: v.id, name: v.name))
         }
@@ -905,6 +927,31 @@ struct AccountStatus: Equatable {
     var cliActive: String?
     var desktopLabels: [String] = []
     var cliLabels: [String] = []
+    /// Canonical Rust/TUI usage enumeration. Nil means an older binary, so the
+    /// menu falls back to configured CLI labels; an empty array is authoritative.
+    var usageAccounts: [UsageAccount]?
+    /// Routines one account deleted that another still holds. A switch would
+    /// hand them back, so the user is asked before it starts.
+    var deletionConflicts: [DeletionConflict] = []
+}
+
+struct UsageAccount: Equatable {
+    var label: String
+    var desktop: Bool
+}
+
+struct DeletionConflict: Equatable {
+    /// Opaque, type-scoped value accepted by `--delete-conflict`.
+    var key: String
+    var id: String
+    /// "routine" or "chat" — they are swept differently but answered together.
+    var kind: String
+    var summary: String
+    var deletedBy: String
+    var stillIn: [String]
+
+    /// One line for the dialog: what it is, and who dropped it.
+    var line: String { "[\(kind)] \(summary) — deleted in \(deletedBy)" }
 }
 
 /// Parse `account status --json`. Every field is optional on purpose: a Mac
@@ -925,11 +972,35 @@ func parseAccountStatus(_ data: Data) -> AccountStatus? {
         (side as? [String: Any])?["active_label"] as? String
     }
     let desktop = root["desktop"], cli = root["cli"]
+    let usageAccounts: [UsageAccount]?
+    if let rows = root["usage_accounts"] as? [[String: Any]] {
+        usageAccounts = rows.compactMap { row in
+            guard let label = row["label"] as? String,
+                  let desktop = row["desktop"] as? Bool else { return nil }
+            return UsageAccount(label: label, desktop: desktop)
+        }
+    } else {
+        usageAccounts = nil
+    }
+    let conflicts = ((desktop as? [String: Any])?["deletion_conflicts"] as? [[String: Any]] ?? [])
+        .compactMap { row -> DeletionConflict? in
+            guard let id = row["id"] as? String else { return nil }
+            let kind = row["kind"] as? String ?? "item"
+            guard let key = row["key"] as? String else { return nil }
+            return DeletionConflict(key: key,
+                                   id: id,
+                                   kind: kind,
+                                   summary: row["summary"] as? String ?? id,
+                                   deletedBy: row["deleted_by"] as? String ?? "?",
+                                   stillIn: row["still_in"] as? [String] ?? [])
+        }
     return AccountStatus(desktopAvailable: desktop is [String: Any],
                          desktopActive: active(desktop),
                          cliActive: active(cli),
                          desktopLabels: labels(desktop, "profiles"),
-                         cliLabels: labels(cli, "accounts"))
+                         cliLabels: labels(cli, "accounts"),
+                         usageAccounts: usageAccounts,
+                         deletionConflicts: conflicts)
 }
 
 /// The one dim line under the header. Empty when neither surface resolved, so
@@ -943,8 +1014,22 @@ func accountsSummaryLine(_ s: AccountStatus) -> String {
 
 /// `-y` because the menu has already asked; without it the binary would prompt
 /// on a stdin that is not a terminal and abort.
-func switchArgs(label: String, desktop: Bool) -> [String] {
-    ["account", "switch", label, desktop ? "--desktop" : "--cli", "-y"]
+func switchArgs(label: String, desktop: Bool, deleting: [String] = []) -> [String] {
+    var args = ["account", "switch", label, desktop ? "--desktop" : "--cli", "-y"]
+    // Passing any --delete-conflict also tells the binary the question was
+    // already answered, so it never blocks on a prompt it cannot show here.
+    for id in deleting { args += ["--delete-conflict", id] }
+    return args
+}
+
+/// The first few conflicts spelled out, the rest summarised — a switch after a
+/// big clean-up must not grow a dialog taller than the screen.
+func conflictPreview(_ conflicts: [DeletionConflict], limit: Int = 10) -> String {
+    var lines = conflicts.prefix(limit).map { "• \($0.line)" }
+    if conflicts.count > limit {
+        lines.append("… e mais \(conflicts.count - limit)")
+    }
+    return lines.joined(separator: "\n")
 }
 
 /// Adding an account is interactive — a Desktop capture waits for you to sign
@@ -1768,7 +1853,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The swap-shortcut ring: every configured entry (vendors *and* Claude
     /// accounts) plus the synthetic "overview" target, so ⌥⌘\ cycles them all.
     func swapCycleIds() -> [String] {
-        var ids = vendorEntries(active: VENDOR).map { $0.id }
+        var ids = vendorEntries(active: VENDOR,
+                                usageAccounts: lastAccountStatus?.usageAccounts).map { $0.id }
         ids.append("overview")
         return ids
     }
@@ -2047,7 +2133,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func refreshOverview(bin: String, generation: Int) {
         // vendorEntries(active: "") keeps only configured entries — the
         // active-vendor courtesy slot has no place in an all-vendors sweep.
-        let entries = filterOverviewEntries(vendorEntries(active: ""),
+        let entries = filterOverviewEntries(vendorEntries(
+                                                active: "",
+                                                usageAccounts: lastAccountStatus?.usageAccounts),
                                             requested: configuredOverviewVendorIds())
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var results: [(name: String, id: String, snap: Snapshot?)] = []
@@ -2345,7 +2433,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func rebuildVendorSubmenu() {
         vendorSubmenu.removeAllItems()
         let active = VENDOR
-        let entries = vendorEntries(active: active)
+        let entries = vendorEntries(active: active,
+                                    usageAccounts: lastAccountStatus?.usageAccounts)
         if entries.isEmpty {
             let none = NSMenuItem(title: "Nenhum configurado", action: nil, keyEquivalent: "")
             none.isEnabled = false
@@ -2415,6 +2504,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applyAccountStatus(_ status: AccountStatus) {
         lastAccountStatus = status
         renderAccountMenus()
+        rebuildVendorSubmenu()
     }
 
     func renderAccountMenus() {
@@ -2502,7 +2592,67 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "Cancelar")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        runAccountSwitch(label: label, desktop: true)
+        // Routines deleted in one account but alive in another would be handed
+        // straight back by the merge. Decide before the switch starts, since a
+        // background subprocess has no way to ask.
+        guard let doomed = resolveDeletionConflicts() else { return }
+        runAccountSwitch(label: label, desktop: true, deleting: doomed)
+    }
+
+    /// Returns the routine ids to delete everywhere, or nil if the user backed
+    /// out of the whole switch. An empty array means "keep them all".
+    private func resolveDeletionConflicts() -> [String]? {
+        let conflicts = lastAccountStatus?.deletionConflicts ?? []
+        if conflicts.isEmpty { return [] }
+
+        let alert = NSAlert()
+        alert.messageText = conflicts.count == 1
+            ? "1 item foi apagado em uma conta e ainda existe em outra"
+            : "\(conflicts.count) itens foram apagados em uma conta e ainda existem em outra"
+        alert.informativeText = conflictPreview(conflicts)
+            + "\n\nManter traz de volta os apagados. Apagar remove de todas as contas — uma conversa perde só o índice, a transcrição permanece."
+        alert.addButton(withTitle: "Manter todas")
+        alert.addButton(withTitle: "Apagar em todas")
+        alert.addButton(withTitle: "Escolher…")
+        NSApp.activate(ignoringOtherApps: true)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return []
+        case .alertSecondButtonReturn: return conflicts.map { $0.key }
+        default: return chooseDeletionConflicts(conflicts)
+        }
+    }
+
+    /// A checkbox per conflict — checked means keep. Everything left unchecked
+    /// is deleted everywhere, so the destructive outcome takes a deliberate
+    /// uncheck rather than being the default.
+    private func chooseDeletionConflicts(_ conflicts: [DeletionConflict]) -> [String]? {
+        let rowHeight = 22
+        let list = NSStackView(frame: NSRect(x: 0, y: 0, width: 420,
+                                             height: rowHeight * conflicts.count))
+        list.orientation = .vertical
+        list.alignment = .leading
+        list.spacing = 4
+        var boxes: [NSButton] = []
+        for conflict in conflicts {
+            let box = NSButton(checkboxWithTitle: conflict.line, target: nil, action: nil)
+            box.state = .on
+            boxes.append(box)
+            list.addArrangedSubview(box)
+        }
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420,
+                                                height: min(260, rowHeight * conflicts.count + 8)))
+        scroll.hasVerticalScroller = true
+        scroll.documentView = list
+
+        let alert = NSAlert()
+        alert.messageText = "O que manter?"
+        alert.informativeText = "Marcados continuam. Os desmarcados são apagados em todas as contas."
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: "Confirmar")
+        alert.addButton(withTitle: "Cancelar")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return zip(conflicts, boxes).filter { $0.1.state != .on }.map { $0.0.key }
     }
 
     @objc func switchCliAccount(_ sender: NSMenuItem) {
@@ -2510,11 +2660,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runAccountSwitch(label: label, desktop: false)
     }
 
-    private func runAccountSwitch(label: String, desktop: Bool) {
+    private func runAccountSwitch(label: String, desktop: Bool, deleting: [String] = []) {
         guard let bin = resolveBinary("ai-usagebar"), !accountSwitchInFlight else { return }
         accountSwitchInFlight = true
         renderAccountMenus()
-        let args = switchArgs(label: label, desktop: desktop)
+        let args = switchArgs(label: label, desktop: desktop, deleting: deleting)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: bin)

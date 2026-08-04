@@ -1,8 +1,8 @@
 # ai-usagebar
 
-Waybar widget and tabbed TUI for AI plan usage across **Anthropic Claude**, **OpenAI Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, and **Kimi**.
+Waybar widget and tabbed TUI for AI plan usage across **Anthropic Claude**, **OpenAI Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, **Kimi**, and other supported AI coding services.
 
-This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar) and stays drop-in compatible with it. It keeps the minimalist Pango-bordered tooltip, Omarchy theme auto-detection, and flock-protected OAuth refresh, then adds five more vendors and a proper testable codebase instead of one long shell script.
+This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar) and stays drop-in compatible with it. It keeps the minimalist Pango-bordered tooltip, Omarchy theme auto-detection, and flock-protected OAuth refresh, then adds broad multi-vendor support and a proper testable codebase instead of one long shell script.
 
 ![Waybar widget showing `cld 29% · 1h 12m` in the top-right, with the hover tooltip showing Claude Max 20x session/weekly/sonnet/extra-usage progress bars](screenshot.png)
 
@@ -73,7 +73,7 @@ API-key vendors work unchanged via environment variables or `config.toml`.
 
 ## Authentication
 
-Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth credentials that their official CLIs already wrote to disk, so **no env vars are needed.** Every other vendor uses an API key. You can pass those through env vars or, if you don't source secrets in your shell, put them inline in `config.toml`.
+Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth credentials that their official CLIs already wrote to disk, several vendors use API keys, and local-product integrations reuse their own signed-in session or local server. The table below is authoritative; API keys can come from environment variables or, if you do not source secrets in your shell, inline `config.toml` values.
 
 | Vendor | Method | Action required |
 |---|---|---|
@@ -90,7 +90,8 @@ Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth c
 | Grok (xAI) | **Management** key (`XAI_MANAGEMENT_KEY` env or `[grok] api_key` in config) | Set either. Opt-in. This is **not** the inference key — create it under xAI Console → Management keys. See the team note below. |
 | MiniMax | **Token Plan** key (`MINIMAX_API_KEY` env or `[minimax] api_key` in config) | Set either. Opt-in. Must be the Token Plan **subscription** key — a pay-as-you-go key has no plan quota to report. Set `[minimax] region = "cn"` for `api.minimaxi.com`; the default `"global"` uses `api.minimax.io`. The two are separate instances and reject each other's keys. |
 | Google Antigravity | None — read from the local Antigravity server | Opt-in. Quota is served only while Antigravity 2.0, the Antigravity IDE, or an interactive `agy` session is running; all three share one account-wide quota. |
-| Cursor | None — read from Cursor's local `state.vscdb` | Opt-in. Sign in to the Cursor IDE at least once; ai-usagebar reads the session token it already wrote there. No key of your own to create. |
+| Cursor | None — read from Cursor's local `state.vscdb` (or the `cursor-agent` CLI's `auth.json`) | Opt-in. Sign in to the Cursor IDE at least once; ai-usagebar reads the session token it already wrote there. No key of your own to create. Headless machines with no desktop IDE work too: sign in to `cursor-agent` once and its own `auth.json` is used as a fallback when the IDE database is absent. |
+| Kiro CLI | None — read from kiro-cli's local `data.sqlite3` | Opt-in. Run `kiro-cli login` at least once; ai-usagebar reads the AWS SSO OIDC session it already wrote there and refreshes it itself when close to expiry. No key of your own to create. |
 
 #### Grok: team-scoped vs organization-scoped keys
 
@@ -111,7 +112,7 @@ rather than silently querying the wrong URL.
 ### Enabling a vendor
 
 `enabled = true` is what makes a vendor fetch. Anthropic (API), DeepSeek, Kimi,
-Kilo, Novita, Moonshot, Grok, Antigravity, Cursor, and MiniMax all default to **disabled** so that existing
+Kilo, Novita, Moonshot, Grok, Antigravity, Cursor, MiniMax, and Kiro CLI all default to **disabled** so that existing
 installs are unaffected until you opt in. Two ways to do it:
 
 - **Via the TUI Settings overlay** (`ai-usagebar-tui`, then `s`): saving a
@@ -135,7 +136,8 @@ For each API-key vendor, ai-usagebar checks in this order:
 - If you put inline `api_key` values in config, `chmod 600 ~/.config/ai-usagebar/config.toml`. The default behavior reads only env vars, which is safer when your config might be world-readable.
 - Don't commit your config dir if you check it into dotfiles unless you've redacted `api_key` lines.
 - OAuth credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`) are managed by their respective CLIs and already chmod-protected.
-- Cursor's session token lives in its own `state.vscdb`, managed entirely by the Cursor IDE — ai-usagebar opens it read-only and never writes to it.
+- Cursor's session token lives in its own `state.vscdb`, managed entirely by the Cursor IDE — ai-usagebar opens it read-only and never writes to it. On machines without the IDE, the `cursor-agent` CLI's own `auth.json` is read as a fallback instead — same read-only treatment.
+- kiro-cli's AWS SSO OIDC session lives in its own `data.sqlite3`, managed entirely by kiro-cli — ai-usagebar opens it read-only; refreshed credentials are stored atomically in an account-scoped `kiro/oauth.json` cache file (mode 0600 on Unix), never written back to kiro-cli's database.
 
 #### macOS: Anthropic credentials in the Keychain
 
@@ -152,7 +154,8 @@ On macOS, recent Claude Code builds don't write `~/.claude/.credentials.json` �
 # Only a vendor that is enabled can be primary.
 # primary = "anthropic"   # anthropic | anthropic_api | openai | zai
 #                         # | openrouter | deepseek | kimi | kilo | novita
-#                         # | moonshot | grok | antigravity | cursor
+#                         # | moonshot | grok | antigravity | cursor | minimax
+#                         # | kiro
 
 [context]
 enabled = false           # opt in, then press c in ai-usagebar-tui
@@ -232,8 +235,17 @@ api_key_env = "XAI_MANAGEMENT_KEY"
 [cursor]
 enabled = true             # disabled by default; enable once you've signed in to Cursor
 # No API key: reads the session token the Cursor IDE already wrote to its own
-# state.vscdb after you signed in there.
+# state.vscdb after you signed in there. No desktop IDE (headless machine)?
+# Sign in to the cursor-agent CLI once instead — its own auth.json is the
+# fallback when the IDE database is absent.
 # db_path = "/home/you/.config/Cursor/User/globalStorage/state.vscdb"
+# agent_auth_path = "/home/you/.config/cursor/auth.json"
+
+[kiro]
+enabled = true             # disabled by default; enable once you've run `kiro-cli login`
+# No API key: reads the AWS SSO OIDC session kiro-cli already wrote to its own
+# data.sqlite3 after you logged in there.
+# db_path = "/home/you/.local/share/kiro-cli/data.sqlite3"
 ```
 
 ## Quick start
@@ -247,6 +259,7 @@ ai-usagebar --vendor zai
 ai-usagebar --vendor openrouter
 ai-usagebar --vendor deepseek
 ai-usagebar --vendor kimi
+ai-usagebar --vendor kiro
 
 # Force Waybar JSON (e.g. piping into jq).
 ai-usagebar --json
@@ -308,7 +321,7 @@ Use one bar item and scroll through your vendors. The TUI on-click still shows t
 }
 ```
 
-The `{vendor_short}` placeholder always expands to a 3-letter vendor ID (`cld` / `gpt` / `zai` / `opr` / `dsk` / `kmi` / `klo` / `nvt` / `msh` / `grk` / `aac` / `agy` / `cur` / `mmx`), so the bar text tells you which vendor is active. The other usage placeholders (`{session_pct}` for Anthropic, `{oai_session_pct}` for OpenAI, etc.) are vendor-specific. If you want one format string for every cycled vendor, prefer the generic aliases: `{session_pct}`, `{session_reset}`, `{weekly_pct}`, and `{weekly_reset}` are implemented by all nine usage vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Antigravity, Cursor, and MiniMax; OpenRouter and DeepSeek use `0` / `—` for the windows they don't expose). Cursor has no time windows but two usage *pools*, so it maps them onto the two generic slots: `session_pct` = **Cursor Models** (Auto + Composer), `weekly_pct` = **Other Models** (named / API), both resetting on the billing cycle. Anthropic and OpenAI add `*_elapsed`, `*_pace`, and `*_bar` families; Antigravity adds `*_elapsed` for all four of its windows, plus `{session_model}` / `{weekly_model}` / `{scoped_model}` / `{extra_model}`, which name the model group each row belongs to (vendors with a single quota pool leave them empty). The established API-backed vendors also expose their own `{oai_*}` / `{zai_*}` / `{or_*}` / `{ds_*}` / `{kimi_*}` / `{minimax_*}` families, which expand to empty strings for vendors that don't define them.
+The `{vendor_short}` placeholder always expands to a 3-letter vendor ID (`cld` / `gpt` / `zai` / `opr` / `dsk` / `kmi` / `klo` / `nvt` / `msh` / `grk` / `aac` / `agy` / `cur` / `mmx` / `kir`), so the bar text tells you which vendor is active. The other usage placeholders (`{session_pct}` for Anthropic, `{oai_session_pct}` for OpenAI, etc.) are vendor-specific. If you want one format string for every cycled vendor, prefer the generic aliases: `{session_pct}`, `{session_reset}`, `{weekly_pct}`, and `{weekly_reset}` are implemented by all ten usage vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Antigravity, Cursor, MiniMax, and Kiro CLI; OpenRouter and DeepSeek use `0` / `—` for the windows they don't expose). Cursor has no time windows but two usage *pools*, so it maps them onto the two generic slots: `session_pct` = **Cursor Models** (Auto + Composer), `weekly_pct` = **Other Models** (named / API), both resetting on the billing cycle. Kiro CLI has a single pool, so both generic slots map to `kiro_pct`. Anthropic and OpenAI add `*_elapsed`, `*_pace`, and `*_bar` families; Antigravity adds `*_elapsed` for all four of its windows, plus `{session_model}` / `{weekly_model}` / `{scoped_model}` / `{extra_model}`, which name the model group each row belongs to (vendors with a single quota pool leave them empty). The established API-backed vendors also expose their own `{oai_*}` / `{zai_*}` / `{or_*}` / `{ds_*}` / `{kimi_*}` / `{minimax_*}` families, which expand to empty strings for vendors that don't define them.
 
 `signal: 13` lets the scroll-cycle commands refresh the bar instantly (via `SIGRTMIN+13`) instead of waiting for the next 300s interval.
 
@@ -574,6 +587,33 @@ it cannot save (`--force` overrides, and genuinely discards it).
 claude-acc's format, so if you already use that tool your existing profiles work
 here untouched, and either tool can capture or switch them.
 
+**Deletions are confirmed, not silently resurrected.** The history merge is a
+union, so a routine or chat you delete in one account would normally come
+straight back from whichever account still holds a copy. ai-usagebar records
+what each account held after the last merge, so it can tell a real deletion from
+something that account simply never received, and asks before acting: keep them
+all, delete them everywhere, or choose individually. Answering "delete" removes
+it from every account so it stops following you around.
+
+Deleting a chat drops only its **index**. The transcript lives in the
+account-agnostic `~/.claude/projects/`, which is never touched — the
+conversation stops following you between accounts without the text being
+destroyed.
+
+A switch run without a terminal — the menu bar's subprocess, a script — always
+keeps everything and says so; deleting is only ever reachable from an answered
+prompt. The macOS menu bar asks the same question in a dialog with a checkbox
+per item, and passes the answer through as `--delete-conflict <key>`;
+`account status --json` lists the pending ones under `deletion_conflicts`. Use
+the returned opaque `key`; the type scope
+prevents a routine id from authorizing deletion of a same-named chat index.
+
+Edits still reconcile independently of this: chats use `lastActivityAt`, while
+routines use a per-task three-way baseline in the sync record. Edits to
+different routines propagate independently. If two accounts edit the same
+routine concurrently, each local copy is preserved and the switch reports the
+conflict; edit the desired copy once more to resolve it on the next switch.
+
 **What this does not do.** Forgetting an account (`remove`) and chat filtering
 (`only` / `reset`) are not implemented — delete a profile directory by hand, or
 use claude-acc. Cowork (agent-mode) sessions are not migrated by a switch and
@@ -626,10 +666,11 @@ Then `hyprctl reload` (no logout needed).
 | **Grok (xAI)** | `management-api.x.ai/v1/billing/teams/{team}/prepaid/balance` (Management API; documented) | Prepaid credit balance ($) | No — widget/TUI only |
 | **Anthropic (API)** | `api.anthropic.com/v1/organizations/cost_report` (Admin API; documented) | Month-to-date spend ($, excludes Priority Tier), optional spend-vs-limit % | No — widget/TUI only |
 | **Cursor** | `cursor.com/api/usage-summary` (undocumented; the dashboard's own frontend) | Two included-usage pools this billing cycle — Cursor Models (Auto/Composer) % and Other Models (named/API) % — plus plan, reset, on-demand | Yes |
+| **Kiro CLI** | `codewhisperer.<region>.amazonaws.com` `GetUsageLimits` (undocumented; the same call kiro-cli's own `/usage` slash command makes) | Single credit pool this cycle — used/limit/%, plan, reset | No — widget/TUI only |
 
 ### Endpoint stability
 
-Several endpoints are undocumented. The Anthropic and OpenAI endpoints are used by their official CLIs (`claude` and `codex`), so removing them would break those tools too. That makes them less shaky than scraped web endpoints. Z.AI's monitor endpoint is reverse-engineered from a third-party plugin; treat it as the most fragile one. Kimi's `/coding/v1/usages` is community-confirmed and used by third-party quota tools; treat it as drift-prone. Cursor's `/api/usage-summary` has no official docs and is the endpoint the dashboard's own frontend calls — treat it as drift-prone too (its shape tracks Cursor's pricing, which has changed before). MiniMax officially publishes its Token Plan quota route, but not a formal response schema, so the parser still treats its wire shape defensively.
+Several endpoints are undocumented. The Anthropic and OpenAI endpoints are used by their official CLIs (`claude` and `codex`), so removing them would break those tools too. That makes them less shaky than scraped web endpoints. Z.AI's monitor endpoint is reverse-engineered from a third-party plugin; treat it as the most fragile one. Kimi's `/coding/v1/usages` is community-confirmed and used by third-party quota tools; treat it as drift-prone. Cursor's `/api/usage-summary` has no official docs and is the endpoint the dashboard's own frontend calls — treat it as drift-prone too (its shape tracks Cursor's pricing, which has changed before). MiniMax officially publishes its Token Plan quota route, but not a formal response schema, so the parser still treats its wire shape defensively. Kiro CLI's `GetUsageLimits` is the same undocumented CodeWhisperer/Q Developer operation kiro-cli's own `/usage` command calls (confirmed by tracing its request), and several community reverse-engineering projects independently confirm the same request/response shape — but it carries AWS's own "no public API" disclaimer for CodeWhisperer, so treat it as drift-prone too. The token-refresh call (AWS SSO OIDC `CreateToken`) is, unlike the usage call itself, a documented public API.
 
 OpenAI's known 5-hour and 7-day windows are identified from each window's
 reported duration, not from `primary_window` / `secondary_window` position.
@@ -700,6 +741,12 @@ When an endpoint drifts, **run `make smoke`**. It runs all ignored vendor tests,
 `{cursor_plan}`, `{cursor_auto_pct}`, `{cursor_api_pct}`, `{cursor_total_pct}`, `{cursor_reset}`, `{cursor_on_demand}`, `{cursor_unlimited}` — this billing cycle's two included-usage pools from `cursor.com/api/usage-summary`: `cursor_auto_pct` is **Cursor Models** (Auto + Composer) and `cursor_api_pct` is **Other Models** (named / API), matching the two bars on the Cursor dashboard. `cursor_total_pct` is the overall included-usage headline; `cursor_on_demand` is `on`/`off`; `cursor_unlimited` is `yes`/`no`. A pool can read above 100% when it is over its included allowance. The default bar format is `{cursor_auto_pct}·{cursor_api_pct}%` (e.g. `98·100%`), colored by whichever pool is worst. Generic aliases: `{session_pct}` = Cursor Models, `{weekly_pct}` = Other Models, `{plan}` = `Cursor <Plan>`.
 
 > Cursor's dashboard also reports usage-based (overage) spend and, for team accounts, per-member spend. Neither is tracked here — this vendor mirrors the two included-usage bars the dashboard shows. Team accounts (which report no `individualUsage.plan`) are parsed too, falling back to the payload's "You've used N%…" display-message strings for the two pools — the plan label gets a `(team)` suffix so it's visibly a best-effort path, since this has not been verified against a live team account.
+
+### Kiro CLI
+
+`{kiro_plan}`, `{kiro_pct}`, `{kiro_used}`, `{kiro_limit}`, `{kiro_reset}` — this cycle's credit pool from `AmazonCodeWhispererService.GetUsageLimits`, the same call kiro-cli's own `/usage` slash command makes. `kiro_used`/`kiro_limit` are the raw credit counts (two decimals only when the API sends a fraction, e.g. `9943.38`); `kiro_pct` is the rounded percentage consumed. The default bar format is `{kiro_pct}%`. Generic aliases: `{session_pct}` = `{weekly_pct}` = `kiro_pct` (one pool fills both generic slots), `{plan}` = the subscription title (e.g. "KIRO POWER").
+
+> Unlike every other reverse-engineered vendor here, the credential source is a *token that expires* (~1h) rather than a long-lived session — ai-usagebar refreshes it via the documented AWS SSO OIDC `CreateToken` API when it's close to expiry, using the refresh token kiro-cli already has. Refreshed access and rotated refresh tokens are saved atomically in ai-usagebar's account-scoped `kiro/oauth.json` cache file with mode 0600 on Unix, never written back to kiro-cli's database.
 
 ## Local development
 

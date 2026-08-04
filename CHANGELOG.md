@@ -11,6 +11,97 @@ Each release is also published at
 
 ### Added
 
+- **Kiro CLI vendor** (`--vendor kiro`, `[kiro]`, opt-in). Reads the credit
+  pool from `AmazonCodeWhispererService.GetUsageLimits` — the exact call
+  kiro-cli's own `/usage` slash command makes — using the AWS SSO OIDC
+  session kiro-cli already cached in its local `data.sqlite3` after
+  `kiro-cli login`. No separate login step; the OIDC access token (valid
+  ~1h) is refreshed via the documented AWS SSO OIDC `CreateToken` API when
+  close to expiry, using the refresh token + client credentials kiro-cli
+  registered for itself. Refreshed and rotated credentials are kept in an
+  atomic, mode-0600, account-scoped ai-usagebar sidecar and are never written
+  back to kiro-cli's own database.
+- **Cursor: `cursor-agent` fallback credential** (`[cursor] agent_auth_path`).
+  Text-only machines that never open the desktop IDE now get usage too: when
+  the IDE's `state.vscdb` is absent, the vendor falls back to the session
+  token the headless `cursor-agent` CLI wrote to its own
+  `~/.config/cursor/auth.json`. The IDE database stays the preferred source
+  when both exist; an existing but unreadable or malformed IDE database still
+  surfaces its own error instead of silently switching to another login.
+
+### Fixed
+
+- **A routine renamed in one account now converges to one title everywhere.** A
+  scheduled task has no `updatedAt`, so a rename leaves `createdAt` untouched and
+  previously only reached the account you switched *to*. A switch now carries
+  the title selected by the baseline-aware routine merge into *every* account's
+  registry, so the name stops disagreeing across accounts. The convergence pass
+  changes only `displayName` and preserves the rest of each registry, including
+  unknown top-level fields. There is no prompt, and it applies to the terminal
+  and menu bar alike since both drive the same switch path. Mirrored in
+  claude-acc.
+
+## [0.21.0] — 2026-08-03
+
+### Added
+
+- **Claude Desktop accounts now report usage with no `claude` CLI login.** A
+  saved Desktop account (`account add <label> --desktop`) previously needed a
+  *second*, separate `claude` login before its quota could show — because usage
+  came only from a CLI credential. It turns out the Desktop app stores its own
+  token under the same public OAuth client as Claude Code, and that token is
+  accepted by the usage endpoint, so ai-usagebar now reads it directly. Every
+  saved Desktop profile appears as a Claude account in `ai-usagebar usage`, the
+  TUI, and the macOS menu-bar overview — labelled `· <label> (desktop)` — with
+  zero CLI involvement.
+
+  The token lives in the app's encrypted `safeStorage` blob; ai-usagebar
+  decrypts it with the login-Keychain key (macOS), picks the
+  `user:inference`-scoped entry, and maps it onto the existing OAuth path so
+  fetching and rendering stay unchanged. The **active** account is read-only
+  from the live `config.json` the app keeps fresh; ai-usagebar never rotates
+  that credential,
+  even while the app happens to be stopped. Every other account is read from
+  its profile snapshot and refreshed under the same lock as account switching,
+  with the rotation written back before a switch can install it. Desktop caches
+  are isolated by account UUID, so a reused label cannot expose another CLI or
+  Desktop account's usage. A half-finished CLI `account add <label>` no longer
+  masks a working Desktop profile of the same name: the Desktop source takes
+  over when the CLI credential can't authenticate. The menu bar consumes this
+  same Rust-resolved list, including a configured `desktop_profiles_dir`.
+  macOS-only (the Desktop app and its Keychain key exist nowhere else).
+
+- **Deleted routines and chats are now confirmed instead of silently
+  resurrected.** The merge is a union, so deleting a routine or a conversation
+  in one account meant it came straight back from whichever account still held a
+  copy — and there was no way to tell that apart from something the account had
+  simply never received.
+  ai-usagebar now records what each account held after the last merge
+  (`~/.claude-acc/synced.json`, shared with claude-acc) and uses it to detect a
+  genuine deletion, then asks: keep them all, delete them everywhere, or choose
+  individually. Confirming sweeps it from *every* account so it stops returning.
+  A confirmed chat loses only its **index** — the transcript in the
+  account-agnostic `~/.claude/projects/` is never touched, so the conversation
+  stops following you between accounts without the text being destroyed. The
+  macOS menu bar asks the same question in a dialog with one checkbox per item —
+  checked keeps it — and passes the verdict through as the type-scoped
+  `--delete-conflict <key>`; `account status --json` lists each pending
+  conflict's opaque `key` under `deletion_conflicts` so scripts can do the same
+  without confusing a routine id with a chat filename.
+
+  Deleting is only ever reachable from an answered prompt: `-y` does not imply
+  it, and a switch with no terminal (the menu bar's subprocess, a pipe, a cron)
+  keeps everything and says so. With no record yet — the first run after
+  upgrading — nothing is reported as a deletion, so behaviour is unchanged until
+  there is real history to compare against.
+
+- **Routine edits now reconcile per task instead of per registry file.** The
+  sync record keeps a three-way baseline, so editing one routine in each of two
+  accounts preserves both edits. Concurrent edits to the same routine remain
+  local and are reported during the switch instead of silently choosing one;
+  editing the desired copy resolves it on the next switch. Existing sync files
+  remain readable and keep their flat claude-acc-compatible shape.
+
 - **`ai-usagebar usage` — quota and time-to-reset for everything in the config,
   in one command.** The widget answers "how is *this* vendor doing" one process
   at a time, which is what a status bar needs and what a person checking on four
@@ -25,6 +116,13 @@ Each release is also published at
 
   Thin by construction: it reuses the TUI's existing tab enumeration, fetch, and
   snapshot-to-sections projection, so no vendor needs to know it exists.
+
+### Changed
+
+- Refreshed the Rust UI, configuration, SQLite, serialization, and base64
+  dependencies and the pinned checkout, artifact, and AUR deployment actions.
+  The resulting dependency graph remains compatible with the declared Rust
+  1.88 minimum.
 
 ### Fixed
 
@@ -1282,7 +1380,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.1...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.18.0...v0.19.0

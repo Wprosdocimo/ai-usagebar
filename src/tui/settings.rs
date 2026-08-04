@@ -754,6 +754,7 @@ fn vendor_label(v: VendorId) -> &'static str {
         VendorId::Antigravity => "Antigravity",
         VendorId::Cursor => "Cursor",
         VendorId::Minimax => "MiniMax",
+        VendorId::Kiro => "Kiro",
     }
 }
 

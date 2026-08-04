@@ -95,10 +95,8 @@ pub fn capture_profile(
     crate::config::validate_account_label(label)?;
     install_cancel_handler()?;
     CAPTURE_CANCELLED.store(false, Ordering::SeqCst);
-    let _lock = crate::cache::acquire_lock(
-        &paths.backups_dir.join(".account-switch.lock"),
-        Duration::from_secs(2),
-    )?;
+    let _lock =
+        crate::cache::acquire_lock(&paths.account_switch_lock(), super::ACCOUNT_LOCK_TIMEOUT)?;
     let profiles = super::load_profiles(&paths.profiles_dir);
     if profiles.iter().any(|profile| profile.label == label) {
         return Err(AppError::Credentials(format!(

@@ -39,10 +39,13 @@ pub struct ReadyTab {
 /// Identity of one TUI tab. Usually a whole vendor; for Anthropic it can also
 /// name a specific configured account (issues #14 / #17). `account: None` is a
 /// plain vendor tab — the default Claude account, or any non-Anthropic vendor.
+/// `desktop` marks an account whose usage comes from the Claude Desktop app's
+/// own token rather than a `claude` CLI credential.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TabId {
     pub vendor: VendorId,
     pub account: Option<String>,
+    pub desktop: bool,
 }
 
 impl TabId {
@@ -51,6 +54,7 @@ impl TabId {
         Self {
             vendor,
             account: None,
+            desktop: false,
         }
     }
 
@@ -59,6 +63,17 @@ impl TabId {
         Self {
             vendor: VendorId::Anthropic,
             account: Some(label.into()),
+            desktop: false,
+        }
+    }
+
+    /// An Anthropic account whose usage is read from the Claude Desktop app's
+    /// own token store (a saved `~/.claude-acc/profiles/<label>` account).
+    pub fn desktop_account(label: impl Into<String>) -> Self {
+        Self {
+            vendor: VendorId::Anthropic,
+            account: Some(label.into()),
+            desktop: true,
         }
     }
 }
@@ -68,25 +83,114 @@ impl TabId {
 /// config order; every other vendor is a single tab. With no extra accounts
 /// configured the result equals `config.enabled_vendors()` — identical tab set
 /// and order to before (issue #14/#17 back-compat).
+///
+/// Config-only and pure — no Desktop profiles. Production uses
+/// [`tabs_with_desktop`]; this stays for the hermetic unit tests and any caller
+/// that only wants configured accounts.
 pub fn tabs_from_config(config: &Config) -> Vec<TabId> {
+    build_tabs(config, &[], &[])
+}
+
+/// The production tab list: configured accounts plus every saved Claude Desktop
+/// profile that has usable credentials and is not already a working CLI account.
+/// Desktop discovery is best-effort and macOS-only; anywhere else this equals
+/// [`tabs_from_config`].
+pub fn tabs_with_desktop(config: &Config) -> Vec<TabId> {
+    let desktop = desktop_profile_labels(config);
+    // A configured CLI account normally wins its label, but only if it can
+    // actually authenticate. A half-finished `account add <label>` (config
+    // entry written, login never completed) would otherwise mask a perfectly
+    // good Desktop profile of the same name — the account shows an error
+    // instead of its usage. Where that happens, let the Desktop source take
+    // over. Checked only for labels that exist in both, so the credential probe
+    // is rare.
+    let broken = broken_cli_labels(config, &desktop);
+    build_tabs(config, &desktop, &broken)
+}
+
+/// Core expansion, parameterized so it stays pure and unit-testable.
+/// `desktop_labels` are Claude Desktop accounts; `broken_cli` names configured
+/// CLI accounts to drop (their credential is unusable and a Desktop profile
+/// covers them). Desktop accounts follow the CLI accounts, de-duplicated by
+/// label (a *working* configured CLI account wins), and count toward "Anthropic
+/// has accounts" for the default-tab suppression.
+fn build_tabs(config: &Config, desktop_labels: &[String], broken_cli: &[String]) -> Vec<TabId> {
     let mut tabs = Vec::new();
     for vendor in config.enabled_vendors() {
         if vendor == VendorId::Anthropic {
-            let accounts = config.anthropic.all_accounts();
+            let accounts: Vec<_> = config
+                .anthropic
+                .all_accounts()
+                .into_iter()
+                .filter(|a| !broken_cli.iter().any(|b| b == &a.label))
+                .collect();
+            let cli_labels: HashSet<&str> = accounts.iter().map(|a| a.label.as_str()).collect();
+            let desktop: Vec<&String> = desktop_labels
+                .iter()
+                .filter(|label| !cli_labels.contains(label.as_str()))
+                .collect();
             // The default (unnamed) Claude tab is suppressible once every
             // account is named — but never when it would leave Anthropic with
-            // no tab at all.
-            if config.anthropic.show_default_account || accounts.is_empty() {
+            // no tab at all. Desktop accounts count as named accounts here.
+            if config.anthropic.show_default_account || (accounts.is_empty() && desktop.is_empty())
+            {
                 tabs.push(TabId::vendor(vendor));
             }
             for acct in accounts {
                 tabs.push(TabId::account(acct.label));
+            }
+            for label in desktop {
+                tabs.push(TabId::desktop_account(label.clone()));
             }
         } else {
             tabs.push(TabId::vendor(vendor));
         }
     }
     tabs
+}
+
+/// Configured CLI accounts that both (a) share a label with a Desktop profile
+/// and (b) can't authenticate — so the Desktop source should win. Resolving the
+/// credential may read the macOS Keychain, so this only runs for the rare label
+/// present in both places.
+fn broken_cli_labels(config: &Config, desktop_labels: &[String]) -> Vec<String> {
+    use crate::anthropic::creds;
+    config
+        .anthropic
+        .all_accounts()
+        .into_iter()
+        .filter(|a| desktop_labels.iter().any(|d| d == &a.label))
+        .filter(|a| match config.anthropic.account_target(&a.label) {
+            Ok((target, _)) => creds::resolve(&target)
+                .map(|(c, _)| creds::is_unusable(&c.claude_ai_oauth))
+                .unwrap_or(true),
+            Err(_) => true,
+        })
+        .map(|a| a.label)
+        .collect()
+}
+
+/// Labels of saved Claude Desktop profiles with usable credentials. macOS-only
+/// (elsewhere there is no Desktop app); best-effort, so an unreadable profile
+/// store just yields none rather than failing the whole tab list.
+#[cfg(target_os = "macos")]
+fn desktop_profile_labels(config: &Config) -> Vec<String> {
+    let Ok(paths) = crate::claude_desktop::Paths::resolve(&config.anthropic) else {
+        return Vec::new();
+    };
+    if !paths.available() {
+        return Vec::new();
+    }
+    crate::claude_desktop::load_profiles(&paths.profiles_dir)
+        .into_iter()
+        .filter(|p| p.has_credentials)
+        .map(|p| p.label)
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn desktop_profile_labels(_config: &Config) -> Vec<String> {
+    Vec::new()
 }
 
 #[derive(Debug)]
@@ -341,6 +445,9 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             // `credentials_path` is an explicit strict read, and only the
             // platform default gets the macOS Keychain fallback.
             let (creds_target, cache) = match tab.account.as_deref() {
+                Some(label) if tab.desktop => {
+                    crate::anthropic::desktop_creds::account_target(config, label)?
+                }
                 Some(label) => config.anthropic.account_target(label)?,
                 None => {
                     let target = match config.anthropic.credentials_path.clone() {
@@ -561,10 +668,34 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 .clone()
                 .map(Ok)
                 .unwrap_or_else(crate::cursor::db::default_db_path)?;
+            let agent_auth_path = config
+                .cursor
+                .agent_auth_path
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(crate::cursor::db::default_agent_auth_path)?;
             let endpoints = crate::cursor::fetch::Endpoints::default();
+            let outcome = crate::cursor::fetch_snapshot(
+                client,
+                &db_path,
+                &agent_auth_path,
+                &cache,
+                &endpoints,
+                DEFAULT_TTL,
+            )
+            .await?;
+            Ok(outcome.into())
+        }
+        VendorId::Kiro => {
+            let cache = crate::cache::Cache::for_vendor("kiro")?;
+            let db_path = config
+                .kiro
+                .db_path
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(crate::kiro::db::default_db_path)?;
             let outcome =
-                crate::cursor::fetch_snapshot(client, &db_path, &cache, &endpoints, DEFAULT_TTL)
-                    .await?;
+                crate::kiro::fetch_snapshot(client, &db_path, &cache, DEFAULT_TTL).await?;
             Ok(outcome.into())
         }
     }
@@ -805,6 +936,75 @@ mod tests {
                 TabId::account("personal"), // sorted by label
                 TabId::account("work"),
             ]
+        );
+    }
+
+    #[test]
+    fn desktop_labels_become_account_tabs_after_cli_accounts() {
+        // Pure core: desktop accounts follow CLI accounts, in the order given.
+        let config = config_with_accounts(&["work"]);
+        let tabs = build_tabs(&config, &["gmail".into(), "hotmail".into()], &[]);
+        assert_eq!(
+            tabs,
+            vec![
+                TabId::vendor(VendorId::Anthropic),
+                TabId::account("work"),
+                TabId::desktop_account("gmail"),
+                TabId::desktop_account("hotmail"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cli_account_shadows_a_desktop_profile_of_the_same_label() {
+        // One tab per label; the explicitly configured CLI account wins.
+        let config = config_with_accounts(&["gmail"]);
+        let tabs = build_tabs(&config, &["gmail".into(), "hotmail".into()], &[]);
+        assert_eq!(
+            tabs,
+            vec![
+                TabId::vendor(VendorId::Anthropic),
+                TabId::account("gmail"),
+                TabId::desktop_account("hotmail"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_broken_cli_account_yields_its_label_to_the_desktop_profile() {
+        // The exact failure a half-finished `account add gmail` caused: a CLI
+        // account is configured but unusable, and a Desktop profile of the same
+        // name exists. Passed in `broken_cli`, the CLI account is dropped and the
+        // Desktop source surfaces instead of an error tab.
+        let config = config_with_accounts(&["gmail"]);
+        let tabs = build_tabs(&config, &["gmail".into()], &["gmail".into()]);
+        assert_eq!(
+            tabs,
+            vec![
+                TabId::vendor(VendorId::Anthropic),
+                TabId::desktop_account("gmail"),
+            ]
+        );
+    }
+
+    #[test]
+    fn desktop_accounts_suppress_the_default_tab_like_named_ones() {
+        // show_default_account=false + only Desktop accounts => no default tab,
+        // exactly as if they were [[anthropic.accounts]] (the Desktop-only user).
+        let mut config = config_with_accounts(&[]);
+        config.cursor.enabled = false;
+        config.anthropic.show_default_account = false;
+
+        // No accounts of either kind: the default tab survives (never leave
+        // Anthropic tab-less).
+        assert_eq!(
+            build_tabs(&config, &[], &[]),
+            vec![TabId::vendor(VendorId::Anthropic)]
+        );
+        // A Desktop account is present: default suppressed, only the account.
+        assert_eq!(
+            build_tabs(&config, &["gmail".into()], &[]),
+            vec![TabId::desktop_account("gmail")]
         );
     }
 

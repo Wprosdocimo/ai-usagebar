@@ -123,6 +123,13 @@ pub struct Cli {
     #[arg(long, value_name = "LABEL", conflicts_with = "creds_path")]
     pub account: Option<String>,
 
+    /// Read `--account <LABEL>`'s usage from the Claude **Desktop app's** own
+    /// token instead of a `claude` CLI credential — a saved
+    /// `~/.claude-acc/profiles/<LABEL>` account, no CLI login required (macOS).
+    /// This is how the menu bar shows Desktop accounts in its overview.
+    #[arg(long, requires = "account")]
+    pub desktop: bool,
+
     /// Administrative command. Omit it to run the normal usage widget.
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -219,6 +226,15 @@ pub enum AccountAction {
         /// Rollback archives to retain.
         #[arg(long, default_value_t = 10)]
         keep_backups: usize,
+
+        /// Confirm that this type-scoped conflict key, deleted in one account
+        /// but still held by another, should be removed everywhere. Repeatable.
+        /// Supplying any suppresses the interactive prompt — keys not listed
+        /// are kept — which is how the macOS menu bar passes an answered dialog
+        /// through.
+        /// `account status --json` lists the candidates as `deletion_conflicts`.
+        #[arg(long, value_name = "KEY")]
+        delete_conflict: Vec<String>,
     },
 }
 
@@ -239,6 +255,7 @@ pub enum Vendor {
     Antigravity,
     Cursor,
     Minimax,
+    Kiro,
 }
 
 impl Vendor {
@@ -258,6 +275,7 @@ impl Vendor {
             Vendor::Antigravity => crate::vendor::VendorId::Antigravity,
             Vendor::Cursor => crate::vendor::VendorId::Cursor,
             Vendor::Minimax => crate::vendor::VendorId::Minimax,
+            Vendor::Kiro => crate::vendor::VendorId::Kiro,
         }
     }
 }
@@ -344,6 +362,7 @@ fn id_to_vendor(id: crate::vendor::VendorId) -> Vendor {
         crate::vendor::VendorId::Antigravity => Vendor::Antigravity,
         crate::vendor::VendorId::Cursor => Vendor::Cursor,
         crate::vendor::VendorId::Minimax => Vendor::Minimax,
+        crate::vendor::VendorId::Kiro => Vendor::Kiro,
     }
 }
 

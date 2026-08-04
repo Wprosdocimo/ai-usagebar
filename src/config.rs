@@ -49,6 +49,7 @@ pub struct Config {
     pub antigravity: AntigravityConfig,
     pub cursor: CursorConfig,
     pub minimax: MinimaxConfig,
+    pub kiro: KiroConfig,
 }
 
 /// UI / dispatch preferences. Currently just `primary` — which vendor the
@@ -678,6 +679,29 @@ pub struct CursorConfig {
     /// platform-standard `.../User/globalStorage/state.vscdb` — see
     /// `cursor::db::default_db_path`).
     pub db_path: Option<PathBuf>,
+    /// Override the headless `cursor-agent` CLI's own login file (defaults to
+    /// `.../cursor/auth.json` — see `cursor::db::default_agent_auth_path`).
+    /// Used as a fallback when `db_path` doesn't exist, so a text-only
+    /// machine that never runs the desktop IDE still gets usage.
+    pub agent_auth_path: Option<PathBuf>,
+}
+
+/// Kiro CLI reads its quota through the AWS SSO OIDC session kiro-cli already
+/// wrote to its own local `data.sqlite3` — no API key, but (like Cursor) a
+/// real on-disk path that can need overriding.
+///
+/// Opt-in like Cursor/DeepSeek/Kilo/etc (`enabled` defaults to `false`):
+/// calls a reverse-engineered CodeWhisperer endpoint via a session token
+/// scraped from a local CLI database, so it stays off until the user
+/// explicitly turns it on.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct KiroConfig {
+    pub enabled: bool,
+    /// Override kiro-cli's local database path (defaults to the
+    /// platform-standard `.../kiro-cli/data.sqlite3` — see
+    /// `kiro::db::default_db_path`).
+    pub db_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -778,6 +802,8 @@ impl Config {
         expand_tilde_opt(&mut self.anthropic.desktop_profiles_dir);
         expand_tilde_opt(&mut self.openai.codex_auth_path);
         expand_tilde_opt(&mut self.cursor.db_path);
+        expand_tilde_opt(&mut self.cursor.agent_auth_path);
+        expand_tilde_opt(&mut self.kiro.db_path);
         for account in &mut self.anthropic.accounts {
             account.credentials_path = expand_tilde(&account.credentials_path);
         }
@@ -799,6 +825,7 @@ impl Config {
             VendorId::Antigravity => self.antigravity.enabled,
             VendorId::Cursor => self.cursor.enabled,
             VendorId::Minimax => self.minimax.enabled,
+            VendorId::Kiro => self.kiro.enabled,
         }
     }
 
@@ -965,6 +992,7 @@ mod tests {
             VendorId::Grok,
             VendorId::Cursor,
             VendorId::Minimax,
+            VendorId::Kiro,
         ] {
             assert!(!c.is_enabled(opt_in), "{opt_in:?}");
         }
@@ -1790,6 +1818,33 @@ enabled = false
         assert!(!cfg.moonshot.enabled && cfg.moonshot.api_key.is_none());
         assert!(!cfg.grok.enabled && cfg.grok.api_key.is_none());
         assert!(!cfg.cursor.enabled && cfg.cursor.db_path.is_none());
+        assert!(!cfg.kiro.enabled && cfg.kiro.db_path.is_none());
+    }
+
+    #[test]
+    fn kiro_db_path_is_tilde_expanded() {
+        let f = write_toml(
+            r#"
+            [kiro]
+            db_path = "~/kiro-data.sqlite3"
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        let home = crate::cache::home_dir().unwrap();
+        assert_eq!(c.kiro.db_path, Some(home.join("kiro-data.sqlite3")));
+    }
+
+    #[test]
+    fn kiro_appears_when_enabled() {
+        let f = write_toml(
+            r#"
+            [kiro]
+            enabled = true
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        assert!(c.is_enabled(VendorId::Kiro));
+        assert!(c.enabled_vendors().contains(&VendorId::Kiro));
     }
 
     #[test]
@@ -1803,6 +1858,22 @@ enabled = false
         let c = Config::load_from(f.path()).unwrap();
         let home = crate::cache::home_dir().unwrap();
         assert_eq!(c.cursor.db_path, Some(home.join("cursor-state.vscdb")));
+    }
+
+    #[test]
+    fn cursor_agent_auth_path_is_tilde_expanded() {
+        let f = write_toml(
+            r#"
+            [cursor]
+            agent_auth_path = "~/cursor-agent-auth.json"
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        let home = crate::cache::home_dir().unwrap();
+        assert_eq!(
+            c.cursor.agent_auth_path,
+            Some(home.join("cursor-agent-auth.json"))
+        );
     }
 
     #[test]

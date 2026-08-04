@@ -1,9 +1,10 @@
 //! Live API smoke test suite — DETECTS UNDOCUMENTED-ENDPOINT DRIFT.
 //!
-//! Hits the real Anthropic, OpenAI Codex, Z.AI, OpenRouter, and Kimi endpoints
-//! using credentials from your shell. Asserts only the *fields we depend on*
-//! so when a vendor renames or removes one, the failure points at the exact
-//! field rather than dumping the whole response.
+//! Hits the real vendor endpoints using credentials from your shell (API keys,
+//! or the local CLI/IDE session files for Cursor and Kiro CLI).
+//! Asserts only the *fields we depend on* so when a vendor renames or removes
+//! one, the failure points at the exact field rather than dumping the whole
+//! response.
 //!
 //! These tests are `#[ignore]` so plain `cargo test` doesn't hit external
 //! APIs (and won't fail on machines without creds). Run explicitly:
@@ -42,7 +43,12 @@
 //! - **Cursor**: reads the session token from the local `state.vscdb`, then
 //!   asserts `premium_pct` is 0..=100 and a future `premium_reset_at` was
 //!   derived from `startOfMonth`. `cursor_live` skips when there is no Cursor
-//!   install (no state DB and no `CURSOR_DB_PATH`).
+//!   credential source (no state DB, no cursor-agent `auth.json`, and neither
+//!   `CURSOR_DB_PATH` nor `CURSOR_AGENT_AUTH_PATH` set).
+//! - **Kiro CLI**: reads the AWS SSO OIDC session from kiro-cli's local
+//!   `data.sqlite3`, then asserts the credit counters are non-negative and the
+//!   plan label is non-empty. `kiro_live` skips when there is no kiro-cli
+//!   install (no db and no `KIRO_DB_PATH`).
 
 use std::time::Duration;
 
@@ -51,6 +57,7 @@ use ai_usagebar::cache::Cache;
 use ai_usagebar::cursor;
 use ai_usagebar::error::AppError;
 use ai_usagebar::kimi;
+use ai_usagebar::kiro;
 use ai_usagebar::minimax;
 use ai_usagebar::openai;
 use ai_usagebar::openrouter;
@@ -320,19 +327,28 @@ async fn kimi_live() {
 #[tokio::test]
 #[ignore = "live API; run with --ignored"]
 async fn cursor_live() {
-    // Cursor has no API key — the credential is the session token the Cursor
-    // IDE wrote to its local state DB. So this test needs a real Cursor install
-    // (or `CURSOR_DB_PATH` pointing at a copied `state.vscdb`) and skips
-    // otherwise, the same way `kimi_live` skips without a key. Nothing to fetch
-    // on a CI box with no Cursor.
+    // Cursor has no API key — the credential is a session token, either the
+    // one the Cursor IDE wrote to its local state DB, or (headless machines
+    // with no IDE) the one the `cursor-agent` CLI wrote to its own auth.json.
+    // So this test needs one of the two installed (or `CURSOR_DB_PATH` /
+    // `CURSOR_AGENT_AUTH_PATH` pointing at a copy) and skips otherwise, the
+    // same way `kimi_live` skips without a key. Nothing to fetch on a CI box
+    // with neither.
     let db_path = match std::env::var("CURSOR_DB_PATH") {
         Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
         _ => cursor::db::default_db_path().expect("resolve platform config dir"),
     };
-    if !db_path.exists() {
+    let agent_auth_path = match std::env::var("CURSOR_AGENT_AUTH_PATH") {
+        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => cursor::db::default_agent_auth_path().expect("resolve platform config dir"),
+    };
+    if !db_path.exists() && !agent_auth_path.exists() {
         eprintln!(
-            "cursor_live: no Cursor state DB at {} — skipping (sign in to the Cursor IDE, or set CURSOR_DB_PATH)",
-            db_path.display()
+            "cursor_live: no Cursor state DB at {} and no cursor-agent auth at {} — skipping \
+             (sign in to the Cursor IDE or run `cursor-agent`, or set CURSOR_DB_PATH / \
+             CURSOR_AGENT_AUTH_PATH)",
+            db_path.display(),
+            agent_auth_path.display()
         );
         return;
     }
@@ -346,6 +362,7 @@ async fn cursor_live() {
     let out = cursor::fetch_snapshot(
         &client,
         &db_path,
+        &agent_auth_path,
         &cache,
         &endpoints,
         Duration::from_secs(0),
@@ -377,6 +394,59 @@ async fn cursor_live() {
         out.snapshot.api_pct,
         out.snapshot.total_pct,
         out.snapshot.on_demand_enabled,
+        out.snapshot.reset_at,
+    );
+}
+
+#[tokio::test]
+#[ignore = "live API; run with --ignored"]
+async fn kiro_live() {
+    // Kiro has no API key — the credential is the AWS SSO OIDC session
+    // kiro-cli wrote to its own local database after `kiro-cli login`. So this
+    // test needs kiro-cli installed and signed in (or `KIRO_DB_PATH` pointing
+    // at a copied `data.sqlite3`) and skips otherwise, like `cursor_live`.
+    let db_path = match std::env::var("KIRO_DB_PATH") {
+        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => kiro::db::default_db_path().expect("resolve platform data dir"),
+    };
+    if !db_path.exists() {
+        eprintln!(
+            "kiro_live: no kiro-cli database at {} — skipping (run `kiro-cli login`, or set KIRO_DB_PATH)",
+            db_path.display()
+        );
+        return;
+    }
+
+    let cache = xdg_cache_for("kiro");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap();
+    let out = kiro::fetch_snapshot(&client, &db_path, &cache, Duration::from_secs(0))
+        .await
+        .expect("kiro fetch should succeed against the real API");
+
+    // The fields the widget depends on: non-negative credit counters, a
+    // non-empty plan label, and (when reported) a future reset.
+    assert!(
+        out.snapshot.used >= 0.0 && out.snapshot.limit >= 0.0,
+        "kiro: negative credit counter — shape changed? used={} limit={}",
+        out.snapshot.used,
+        out.snapshot.limit
+    );
+    assert!(!out.snapshot.plan.is_empty(), "kiro plan label empty");
+    if let Some(reset) = out.snapshot.reset_at {
+        assert!(
+            reset > chrono::Utc::now(),
+            "kiro: reset_at should be a future instant, got {reset:?}"
+        );
+    }
+    println!(
+        "✅ kiro — plan={}, credits {} / {} ({}%), reset {:?}",
+        out.snapshot.plan,
+        out.snapshot.used,
+        out.snapshot.limit,
+        out.snapshot.pct(),
         out.snapshot.reset_at,
     );
 }

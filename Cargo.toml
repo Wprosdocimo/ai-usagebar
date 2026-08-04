@@ -1,6 +1,6 @@
 [package]
 name = "ai-usagebar"
-version = "0.20.1"
+version = "0.21.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -58,6 +58,14 @@ directories = "5"
 thiserror = "2"
 ctrlc = "3"
 base64 = "0.23"
+# Electron/Chromium `safeStorage` crypto, used only to read the Claude Desktop
+# app's own OAuth token out of its encrypted `config.json` (macOS). AES-128-CBC
+# with a PBKDF2-HMAC-SHA1 key derived from a login-Keychain secret — the pure
+# transform is cross-platform so it stays unit-testable on Linux CI.
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha1 = "0.10"
 ratatui = "0.30.1"
 ratatui-bubbletea-components = "0.2"
 ratatui-bubbletea-theme = "0.2"

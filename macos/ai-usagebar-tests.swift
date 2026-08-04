@@ -507,13 +507,19 @@ func testAccountStatus() {
       "active_label":"toptal","active_account_uuid":"u1",
       "profiles":[{"label":"gmail","active":false},{"label":"toptal","active":true}]},
      "cli":{"active_label":"struct","active_account_uuid":"u2",
-      "accounts":[{"label":"struct","active":true},{"label":"toptal","active":false}]}}
+      "accounts":[{"label":"struct","active":true},{"label":"toptal","active":false}]},
+     "usage_accounts":[{"label":"struct","desktop":false},
+                       {"label":"gmail","desktop":true}]}
     """
     let s = parseAccountStatus(Data(full.utf8))
     assertEqual(s?.desktopActive, "toptal", "desktop active label")
     assertEqual(s?.cliActive, "struct", "cli active label")
     assertEqual(s?.desktopLabels ?? [], ["gmail", "toptal"], "desktop labels keep file order")
     assertEqual(s?.cliLabels ?? [], ["struct", "toptal"], "cli labels keep file order")
+    assertEqual(s?.usageAccounts ?? [],
+                [UsageAccount(label: "struct", desktop: false),
+                 UsageAccount(label: "gmail", desktop: true)],
+                "usage accounts preserve Rust source selection")
     assertEqual(accountsSummaryLine(s!), "Desktop: toptal   ·   Code: struct", "summary line")
 
     // No Claude Desktop app: the whole half is null, the CLI half still shows.
@@ -547,6 +553,38 @@ func testAccountStatus() {
     assertNil(parseAccountStatus(Data("error: unrecognized subcommand".utf8)), "non-JSON output")
     assertNil(parseAccountStatus(Data("[1,2,3]".utf8)), "JSON that is not an object")
 
+    // Routines deleted in one account but alive in another.
+    let withConflicts = parseAccountStatus(Data("""
+        {"desktop":{"available":true,"profiles":[{"label":"gmail"}],"deletion_conflicts":[
+          {"key":"opaque-conflict-1","id":"t1","kind":"routine","summary":"0 5 * * *  (daily-report)","deleted_by":"hotmail",
+           "still_in":["gmail","struct"]}]}}
+        """.utf8))
+    assertEqual(withConflicts?.deletionConflicts.count, 1, "conflict parsed")
+    assertEqual(withConflicts?.deletionConflicts.first?.id, "t1", "conflict id")
+    assertEqual(withConflicts?.deletionConflicts.first?.key, "opaque-conflict-1", "typed conflict key")
+    assertEqual(withConflicts?.deletionConflicts.first?.line,
+                "[routine] 0 5 * * *  (daily-report) — deleted in hotmail", "conflict line")
+    // An older binary has no such key, and a status with none must stay empty
+    // so the dialog never appears for nothing.
+    assertEqual(withConflicts.map { _ in fresh?.deletionConflicts.isEmpty }, true,
+                "absent deletion_conflicts is empty")
+
+    let many = (1...12).map {
+        DeletionConflict(key: "opaque-\($0)", id: "t\($0)", kind: "chat", summary: "s\($0)",
+                         deletedBy: "b", stillIn: ["a"])
+    }
+    assertEqual(conflictPreview(many).components(separatedBy: "\n").count, 11,
+                "preview caps at 10 plus a summary line")
+    assertEqual(conflictPreview(many).hasSuffix("… e mais 2"), true, "preview counts the rest")
+    assertEqual(conflictPreview(Array(many.prefix(3))).contains("e mais"), false,
+                "a short list is not summarised")
+
+    assertEqual(switchArgs(label: "work", desktop: true,
+                           deleting: ["opaque-1", "opaque-2"]),
+                ["account", "switch", "work", "--desktop", "-y",
+                 "--delete-conflict", "opaque-1",
+                 "--delete-conflict", "opaque-2"],
+                "confirmed deletions are passed through")
     assertEqual(switchArgs(label: "work", desktop: true),
                 ["account", "switch", "work", "--desktop", "-y"], "desktop switch args")
     assertEqual(switchArgs(label: "work", desktop: false),
@@ -564,6 +602,31 @@ func testAccountStatus() {
     assertEqual(nasty.contains(#"'a'\''; rm -rf ~; echo '\'''"#), true, "label is escaped")
 }
 
+func testDesktopAccounts() {
+    // A Desktop account id round-trips through accountLabel (so display, dedup
+    // and baseVendorId treat it as Claude) but is flagged for --desktop.
+    let id = DESKTOP_ACCOUNT_ID_PREFIX + "gmail"
+    assertEqual(accountLabel(of: id), "gmail", "desktop id yields its label")
+    assertEqual(baseVendorId(id), "anthropic", "desktop id is an anthropic entry")
+    assertEqual(isDesktopAccountId(id), true, "desktop id detected")
+    assertEqual(isDesktopAccountId(ACCOUNT_ID_PREFIX + "gmail"), false, "cli id is not desktop")
+
+    // vendorArgs adds --desktop only for a desktop account.
+    assertEqual(vendorArgs(for: id), ["--vendor", "anthropic", "--account", "gmail", "--desktop"],
+                "desktop account passes --desktop")
+    assertEqual(vendorArgs(for: ACCOUNT_ID_PREFIX + "gmail"),
+                ["--vendor", "anthropic", "--account", "gmail"],
+                "cli account omits --desktop")
+
+    let shared = claudeAccountMenuEntries([
+        UsageAccount(label: "work", desktop: true),
+        UsageAccount(label: "personal", desktop: false),
+    ])
+    assertEqual(shared.map { $0.id },
+                [DESKTOP_ACCOUNT_ID_PREFIX + "work", ACCOUNT_ID_PREFIX + "personal"],
+                "menu uses the source selected by Rust status")
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -574,6 +637,7 @@ struct TestRunner {
         testOverviewHeadline()
         testVendorCycle()
         testClaudeAccounts()
+        testDesktopAccounts()
         testCompactToggle()
         testShortReset()
         testOverviewProviderToggle()

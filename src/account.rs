@@ -1,8 +1,8 @@
 //! Administrative commands for named Claude accounts.
 
-use std::io::Write;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use crate::anthropic::cli_account::{self, CliSwitchOpts, CliSwitchOutcome, KeychainStore};
 use crate::claude_desktop::{self, Paths, SwitchOpts, SwitchPlan};
@@ -56,6 +56,7 @@ pub fn run(action: &AccountAction) -> i32 {
             keep_bridge,
             backup_sessions,
             keep_backups,
+            delete_conflict,
         } => switch(&SwitchArgs {
             label,
             desktop: *desktop,
@@ -63,6 +64,7 @@ pub fn run(action: &AccountAction) -> i32 {
             dry_run: *dry_run,
             yes: *yes,
             force: *force,
+            delete_conflict: delete_conflict.clone(),
             opts: SwitchOpts {
                 keep_bridge: *keep_bridge,
                 backup_sessions: *backup_sessions,
@@ -145,6 +147,30 @@ fn status(json: bool) -> i32 {
                 })
             })
             .collect();
+        // Routines one account deleted that another still holds. Reported here
+        // so the macOS menu bar can ask before it starts a switch, then pass
+        // the answer back with `--delete-conflict`.
+        let named = |uuid: &str| {
+            claude_desktop::label_for_uuid(&profiles, uuid)
+                .unwrap_or(uuid)
+                .to_string()
+        };
+        let conflicts: Vec<serde_json::Value> = claude_desktop::merge::deletion_candidates(
+            &sessions_root,
+            &claude_desktop::load_synced(&paths.synced_path()),
+        )
+        .iter()
+        .map(|candidate| {
+            serde_json::json!({
+                "key": candidate.external_key(),
+                "id": candidate.id,
+                "kind": candidate.kind.label(),
+                "summary": candidate.summary,
+                "deleted_by": named(&candidate.deleted_by),
+                "still_in": candidate.still_in.iter().map(|uuid| named(uuid)).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
         serde_json::json!({
             "available": true,
             "data_dir": paths.data_dir,
@@ -152,6 +178,7 @@ fn status(json: bool) -> i32 {
             "active_label": active_label,
             "active_account_uuid": active_uuid,
             "profiles": rows,
+            "deletion_conflicts": conflicts,
         })
     });
 
@@ -178,7 +205,23 @@ fn status(json: bool) -> i32 {
         "accounts": cli_rows,
     });
 
-    let report = serde_json::json!({ "desktop": desktop, "cli": cli });
+    // The menu bar consumes this exact TUI enumeration instead of duplicating
+    // profile paths and CLI/Desktop dedup policy in Swift.
+    let usage_accounts: Vec<serde_json::Value> = crate::tui::app::tabs_with_desktop(&config)
+        .into_iter()
+        .filter(|tab| tab.vendor == crate::vendor::VendorId::Anthropic)
+        .filter_map(|tab| {
+            Some(serde_json::json!({
+                "label": tab.account?,
+                "desktop": tab.desktop,
+            }))
+        })
+        .collect();
+    let report = serde_json::json!({
+        "desktop": desktop,
+        "cli": cli,
+        "usage_accounts": usage_accounts,
+    });
     if json {
         println!("{report}");
         return 0;
@@ -376,6 +419,9 @@ struct SwitchArgs<'a> {
     dry_run: bool,
     yes: bool,
     force: bool,
+    /// Routine ids an already-answered dialog confirmed for deletion. Non-empty
+    /// means the decision is made and nothing is prompted.
+    delete_conflict: Vec<String>,
     opts: SwitchOpts,
 }
 
@@ -446,8 +492,8 @@ fn switch_desktop(config: &Config, args: &SwitchArgs, tolerant: bool) -> Result<
     // Keep planning and mutation in one process-wide transaction. Two menu or
     // terminal switches planned against the same live identity must not race.
     let _lock = crate::cache::acquire_lock(
-        &paths.backups_dir.join(".account-switch.lock"),
-        Duration::from_secs(2),
+        &paths.account_switch_lock(),
+        claude_desktop::ACCOUNT_LOCK_TIMEOUT,
     )?;
 
     let plan = match claude_desktop::plan_switch(&paths, args.label, args.opts.clone()) {
@@ -458,12 +504,17 @@ fn switch_desktop(config: &Config, args: &SwitchArgs, tolerant: bool) -> Result<
         }
         Err(error) => return Err(error),
     };
+    let mut plan = plan;
     print_plan(&plan);
 
     if args.dry_run {
+        // Report the conflicts, but never ask: a dry run must not leave the
+        // user having made a decision that was then thrown away.
+        resolve_deletions(&paths, &mut plan, args, false);
         println!("  (dry run — nothing was changed)");
         return Ok(true);
     }
+    resolve_deletions(&paths, &mut plan, args, std::io::stdin().is_terminal());
     if !args.yes
         && !confirm(&format!(
             "  Quit and relaunch the Claude Desktop app as {:?}?",
@@ -485,6 +536,148 @@ fn switch_desktop(config: &Config, args: &SwitchArgs, tolerant: bool) -> Result<
     Ok(true)
 }
 
+/// How many conflicts to spell out before summarising the rest. A switch after
+/// a big clean-up should not scroll the decision off the screen.
+const DELETION_PREVIEW: usize = 10;
+
+/// Ask what to do about schedules an account deleted that others still hold.
+///
+/// Deleting is deliberately reachable only from an answered prompt: `-y` skips
+/// the quit confirmation, but must not silently erase routines, and a
+/// non-interactive run (the menu bar's subprocess, a pipe) keeps everything and
+/// says so. Keeping is always the recoverable choice — the task simply comes
+/// back, and the prompt returns next time.
+fn resolve_deletions(paths: &Paths, plan: &mut SwitchPlan, args: &SwitchArgs, interactive: bool) {
+    if plan.deletions.is_empty() {
+        return;
+    }
+    if !args.delete_conflict.is_empty() {
+        // The caller already asked — the macOS menu bar's dialog, or a script
+        // that listed `deletion_conflicts` from `account status --json`. Only
+        // exact opaque keys actually in conflict are honoured, so a stale
+        // dialog answered against an older observation cannot delete a later
+        // item that happens to reuse the same id.
+        let known: BTreeMap<String, claude_desktop::merge::DeletionKey> = plan
+            .deletions
+            .iter()
+            .map(|candidate| (candidate.external_key(), candidate.key()))
+            .collect();
+        plan.confirmed_deletions = args
+            .delete_conflict
+            .iter()
+            .filter_map(|key| known.get(key).cloned())
+            .collect();
+        println!(
+            "  deletions       deleting {} of {} conflict(s) everywhere, as chosen",
+            plan.confirmed_deletions.len(),
+            plan.deletions.len()
+        );
+        return;
+    }
+    let profiles = claude_desktop::load_profiles(&paths.profiles_dir);
+    let name = |uuid: &str| {
+        claude_desktop::label_for_uuid(&profiles, uuid)
+            .unwrap_or(uuid)
+            .to_string()
+    };
+
+    println!();
+    println!(
+        "Deleted elsewhere  {} item(s) deleted in one account, still present in another",
+        plan.deletions.len()
+    );
+    for (index, candidate) in plan.deletions.iter().take(DELETION_PREVIEW).enumerate() {
+        let others: Vec<String> = candidate.still_in.iter().map(|uuid| name(uuid)).collect();
+        println!(
+            "  {:>2}. {:<7} {:<34} deleted in {}, still in {}",
+            index + 1,
+            candidate.kind.label(),
+            candidate.summary,
+            name(&candidate.deleted_by),
+            others.join(", ")
+        );
+    }
+    if plan.deletions.len() > DELETION_PREVIEW {
+        println!(
+            "      … and {} more",
+            plan.deletions.len() - DELETION_PREVIEW
+        );
+    }
+
+    if !interactive {
+        println!(
+            "  Keeping all of them (no terminal to ask). Re-run the switch from a \
+             terminal to decide."
+        );
+        return;
+    }
+
+    println!();
+    println!("  [k] keep them all (default)      — they stay, and this asks again next time");
+    println!("  [d] delete them everywhere       — removed from every account");
+    println!("  [c] choose individually");
+    println!(
+        "      (a deleted chat loses only its index — the transcript in \
+         ~/.claude/projects stays)"
+    );
+    let answer = ask("> ").unwrap_or_default().to_ascii_lowercase();
+    match answer.as_str() {
+        "d" | "delete" => {
+            plan.confirmed_deletions = plan.deletions.iter().map(|c| c.key()).collect();
+            println!(
+                "  deleting {} item(s) everywhere",
+                plan.confirmed_deletions.len()
+            );
+        }
+        "c" | "choose" => choose_deletions_individually(plan, &name),
+        _ => println!("  keeping all of them"),
+    }
+}
+
+/// Pick which to keep by number; everything unlisted goes. Asking for the
+/// keepers rather than the doomed makes the destructive answer the one you have
+/// to type deliberately, and a blank line the harmless one.
+fn choose_deletions_individually(plan: &mut SwitchPlan, name: &impl Fn(&str) -> String) {
+    println!();
+    for (index, candidate) in plan.deletions.iter().enumerate() {
+        println!(
+            "  {:>2}. {:<34} deleted in {}",
+            index + 1,
+            candidate.summary,
+            name(&candidate.deleted_by)
+        );
+    }
+    println!();
+    println!("  Numbers to KEEP, space separated (blank = keep none, deletes all):");
+    let picked = ask("> ").unwrap_or_default();
+    let keep: BTreeSet<usize> = picked
+        .split_whitespace()
+        .filter_map(|token| token.parse::<usize>().ok())
+        .collect();
+    let valid = 1..=plan.deletions.len();
+    let unknown: Vec<&str> = picked
+        .split_whitespace()
+        .filter(|token| !matches!(token.parse::<usize>(), Ok(n) if valid.contains(&n)))
+        .collect();
+    if !unknown.is_empty() {
+        // Guessing which routine a typo meant is not worth erasing one over.
+        println!("  {unknown:?} is not in the list — keeping everything instead.");
+        return;
+    }
+    plan.confirmed_deletions = plan
+        .deletions
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !keep.contains(&(index + 1)))
+        .map(|(_, candidate)| candidate.key())
+        .collect();
+    println!(
+        "  keeping {}, deleting {} everywhere",
+        keep.len(),
+        plan.confirmed_deletions.len()
+    );
+}
+
 fn print_plan(plan: &SwitchPlan) {
     let email = plan.target.email.as_deref().unwrap_or("email unknown");
     println!("Claude Desktop   → {} ({email})", plan.target.label);
@@ -493,12 +686,21 @@ fn print_plan(plan: &SwitchPlan) {
     }
     match plan.target.org_uuid {
         Some(_) => {
-            let routines = plan.scheduled.as_ref().map_or(0, |merge| merge.added);
+            let (new_routines, edited_routines, conflicts) =
+                plan.scheduled.as_ref().map_or((0, 0, 0), |merge| {
+                    (merge.added, merge.updated, merge.conflicts)
+                });
             println!(
-                "  history         {} new + {} refreshed session(s), {routines} routine(s)",
+                "  history         {} new + {} refreshed session(s)",
                 plan.sessions.copied.len(),
                 plan.sessions.updated.len(),
             );
+            println!("  routines        {new_routines} new + {edited_routines} edited elsewhere");
+            if conflicts > 0 {
+                println!(
+                    "  routine conflicts {conflicts} kept local (edit the desired copy to resolve)"
+                );
+            }
         }
         None => println!("  history         skipped (no org recorded for this account yet)"),
     }

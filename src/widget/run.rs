@@ -19,6 +19,7 @@ use crate::error::{AppError, Result};
 use crate::grok;
 use crate::kilo;
 use crate::kimi;
+use crate::kiro;
 use crate::minimax;
 use crate::moonshot;
 use crate::novita;
@@ -153,6 +154,7 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
         Vendor::Antigravity => antigravity_output(cli, &config).await,
         Vendor::Cursor => cursor_output(cli, &config).await,
         Vendor::Minimax => minimax_output(cli, &config).await,
+        Vendor::Kiro => kiro_output(cli, &config).await,
     }
 }
 
@@ -198,19 +200,60 @@ async fn cursor_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
         Some(p) => p.to_path_buf(),
         None => cursor::db::default_db_path()?,
     };
+    let agent_auth_path = match config.cursor.agent_auth_path.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => cursor::db::default_agent_auth_path()?,
+    };
     let endpoints = cursor::fetch::Endpoints::default();
-    let outcome =
-        match cursor::fetch_snapshot(&client, &db_path, &cache, &endpoints, DEFAULT_TTL).await {
-            Ok(o) => o,
-            Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
-            Err(e) => return Err(e),
-        };
+    let outcome = match cursor::fetch_snapshot(
+        &client,
+        &db_path,
+        &agent_auth_path,
+        &cache,
+        &endpoints,
+        DEFAULT_TTL,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
+        Err(e) => return Err(e),
+    };
 
     let theme = theme_from_cli(cli);
     let snap = outcome.snapshot.clone();
     let vendor_outcome: VendorOutcome = outcome.into();
     let opts = RenderOpts::from_cli(cli);
     Ok(cursor::vendor::render(
+        &vendor_outcome,
+        &snap,
+        &theme,
+        &opts,
+        chrono::Utc::now(),
+    ))
+}
+
+/// Kiro CLI authenticates via the AWS SSO OIDC session kiro-cli already wrote
+/// to its own local `data.sqlite3` — no API key to resolve, but (like Cursor)
+/// a real on-disk path that can be overridden.
+async fn kiro_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
+    let client = http_client()?;
+    let cache = vendor_cache(cli, "kiro")?;
+    let db_path = match config.kiro.db_path.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => kiro::db::default_db_path()?,
+    };
+    let outcome = match kiro::fetch_snapshot(&client, &db_path, &cache, DEFAULT_TTL).await {
+        Ok(o) => o,
+        Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
+        Err(e) => return Err(e),
+    };
+
+    let theme = theme_from_cli(cli);
+    let snap = outcome.snapshot.clone();
+    let vendor_outcome: VendorOutcome = outcome.into();
+    let opts = RenderOpts::from_cli(cli);
+    Ok(kiro::vendor::render(
         &vendor_outcome,
         &snap,
         &theme,
@@ -647,6 +690,18 @@ fn vendor_cache(cli: &Cli, vendor: &str) -> Result<Cache> {
 /// account behaves byte-identically to before.
 fn anthropic_target(cli: &Cli, config: &Config) -> Result<(CredsTarget, Cache)> {
     match cli.account.as_deref() {
+        // `--account <label> --desktop`: read the Claude Desktop app's own token
+        // for that saved profile (the menu bar's overview path). `--cache-dir`
+        // still relocates the cache for scripted/multi-monitor setups.
+        Some(label) if cli.desktop => {
+            let (target, default_cache) =
+                crate::anthropic::desktop_creds::account_target(config, label)?;
+            let cache = match cli.cache_dir.as_deref() {
+                Some(p) => Cache::at(p.join("anthropic").join(label)),
+                None => default_cache,
+            };
+            Ok((target, cache))
+        }
         Some(label) => named_account_target(cli, config, label),
         None => Ok((
             anthropic_default_creds(cli, config)?,
