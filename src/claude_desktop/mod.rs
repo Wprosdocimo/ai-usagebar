@@ -463,6 +463,14 @@ fn apply_switch_while_stopped(
     plan: &SwitchPlan,
     notes: &mut Vec<String>,
 ) -> Result<()> {
+    // Derive convergence input from the immutable plan before touching any
+    // registries. Later writes must not be able to change the selected title.
+    let display_names = plan
+        .scheduled
+        .as_ref()
+        .map(ScheduledMerge::display_names)
+        .transpose()?;
+
     // History merges abort too — a partial merge is recoverable, but doing it
     // after the credential swap would strand the user on an account whose
     // history never arrived.
@@ -497,6 +505,34 @@ fn apply_switch_while_stopped(
             }
         }
         Err(error) => notes.push(format!("deletion sweep skipped: {error}")),
+    }
+    // Make every account agree on each routine's name. The merge selects the
+    // winning definitions while the switch is planned; carry those names into
+    // every registry so writes above cannot change the decision.
+    // Runs after the merge and the deletion sweep so it neither renames a
+    // just-deleted routine nor is undone by a re-added copy.
+    if let Some(display_names) = &display_names {
+        match merge::plan_name_convergence(&paths.sessions_root(), display_names) {
+            Ok(convergence) => {
+                let mut fully_applied = true;
+                for (path, bytes) in convergence.rewrites {
+                    if let Err(error) = crate::cache::atomic_write(&path, &bytes) {
+                        fully_applied = false;
+                        notes.push(format!(
+                            "could not converge routine names in {}: {error}",
+                            path.display()
+                        ));
+                    }
+                }
+                if fully_applied && convergence.converged > 0 {
+                    notes.push(format!(
+                        "converged {} routine name(s) across accounts",
+                        convergence.converged
+                    ));
+                }
+            }
+            Err(error) => notes.push(format!("name convergence skipped: {error}")),
+        }
     }
     // Record what every account holds now, so the next switch can tell an
     // intentional deletion from a task that account simply never received.
@@ -1288,6 +1324,41 @@ mod tests {
         apply_switch(&fixture.paths, &plan, &Recorder::default()).unwrap();
 
         assert_eq!(std::fs::read(&bystander).unwrap(), before);
+    }
+
+    /// The wiring: a switch must actually converge routine names across every
+    /// account, not just build the plan. Testing `plan_name_convergence` alone
+    /// would pass even if `apply_switch` never called it.
+    #[test]
+    fn a_switch_converges_routine_names_across_accounts() {
+        let fixture = fixture();
+        let sessions = fixture.paths.sessions_root();
+        let here = sessions.join("uuid-here/org-1/scheduled-tasks.json");
+        let there = sessions.join("uuid-there/org-2/scheduled-tasks.json");
+        // Same routine id, two different titles — the non-converging case.
+        write(
+            &here,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1,"displayName":"Home name"}]}"#,
+        );
+        write(
+            &there,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":1,"displayName":"There name"}]}"#,
+        );
+
+        let plan = plan_switch(&fixture.paths, "there", SwitchOpts::default()).unwrap();
+        apply_switch(&fixture.paths, &plan, &Recorder::default()).unwrap();
+
+        let name = |path: &std::path::Path| -> String {
+            let v: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            v["scheduledTasks"][0]["displayName"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        // The point is that both accounts agree afterwards, not which name won.
+        assert_eq!(name(&here), name(&there), "names did not converge");
+        assert!(!name(&here).is_empty());
     }
 
     #[test]

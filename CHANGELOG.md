@@ -29,6 +29,18 @@ Each release is also published at
   when both exist; an existing but unreadable or malformed IDE database still
   surfaces its own error instead of silently switching to another login.
 
+### Fixed
+
+- **A routine renamed in one account now converges to one title everywhere.** A
+  scheduled task has no `updatedAt`, so a rename leaves `createdAt` untouched and
+  previously only reached the account you switched *to*. A switch now carries
+  the title selected by the baseline-aware routine merge into *every* account's
+  registry, so the name stops disagreeing across accounts. The convergence pass
+  changes only `displayName` and preserves the rest of each registry, including
+  unknown top-level fields. There is no prompt, and it applies to the terminal
+  and menu bar alike since both drive the same switch path. Mirrored in
+  claude-acc.
+
 ## [0.21.0] — 2026-08-03
 
 ### Added

@@ -56,6 +56,23 @@ pub struct ScheduledMerge {
     pub canonical_routines: BTreeMap<String, Value>,
 }
 
+impl ScheduledMerge {
+    /// User-visible names from the definitions selected for this switch.
+    /// These bytes were rendered while planning, so later registry writes
+    /// cannot change which title the convergence pass propagates.
+    pub(super) fn display_names(&self) -> Result<BTreeMap<String, String>> {
+        let document: Value = serde_json::from_slice(&self.bytes)?;
+        let tasks = document
+            .get("scheduledTasks")
+            .and_then(Value::as_array)
+            .ok_or_else(|| AppError::Other("planned scheduledTasks is not a JSON array".into()))?;
+        Ok(tasks
+            .iter()
+            .filter_map(|task| Some((task_id(task)?, display_name(task)?)))
+            .collect())
+    }
+}
+
 /// Plan the session-index merge into `<sessions_root>/<account_uuid>/<org_uuid>`.
 ///
 /// Infallible: an unreadable or absent tree simply means there is nothing to
@@ -427,6 +444,68 @@ pub fn plan_deletion_sweep(
         }
     }
     Ok(sweep)
+}
+
+/// Registry rewrites that make every account agree on each routine's
+/// `displayName`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct NameConvergence {
+    pub rewrites: Vec<(PathBuf, Vec<u8>)>,
+    /// How many distinct routines had a name reconciled.
+    pub converged: usize,
+}
+
+/// Rewrite every registry so a routine present in more than one account shows
+/// the same `displayName` everywhere. `selected` comes from the routine merge
+/// planned before any files are written, so an unrelated write cannot change
+/// the winner by refreshing a registry's mtime.
+///
+/// No prompt: renames converge on the next switch the way the merge already
+/// converges every other field. The complete registry document is retained and
+/// only task titles are mutated, including top-level fields newer Desktop
+/// versions may add.
+pub fn plan_name_convergence(
+    sessions_root: &Path,
+    selected: &BTreeMap<String, String>,
+) -> Result<NameConvergence> {
+    let mut out = NameConvergence::default();
+    let mut converged_ids: BTreeSet<String> = BTreeSet::new();
+    for (_, path) in scheduled_registries(sessions_root) {
+        let bytes = std::fs::read(&path).map_err(|error| AppError::io_at(&path, error))?;
+        let mut document: Value = serde_json::from_slice(&bytes)?;
+        let object = document.as_object_mut().ok_or_else(|| {
+            AppError::Other(format!(
+                "scheduled task registry {} is not a JSON object",
+                path.display()
+            ))
+        })?;
+        let Some(tasks) = object.get_mut("scheduledTasks") else {
+            continue;
+        };
+        let tasks = tasks.as_array_mut().ok_or_else(|| {
+            AppError::Other(format!(
+                "scheduledTasks in {} is not a JSON array",
+                path.display()
+            ))
+        })?;
+        let mut changed = false;
+        for task in tasks {
+            if let Some(id) = task_id(task)
+                && let Some(name) = selected.get(&id)
+                && display_name(task).as_deref() != Some(name.as_str())
+                && let Some(obj) = task.as_object_mut()
+            {
+                obj.insert("displayName".into(), Value::String(name.clone()));
+                changed = true;
+                converged_ids.insert(id);
+            }
+        }
+        if changed {
+            out.rewrites.push((path, serde_json::to_vec(&document)?));
+        }
+    }
+    out.converged = converged_ids.len();
+    Ok(out)
 }
 
 /// `(account uuid, org dir)` for every account/org folder.
@@ -845,6 +924,15 @@ fn task_id(task: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A routine's user-visible title. Empty is treated as absent so a blank name
+/// never becomes the value every account converges to.
+fn display_name(task: &Value) -> Option<String> {
+    task.get("displayName")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
 fn created_at(task: &Value) -> i64 {
     task.get("createdAt").map_or(0, json_i64)
 }
@@ -1007,13 +1095,13 @@ mod tests {
         let sessions = root.path();
         let target = sessions.join("A/O1/scheduled-tasks.json");
         let source = sessions.join("B/O2/scheduled-tasks.json");
-        let old = r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"0 5 * * *","enabled":true}]}"#;
+        let old = r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Morning","cronExpression":"0 5 * * *","enabled":true}]}"#;
         write(&target, old);
         write(&source, old);
         let synced = sync_baseline(sessions);
         write(
             &source,
-            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"cronExpression":"30 9 * * *","enabled":false}]}"#,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Renamed","cronExpression":"30 9 * * *","enabled":false}]}"#,
         );
 
         let merge = plan_scheduled_merge(sessions, "A", "O1", &synced).unwrap();
@@ -1023,6 +1111,178 @@ mod tests {
         let value: Value = serde_json::from_slice(&merge.bytes).unwrap();
         assert_eq!(value["scheduledTasks"][0]["cronExpression"], "30 9 * * *");
         assert_eq!(value["scheduledTasks"][0]["enabled"], false);
+        assert_eq!(merge.display_names().unwrap()["t1"], "Renamed");
+    }
+
+    // Reads a registry's first task's displayName back off disk.
+    fn first_display_name(path: &Path) -> String {
+        let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        value["scheduledTasks"][0]["displayName"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn name_convergence_pushes_the_selected_title_to_every_account() {
+        // Same routine id, two different titles — the classic "renamed in one
+        // account, never settles" case. The title selected by the earlier
+        // routine merge must win everywhere, not just in the target.
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        let a = sessions.join("A/O1/scheduled-tasks.json");
+        let b = sessions.join("B/O2/scheduled-tasks.json");
+        write(
+            &a,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Old name","cronExpression":"0 5 * * *"}]}"#,
+        );
+        write(
+            &b,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"New name","cronExpression":"0 5 * * *"}]}"#,
+        );
+
+        let selected = BTreeMap::from([("t1".to_string(), "New name".to_string())]);
+        let plan = plan_name_convergence(sessions, &selected).unwrap();
+        assert_eq!(plan.converged, 1);
+        // Only the stale registry (A) is rewritten; B already holds the winner.
+        assert_eq!(plan.rewrites.len(), 1);
+        for (path, bytes) in &plan.rewrites {
+            std::fs::write(path, bytes).unwrap();
+        }
+        assert_eq!(first_display_name(&a), "New name");
+        assert_eq!(first_display_name(&b), "New name");
+    }
+
+    #[test]
+    fn name_convergence_touches_only_the_title() {
+        // Converging the name must not disturb any other field.
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        let a = sessions.join("A/O1/scheduled-tasks.json");
+        let b = sessions.join("B/O2/scheduled-tasks.json");
+        write(
+            &a,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Stale","cronExpression":"0 5 * * *","enabled":true,"model":"opus"}]}"#,
+        );
+        write(
+            &b,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Fresh","cronExpression":"30 9 * * *","enabled":false}]}"#,
+        );
+        let selected = BTreeMap::from([("t1".to_string(), "Stale".to_string())]);
+        let plan = plan_name_convergence(sessions, &selected).unwrap();
+        for (path, bytes) in &plan.rewrites {
+            std::fs::write(path, bytes).unwrap();
+        }
+        // B took A's name…
+        assert_eq!(first_display_name(&b), "Stale");
+        // …but kept its own cron/enabled — convergence is name-only.
+        let vb: Value = serde_json::from_slice(&std::fs::read(&b).unwrap()).unwrap();
+        assert_eq!(vb["scheduledTasks"][0]["cronExpression"], "30 9 * * *");
+        assert_eq!(vb["scheduledTasks"][0]["enabled"], false);
+    }
+
+    #[test]
+    fn name_convergence_preserves_unknown_registry_fields() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        let registry = sessions.join("A/O1/scheduled-tasks.json");
+        write(
+            &registry,
+            r#"{"scheduledTasks":[{"id":"t1","displayName":"Old"}],
+                "recordedSkips":{"t1":"kept"},
+                "futureMetadata":{"must":"survive"}}"#,
+        );
+        let selected = BTreeMap::from([("t1".to_string(), "New".to_string())]);
+
+        let plan = plan_name_convergence(sessions, &selected).unwrap();
+        assert_eq!(plan.rewrites.len(), 1);
+        let value: Value = serde_json::from_slice(&plan.rewrites[0].1).unwrap();
+
+        assert_eq!(value["scheduledTasks"][0]["displayName"], "New");
+        assert_eq!(value["recordedSkips"]["t1"], "kept");
+        assert_eq!(value["futureMetadata"]["must"], "survive");
+    }
+
+    #[test]
+    fn name_convergence_fails_closed_on_an_invalid_registry_shape() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":"not-an-array","futureMetadata":true}"#,
+        );
+        let selected = BTreeMap::from([("t1".to_string(), "New".to_string())]);
+
+        let error = plan_name_convergence(sessions, &selected).unwrap_err();
+
+        assert!(error.to_string().contains("scheduledTasks"));
+        assert!(error.to_string().contains("not a JSON array"));
+    }
+
+    #[test]
+    fn name_convergence_keeps_the_prewrite_merge_decision() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        let a = sessions.join("A/O1/scheduled-tasks.json");
+        let b = sessions.join("B/O2/scheduled-tasks.json");
+        write(
+            &a,
+            r#"{"scheduledTasks":[
+                {"id":"t1","createdAt":100,"displayName":"Old"},
+                {"id":"doomed","createdAt":200,"displayName":"Delete me"}]}"#,
+        );
+        write(
+            &b,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Old"}]}"#,
+        );
+        let synced = sync_baseline(sessions);
+        write(
+            &b,
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"New"}]}"#,
+        );
+
+        // Capture the three-way merge's decision before anything is written.
+        let scheduled = plan_scheduled_merge(sessions, "B", "O2", &synced).unwrap();
+        let selected = scheduled.display_names().unwrap();
+        assert_eq!(selected["t1"], "New");
+
+        // An unrelated deletion then rewrites A. That must not make A's stale
+        // title the winner merely because its registry was written later.
+        let doomed = BTreeSet::from([DeletionKey {
+            kind: ConflictKind::Routine,
+            id: "doomed".to_string(),
+            deleted_by: "B".to_string(),
+            still_in: vec!["A".to_string()],
+        }]);
+        let sweep = plan_deletion_sweep(sessions, &doomed).unwrap();
+        for (path, bytes) in sweep.rewrites {
+            std::fs::write(path, bytes).unwrap();
+        }
+
+        let convergence = plan_name_convergence(sessions, &selected).unwrap();
+        for (path, bytes) in convergence.rewrites {
+            std::fs::write(path, bytes).unwrap();
+        }
+        assert_eq!(first_display_name(&a), "New");
+        assert_eq!(first_display_name(&b), "New");
+    }
+
+    #[test]
+    fn name_convergence_is_a_noop_when_titles_already_agree() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sessions = root.path();
+        write(
+            &sessions.join("A/O1/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Same"}]}"#,
+        );
+        write(
+            &sessions.join("B/O2/scheduled-tasks.json"),
+            r#"{"scheduledTasks":[{"id":"t1","createdAt":100,"displayName":"Same"}]}"#,
+        );
+        let selected = BTreeMap::from([("t1".to_string(), "Same".to_string())]);
+        let plan = plan_name_convergence(sessions, &selected).unwrap();
+        assert_eq!(plan.converged, 0);
+        assert!(plan.rewrites.is_empty());
     }
 
     /// The mirror image: only the target changed against the shared baseline,
