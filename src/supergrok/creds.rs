@@ -167,8 +167,8 @@ fn parse_expires_at(s: &str) -> Option<i64> {
             // Grok CLI has been observed writing fractional seconds with a
             // trailing `Z` that chrono's strict RFC3339 rejects in some
             // versions — try a light normalization.
-            let normalized = if s.ends_with('Z') {
-                format!("{}+00:00", &s[..s.len() - 1])
+            let normalized = if let Some(stripped) = s.strip_suffix('Z') {
+                format!("{stripped}+00:00")
             } else {
                 s.to_string()
             };

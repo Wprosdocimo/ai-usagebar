@@ -174,8 +174,8 @@ fn parse_dt(s: &str) -> Option<DateTime<Utc>> {
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
         .or_else(|| {
-            let normalized = if s.ends_with('Z') {
-                format!("{}+00:00", &s[..s.len() - 1])
+            let normalized = if let Some(stripped) = s.strip_suffix('Z') {
+                format!("{stripped}+00:00")
             } else {
                 s.to_string()
             };
