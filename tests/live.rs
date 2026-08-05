@@ -49,6 +49,10 @@
 //!   `data.sqlite3`, then asserts the credit counters are non-negative and the
 //!   plan label is non-empty. `kiro_live` skips when there is no kiro-cli
 //!   install (no db and no `KIRO_DB_PATH`).
+//! - **SuperGrok**: reads the OIDC session from `~/.grok/auth.json` (after
+//!   `grok login`), then asserts weekly usage percent is non-negative and the
+//!   plan label is non-empty. `supergrok_live` skips when there is no Grok CLI
+//!   auth file (and no `SUPERGROK_AUTH_PATH`).
 
 use std::time::Duration;
 
@@ -61,6 +65,7 @@ use ai_usagebar::kiro;
 use ai_usagebar::minimax;
 use ai_usagebar::openai;
 use ai_usagebar::openrouter;
+use ai_usagebar::supergrok;
 use ai_usagebar::zai;
 
 fn xdg_cache_for(test: &str) -> Cache {
@@ -447,6 +452,58 @@ async fn kiro_live() {
         out.snapshot.used,
         out.snapshot.limit,
         out.snapshot.pct(),
+        out.snapshot.reset_at,
+    );
+}
+
+#[tokio::test]
+#[ignore = "live API; run with --ignored"]
+async fn supergrok_live() {
+    // SuperGrok has no API key — the credential is the OIDC session
+    // `grok login` wrote to ~/.grok/auth.json. Skips when that file is absent.
+    let auth_path = match std::env::var("SUPERGROK_AUTH_PATH") {
+        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => supergrok::creds::default_path().expect("resolve home dir"),
+    };
+    if !auth_path.exists() {
+        eprintln!(
+            "supergrok_live: no Grok CLI auth at {} — skipping (run `grok login`, or set SUPERGROK_AUTH_PATH)",
+            auth_path.display()
+        );
+        return;
+    }
+
+    let cache = xdg_cache_for("supergrok");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap();
+    let out = supergrok::fetch_snapshot(&client, &auth_path, &cache, Duration::from_secs(0))
+        .await
+        .expect("supergrok fetch should succeed against the real billing surface");
+
+    assert!(
+        out.snapshot.weekly_pct >= 0,
+        "supergrok: negative weekly_pct — shape changed? {}",
+        out.snapshot.weekly_pct
+    );
+    assert!(!out.snapshot.plan.is_empty(), "supergrok plan label empty");
+    if let Some(reset) = out.snapshot.reset_at {
+        assert!(
+            reset > chrono::Utc::now() - chrono::Duration::days(1),
+            "supergrok: reset_at looks implausibly old: {reset:?}"
+        );
+    }
+    println!(
+        "✅ supergrok — plan={}, weekly {}%, products {:?}, prepaid {:?}, reset {:?}",
+        out.snapshot.plan,
+        out.snapshot.weekly_pct,
+        out.snapshot
+            .products
+            .iter()
+            .map(|p| format!("{}={}%", p.name, p.pct))
+            .collect::<Vec<_>>(),
+        out.snapshot.prepaid_balance,
         out.snapshot.reset_at,
     );
 }

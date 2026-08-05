@@ -46,6 +46,7 @@ pub struct Config {
     pub novita: NovitaConfig,
     pub moonshot: MoonshotConfig,
     pub grok: GrokConfig,
+    pub supergrok: SuperGrokConfig,
     pub antigravity: AntigravityConfig,
     pub cursor: CursorConfig,
     pub minimax: MinimaxConfig,
@@ -654,6 +655,22 @@ impl Default for GrokConfig {
     }
 }
 
+/// SuperGrok subscription OAuth — no API key. Reads the OIDC session the
+/// Grok Build CLI wrote to `~/.grok/auth.json` after `grok login`, refreshes
+/// it via `auth.x.ai`, and polls the CLI billing surface for weekly credits.
+///
+/// Opt-in like Cursor/Kiro (`enabled` defaults to `false`): the billing host
+/// is undocumented and the credential is a rotating OAuth token, so it stays
+/// off until the user explicitly turns it on.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SuperGrokConfig {
+    pub enabled: bool,
+    /// Override the Grok CLI auth file path (defaults to `~/.grok/auth.json`
+    /// — see `supergrok::creds::default_path`).
+    pub auth_path: Option<PathBuf>,
+}
+
 /// Antigravity reads its quota from whichever local Antigravity product is
 /// running, so it needs no credentials — only an on/off switch.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -804,6 +821,7 @@ impl Config {
         expand_tilde_opt(&mut self.cursor.db_path);
         expand_tilde_opt(&mut self.cursor.agent_auth_path);
         expand_tilde_opt(&mut self.kiro.db_path);
+        expand_tilde_opt(&mut self.supergrok.auth_path);
         for account in &mut self.anthropic.accounts {
             account.credentials_path = expand_tilde(&account.credentials_path);
         }
@@ -822,6 +840,7 @@ impl Config {
             VendorId::Novita => self.novita.enabled,
             VendorId::Moonshot => self.moonshot.enabled,
             VendorId::Grok => self.grok.enabled,
+            VendorId::Supergrok => self.supergrok.enabled,
             VendorId::Antigravity => self.antigravity.enabled,
             VendorId::Cursor => self.cursor.enabled,
             VendorId::Minimax => self.minimax.enabled,
@@ -990,6 +1009,7 @@ mod tests {
             VendorId::Novita,
             VendorId::Moonshot,
             VendorId::Grok,
+            VendorId::Supergrok,
             VendorId::Cursor,
             VendorId::Minimax,
             VendorId::Kiro,
@@ -1817,6 +1837,7 @@ enabled = false
         assert!(!cfg.novita.enabled && cfg.novita.api_key.is_none());
         assert!(!cfg.moonshot.enabled && cfg.moonshot.api_key.is_none());
         assert!(!cfg.grok.enabled && cfg.grok.api_key.is_none());
+        assert!(!cfg.supergrok.enabled && cfg.supergrok.auth_path.is_none());
         assert!(!cfg.cursor.enabled && cfg.cursor.db_path.is_none());
         assert!(!cfg.kiro.enabled && cfg.kiro.db_path.is_none());
     }

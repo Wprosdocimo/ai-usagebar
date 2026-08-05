@@ -348,6 +348,7 @@ pub enum VendorSnapshot {
     Novita(NovitaSnapshot),
     Moonshot(MoonshotSnapshot),
     Grok(GrokSnapshot),
+    SuperGrok(SuperGrokSnapshot),
     AnthropicApi(AnthropicApiSnapshot),
     Antigravity(AntigravitySnapshot),
     Cursor(CursorSnapshot),
@@ -470,6 +471,36 @@ pub struct GrokSnapshot {
 }
 
 impl Eq for GrokSnapshot {}
+
+/// SuperGrok subscription OAuth — weekly included-credit usage from the
+/// unofficial CLI billing surface (`cli-chat-proxy.grok.com/v1/billing`),
+/// authenticated with the OIDC session `grok login` writes to
+/// `~/.grok/auth.json`. Distinct from [`GrokSnapshot`] (Management API
+/// prepaid balance). See `supergrok::types`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SuperGrokSnapshot {
+    /// Subscription tier label when the billing response supplies one
+    /// (e.g. "SuperGrok", "SuperGrok Heavy"); otherwise `"SuperGrok"`.
+    pub plan: String,
+    /// Fingerprint of the signed-in account. Never displayed — cache isolation.
+    pub account: String,
+    /// Weekly (or period) included-credit usage percent, 0..=100+.
+    pub weekly_pct: i32,
+    /// When the current usage period ends.
+    pub reset_at: Option<DateTime<Utc>>,
+    /// Per-product rows that reported a percent (GrokBuild, Api, …).
+    pub products: Vec<SuperGrokProduct>,
+    /// Remaining prepaid (purchased) API credit in USD, when present.
+    pub prepaid_balance: Option<f64>,
+}
+
+impl Eq for SuperGrokSnapshot {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuperGrokProduct {
+    pub name: String,
+    pub pct: i32,
+}
 
 /// OpenAI Codex OAuth — exposes whichever rolling windows the API reports.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -121,6 +121,7 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
         VendorSnapshot::Novita(s) => (String::new(), vec![money(s.available)]),
         VendorSnapshot::Moonshot(s) => (String::new(), vec![ccy(s.available, &s.currency)]),
         VendorSnapshot::Grok(s) => (String::new(), vec![money(s.balance)]),
+        VendorSnapshot::SuperGrok(s) => (s.plan.clone(), vec![pct("wk", s.weekly_pct)]),
         VendorSnapshot::Antigravity(s) => (
             s.plan.clone(),
             vec![
@@ -183,6 +184,7 @@ pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
         VendorSnapshot::Cursor(s) => (!s.unlimited).then_some(s.total_pct),
         VendorSnapshot::Minimax(s) => Some(s.session.utilization_pct.max(s.weekly.utilization_pct)),
         VendorSnapshot::Kiro(s) => Some(s.pct()),
+        VendorSnapshot::SuperGrok(s) => Some(s.weekly_pct),
         VendorSnapshot::Openrouter(_)
         | VendorSnapshot::Deepseek(_)
         | VendorSnapshot::Kilo(_)
@@ -229,6 +231,7 @@ pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> 
                 VendorSnapshot::Novita(s) => novita_sections(s),
                 VendorSnapshot::Moonshot(s) => moonshot_sections(s),
                 VendorSnapshot::Grok(s) => grok_sections(s),
+                VendorSnapshot::SuperGrok(s) => supergrok_sections(s, now),
                 VendorSnapshot::Antigravity(s) => antigravity_sections(s, now),
                 VendorSnapshot::Cursor(s) => cursor_sections(s, now),
                 VendorSnapshot::Minimax(s) => minimax_sections(s, now, pace_tolerance),
@@ -733,6 +736,47 @@ fn grok_sections(s: &crate::usage::GrokSnapshot) -> Vec<Section> {
             value: format!("${:.2}", s.balance),
         },
     ]
+}
+
+fn supergrok_sections(s: &crate::usage::SuperGrokSnapshot, now: DateTime<Utc>) -> Vec<Section> {
+    let pct = s.weekly_pct;
+    let mut v = vec![
+        Section::Title {
+            left: s.plan.clone(),
+            right: None,
+        },
+        Section::Spacer,
+        Section::Metric {
+            label: "Weekly credits".into(),
+            pct: pct.clamp(0, 100) as u16,
+            severity: severity_for(pct),
+            value_label: format!("{pct}%"),
+            footnote: String::new(),
+        },
+        Section::Spacer,
+        Section::Text {
+            label: "Resets".into(),
+            value: countdown::format(s.reset_at, now),
+        },
+    ];
+    for product in &s.products {
+        v.push(Section::Spacer);
+        v.push(Section::Metric {
+            label: product.name.clone(),
+            pct: product.pct.clamp(0, 100) as u16,
+            severity: severity_for(product.pct),
+            value_label: format!("{}%", product.pct),
+            footnote: String::new(),
+        });
+    }
+    if let Some(bal) = s.prepaid_balance {
+        v.push(Section::Spacer);
+        v.push(Section::Text {
+            label: "Prepaid API".into(),
+            value: format!("${bal:.2}"),
+        });
+    }
+    v
 }
 
 fn deepseek_sections(s: &crate::usage::DeepseekSnapshot) -> Vec<Section> {

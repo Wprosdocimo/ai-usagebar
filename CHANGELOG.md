@@ -11,6 +11,20 @@ Each release is also published at
 
 ### Added
 
+- **SuperGrok subscription OAuth vendor** (`--vendor supergrok`, `[supergrok]`,
+  opt-in). Shows weekly included-credit usage (and optional per-product rows
+  such as GrokBuild / Api) from the same unofficial CLI billing surface the
+  Grok Build CLI uses —
+  `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` — authenticated
+  with the OIDC session `grok login` writes to `~/.grok/auth.json`. Access
+  tokens are refreshed via the documented `auth.x.ai` OIDC token endpoint when
+  close to expiry; rotated refresh tokens are written **back** to that file so
+  the Grok CLI keeps a live session (same write-back pattern as Codex OAuth).
+  Distinct from the existing `grok` vendor, which still reads prepaid
+  Management API balance with an `XAI_MANAGEMENT_KEY`. Default bar format is
+  `{weekly_pct}% · {weekly_reset}`; generic aliases and `{sgk_*}` placeholders
+  are available. Endpoint is undocumented and may drift — treat like Cursor /
+  Kiro.
 - **Kiro CLI vendor** (`--vendor kiro`, `[kiro]`, opt-in). Reads the credit
   pool from `AmazonCodeWhispererService.GetUsageLimits` — the exact call
   kiro-cli's own `/usage` slash command makes — using the AWS SSO OIDC

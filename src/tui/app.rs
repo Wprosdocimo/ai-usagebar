@@ -641,6 +641,20 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             .await?;
             Ok(outcome.into())
         }
+        VendorId::Supergrok => {
+            let cache = crate::cache::Cache::for_vendor("supergrok")?;
+            let auth_path = config
+                .supergrok
+                .auth_path
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(crate::supergrok::creds::default_path)?;
+            let outcome = crate::supergrok::fetch_snapshot(
+                client, &auth_path, &cache, DEFAULT_TTL,
+            )
+            .await?;
+            Ok(outcome.into())
+        }
         VendorId::Antigravity => {
             // No credentials: the local Antigravity server is the source.
             let cache = crate::cache::Cache::for_vendor("antigravity")?;

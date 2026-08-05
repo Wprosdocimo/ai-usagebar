@@ -21,6 +21,7 @@ use crate::kilo;
 use crate::kimi;
 use crate::kiro;
 use crate::minimax;
+use crate::supergrok;
 use crate::moonshot;
 use crate::novita;
 use crate::openai;
@@ -151,6 +152,7 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
         Vendor::Novita => novita_output(cli, &config).await,
         Vendor::Moonshot => moonshot_output(cli, &config).await,
         Vendor::Grok => grok_output(cli, &config).await,
+        Vendor::Supergrok => supergrok_output(cli, &config).await,
         Vendor::Antigravity => antigravity_output(cli, &config).await,
         Vendor::Cursor => cursor_output(cli, &config).await,
         Vendor::Minimax => minimax_output(cli, &config).await,
@@ -291,6 +293,35 @@ async fn grok_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
     let vendor_outcome: VendorOutcome = outcome.into();
     let opts = RenderOpts::from_cli(cli);
     Ok(grok::vendor::render(
+        &vendor_outcome,
+        &snap,
+        &theme,
+        &opts,
+        chrono::Utc::now(),
+    ))
+}
+
+/// SuperGrok authenticates via the OIDC session `grok login` already wrote to
+/// `~/.grok/auth.json` — no API key to resolve.
+async fn supergrok_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
+    let client = http_client()?;
+    let cache = vendor_cache(cli, "supergrok")?;
+    let auth_path = match config.supergrok.auth_path.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => supergrok::creds::default_path()?,
+    };
+    let outcome =
+        match supergrok::fetch_snapshot(&client, &auth_path, &cache, DEFAULT_TTL).await {
+            Ok(o) => o,
+            Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
+            Err(e) => return Err(e),
+        };
+
+    let theme = theme_from_cli(cli);
+    let snap = outcome.snapshot.clone();
+    let vendor_outcome: VendorOutcome = outcome.into();
+    let opts = RenderOpts::from_cli(cli);
+    Ok(supergrok::vendor::render(
         &vendor_outcome,
         &snap,
         &theme,

@@ -24,6 +24,7 @@ pub mod display;
 pub mod error;
 pub mod format;
 pub mod grok;
+pub mod supergrok;
 pub mod kilo;
 pub mod kimi;
 pub mod kiro;
