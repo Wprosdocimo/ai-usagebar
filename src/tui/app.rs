@@ -649,10 +649,8 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 .clone()
                 .map(Ok)
                 .unwrap_or_else(crate::supergrok::creds::default_path)?;
-            let outcome = crate::supergrok::fetch_snapshot(
-                client, &auth_path, &cache, DEFAULT_TTL,
-            )
-            .await?;
+            let outcome =
+                crate::supergrok::fetch_snapshot(client, &auth_path, &cache, DEFAULT_TTL).await?;
             Ok(outcome.into())
         }
         VendorId::Antigravity => {

@@ -79,7 +79,9 @@ where
             .parse::<i64>()
             .map_err(|_| serde::de::Error::custom("cent val string is not an integer")),
         serde_json::Value::Null => Ok(0),
-        _ => Err(serde::de::Error::custom("cent val must be a number or string")),
+        _ => Err(serde::de::Error::custom(
+            "cent val must be a number or string",
+        )),
     }
 }
 
@@ -188,9 +190,7 @@ fn clamp_pct(p: f64) -> i32 {
 }
 
 fn pretty_product(name: &str) -> String {
-    name.trim()
-        .trim_start_matches("PRODUCT_")
-        .replace('_', " ")
+    name.trim().trim_start_matches("PRODUCT_").replace('_', " ")
 }
 
 #[cfg(test)]

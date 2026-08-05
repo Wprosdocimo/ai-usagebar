@@ -90,8 +90,10 @@ pub async fn fetch_snapshot_at(
     }
 
     // Silent OIDC refresh when close to expiry; always persist rotation.
-    if let Err(e) = ensure_fresh_token(client, endpoints, auth_path, &mut auth, &slot_key, &mut entry, now)
-        .await
+    if let Err(e) = ensure_fresh_token(
+        client, endpoints, auth_path, &mut auth, &slot_key, &mut entry, now,
+    )
+    .await
     {
         if e.is_transient() {
             return fallback_silent(cache, &account, e);
@@ -138,14 +140,16 @@ async fn ensure_fresh_token(
     if !creds::needs_refresh(entry, now) {
         return Ok(());
     }
-    let refresh_token = entry.refresh_token.as_deref().filter(|s| !s.is_empty()).ok_or_else(
-        || {
+    let refresh_token = entry
+        .refresh_token
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
             AppError::Credentials(
                 "SuperGrok: access token expired and no refresh_token is stored. Run `grok login`."
                     .into(),
             )
-        },
-    )?;
+        })?;
     let client_id = entry.client_id(slot_key)?;
     let resp = oauth::refresh(client, &endpoints.token, &client_id, refresh_token).await?;
     entry.apply_refresh(resp.access_token, resp.refresh_token, resp.expires_in, now);
@@ -254,12 +258,7 @@ fn parse_cache(bytes: &[u8], account: &str) -> Result<SuperGrokSnapshot> {
     })
 }
 
-fn reuse_cache(
-    bytes: &[u8],
-    cache: &Cache,
-    stale: bool,
-    account: &str,
-) -> Result<FetchOutcome> {
+fn reuse_cache(bytes: &[u8], cache: &Cache, stale: bool, account: &str) -> Result<FetchOutcome> {
     let snap = parse_cache(bytes, account)?;
     Ok(FetchOutcome {
         snapshot: snap,
@@ -302,8 +301,8 @@ fn error_to_pair(e: &AppError) -> Option<(u16, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::{NamedTempFile, TempDir};
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
 
     fn cache_fixture() -> (TempDir, Cache) {
         let td = TempDir::new().unwrap();
@@ -312,8 +311,11 @@ mod tests {
         (td, cache)
     }
 
-    fn write_auth(access: &str, refresh: &str, expires: &str) -> NamedTempFile {
-        let mut f = NamedTempFile::new().unwrap();
+    /// Write auth to a closed path under `dir`. Do **not** keep a file handle
+    /// open — `write_back` renames over the target, and Windows denies that
+    /// while the original handle is still open.
+    fn write_auth(dir: &Path, access: &str, refresh: &str, expires: &str) -> PathBuf {
+        let path = dir.join("auth.json");
         let body = format!(
             r#"{{
               "https://auth.x.ai::cid": {{
@@ -325,8 +327,8 @@ mod tests {
               }}
             }}"#
         );
-        f.write_all(body.as_bytes()).unwrap();
-        f
+        std::fs::write(&path, body).unwrap();
+        path
     }
 
     #[tokio::test]
@@ -347,7 +349,9 @@ mod tests {
             .create_async()
             .await;
 
+        let auth_td = TempDir::new().unwrap();
         let auth = write_auth(
+            auth_td.path(),
             "good-at",
             "rt",
             // Far future — no refresh.
@@ -361,7 +365,7 @@ mod tests {
         };
         let out = fetch_snapshot_at(
             &client,
-            auth.path(),
+            &auth,
             &cache,
             Duration::from_secs(0),
             &endpoints,
@@ -397,7 +401,8 @@ mod tests {
             .create_async()
             .await;
 
-        let auth = write_auth("stale-at", "old-rt", "2020-01-01T00:00:00Z");
+        let auth_td = TempDir::new().unwrap();
+        let auth = write_auth(auth_td.path(), "stale-at", "old-rt", "2020-01-01T00:00:00Z");
         let (_td, cache) = cache_fixture();
         let client = reqwest::Client::new();
         let endpoints = Endpoints {
@@ -406,7 +411,7 @@ mod tests {
         };
         let out = fetch_snapshot_at(
             &client,
-            auth.path(),
+            &auth,
             &cache,
             Duration::from_secs(0),
             &endpoints,
@@ -417,7 +422,7 @@ mod tests {
         assert_eq!(out.snapshot.weekly_pct, 5);
 
         // Rotated tokens must be written back.
-        let rewritten = creds::read_from(auth.path()).unwrap();
+        let rewritten = creds::read_from(&auth).unwrap();
         let (_, entry) = creds::select_account(&rewritten).unwrap();
         assert_eq!(entry.key, "fresh-at");
         assert_eq!(entry.refresh_token.as_deref(), Some("fresh-rt"));
@@ -426,7 +431,8 @@ mod tests {
     #[tokio::test]
     async fn fresh_cache_makes_no_network_call() {
         let server = mockito::Server::new_async().await;
-        let auth = write_auth("good-at", "rt", "2099-01-01T00:00:00Z");
+        let auth_td = TempDir::new().unwrap();
+        let auth = write_auth(auth_td.path(), "good-at", "rt", "2099-01-01T00:00:00Z");
         let (_td, cache) = cache_fixture();
         cache
             .write_payload(
@@ -453,7 +459,7 @@ mod tests {
         };
         let out = fetch_snapshot_at(
             &client,
-            auth.path(),
+            &auth,
             &cache,
             Duration::from_secs(3600),
             &endpoints,
@@ -478,7 +484,8 @@ mod tests {
             .create_async()
             .await;
 
-        let auth = write_auth("good-at", "rt", "2099-01-01T00:00:00Z");
+        let auth_td = TempDir::new().unwrap();
+        let auth = write_auth(auth_td.path(), "good-at", "rt", "2099-01-01T00:00:00Z");
         let (_td, cache) = cache_fixture();
         cache
             .write_payload(
@@ -505,7 +512,7 @@ mod tests {
         };
         let out = fetch_snapshot_at(
             &client,
-            auth.path(),
+            &auth,
             &cache,
             Duration::from_secs(0),
             &endpoints,

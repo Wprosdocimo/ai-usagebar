@@ -21,12 +21,12 @@ use crate::kilo;
 use crate::kimi;
 use crate::kiro;
 use crate::minimax;
-use crate::supergrok;
 use crate::moonshot;
 use crate::novita;
 use crate::openai;
 use crate::openrouter;
 use crate::pango::escape;
+use crate::supergrok;
 use crate::theme::Theme;
 use crate::vendor::{HTTP_CLIENT_TIMEOUT, RenderOpts, VendorOutcome};
 use crate::waybar::WaybarOutput;
@@ -310,12 +310,11 @@ async fn supergrok_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
         Some(p) => p.to_path_buf(),
         None => supergrok::creds::default_path()?,
     };
-    let outcome =
-        match supergrok::fetch_snapshot(&client, &auth_path, &cache, DEFAULT_TTL).await {
-            Ok(o) => o,
-            Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
-            Err(e) => return Err(e),
-        };
+    let outcome = match supergrok::fetch_snapshot(&client, &auth_path, &cache, DEFAULT_TTL).await {
+        Ok(o) => o,
+        Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
+        Err(e) => return Err(e),
+    };
 
     let theme = theme_from_cli(cli);
     let snap = outcome.snapshot.clone();

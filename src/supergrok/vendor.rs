@@ -203,8 +203,8 @@ impl From<FetchOutcome> for VendorOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
     use crate::usage::SuperGrokProduct;
+    use chrono::TimeZone;
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 5, 12, 0, 0).unwrap()

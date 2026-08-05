@@ -93,11 +93,7 @@ pub fn select_account(auth: &AuthFile) -> Result<(String, AccountEntry)> {
     }
     // Fall back to any non-empty access token (user can still see usage until
     // it expires, then get a clear re-login error).
-    if let Some((k, v)) = auth
-        .accounts
-        .iter()
-        .find(|(_, e)| !e.key.trim().is_empty())
-    {
+    if let Some((k, v)) = auth.accounts.iter().find(|(_, e)| !e.key.trim().is_empty()) {
         return Ok((k.clone(), v.clone()));
     }
     Err(AppError::Credentials(
@@ -256,7 +252,10 @@ mod tests {
         assert_eq!(entry.account_key(), "user-1");
         assert_eq!(entry.client_id(&slot).unwrap(), "client-abc");
         // Unknown field preserved for write-back.
-        assert_eq!(entry.extra.get("extra_cli_field"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            entry.extra.get("extra_cli_field"),
+            Some(&serde_json::json!(true))
+        );
     }
 
     #[test]
@@ -314,9 +313,7 @@ mod tests {
             extra: Default::default(),
         };
         assert_eq!(
-            entry
-                .client_id("https://auth.x.ai::from-slot")
-                .unwrap(),
+            entry.client_id("https://auth.x.ai::from-slot").unwrap(),
             "from-slot"
         );
     }
