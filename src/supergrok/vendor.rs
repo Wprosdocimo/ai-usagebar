@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use crate::countdown;
 use crate::format::{placeholders, substitute, updated_at_hm};
 use crate::pacing::PaceSeverity;
-use crate::pango::{color_span, escape, severity_color, severity_for};
+use crate::pango::{self, color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
 use crate::usage::SuperGrokSnapshot;
@@ -103,6 +103,34 @@ pub fn render(
     }
 }
 
+/// One usage-percent row in the same shape as `tooltip::push_window`:
+/// label, progress bar + bold %, then optional dim reset line.
+fn push_pct_row(
+    lines: &mut Vec<TooltipLine>,
+    theme: &Theme,
+    label: &str,
+    pct: i32,
+    reset_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) {
+    let fg = &theme.fg;
+    let dim = &theme.dim;
+    let color = severity_color(severity_for(pct), theme);
+    let bar = pango::progress_bar(pct, color, theme, None);
+    lines.push(TooltipLine::Body(format!(
+        " <span foreground='{fg}'>{label}</span>"
+    )));
+    lines.push(TooltipLine::Body(format!(
+        "   {bar}  <span font_weight='bold' foreground='{color}'>{pct}%</span>"
+    )));
+    if reset_at.is_some() {
+        lines.push(TooltipLine::Body(format!(
+            " <span foreground='{dim}'>  ⏱  Resets in {}</span>",
+            escape(&countdown::format(reset_at, now))
+        )));
+    }
+}
+
 fn render_tooltip(
     outcome: &VendorOutcome,
     snap: &SuperGrokSnapshot,
@@ -111,8 +139,6 @@ fn render_tooltip(
 ) -> String {
     let blue = &theme.blue;
     let dim = &theme.dim;
-    let fg = &theme.fg;
-    let color = severity_color(severity(snap), theme);
 
     let mut lines: Vec<TooltipLine> = Vec::new();
     lines.push(TooltipLine::Center(format!(
@@ -122,29 +148,21 @@ fn render_tooltip(
     lines.push(TooltipLine::Sep);
     lines.push(TooltipLine::Body("".into()));
 
-    lines.push(TooltipLine::Body(format!(
-        " <span foreground='{fg}'>  󰔟  Weekly credits</span>"
-    )));
-    lines.push(TooltipLine::Body(format!(
-        "   <span font_weight='bold' foreground='{color}'>{}%</span>",
-        snap.weekly_pct
-    )));
-    lines.push(TooltipLine::Body(format!(
-        " <span foreground='{dim}'>  ⏱  Resets {}</span>",
-        escape(&countdown::format(snap.reset_at, now))
-    )));
+    // Weekly headline — same layout as Anthropic/OpenAI window rows.
+    push_pct_row(
+        &mut lines,
+        theme,
+        "  󰔟  Weekly credits",
+        snap.weekly_pct,
+        snap.reset_at,
+        now,
+    );
 
     for product in &snap.products {
-        let pcolor = severity_color(severity_for(product.pct), theme);
         lines.push(TooltipLine::Body("".into()));
-        lines.push(TooltipLine::Body(format!(
-            " <span foreground='{fg}'>  󰚩  {}</span>",
-            escape(&product.name)
-        )));
-        lines.push(TooltipLine::Body(format!(
-            "   <span font_weight='bold' foreground='{pcolor}'>{}%</span>",
-            product.pct
-        )));
+        // Product names come from the billing API — escape before embedding.
+        let label = format!("  󰚩  {}", escape(&product.name));
+        push_pct_row(&mut lines, theme, &label, product.pct, None, now);
     }
 
     if let Some(bal) = snap.prepaid_balance {
@@ -253,6 +271,14 @@ mod tests {
         assert!(out.tooltip.contains("Weekly credits"));
         assert!(out.tooltip.contains("GrokBuild"));
         assert!(out.tooltip.contains("SuperGrok"));
+        // Usage-% vendors (Anthropic / OpenAI) draw a filled progress bar in
+        // the tooltip; SuperGrok must match that shape rather than bare %.
+        assert!(
+            out.tooltip.contains('█') || out.tooltip.contains('░'),
+            "tooltip missing progress bar cells: {}",
+            out.tooltip
+        );
+        assert!(out.tooltip.contains("Resets in"));
     }
 
     #[test]
