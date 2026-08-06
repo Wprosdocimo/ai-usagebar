@@ -9,6 +9,8 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-08-06
+
 ### Added
 
 - **Kiro CLI vendor** (`--vendor kiro`, `[kiro]`, opt-in). Reads the credit
@@ -40,6 +42,20 @@ Each release is also published at
   unknown top-level fields. There is no prompt, and it applies to the terminal
   and menu bar alike since both drive the same switch path. Mirrored in
   claude-acc.
+
+- **Antigravity now works on macOS, in both the CLI and the menu-bar app.**
+  Local-server discovery (`discover_ls_ports`) only ever walked `/proc`, so on
+  macOS — which has no `/proc` — it silently returned nothing and every
+  Antigravity fetch failed with "no local server found" even while Antigravity
+  was running. It now shells out to `lsof -iTCP -sTCP:LISTEN -F pcn`, the
+  macOS equivalent, and matches listening processes with the same predicate
+  the Linux path already used (now case-insensitive, since the packaged macOS
+  app's process name is capitalized). Separately, the menu-bar app's own
+  vendor list (`VENDOR_AUTH` in `macos/ai-usagebar-menubar.swift`) had never
+  been updated when Antigravity shipped, so it stayed invisible there even
+  after enabling `[antigravity]` — it's now a `local`-kind entry alongside
+  Cursor, "configured" the same way the GNOME extension already detects it
+  (any of `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}`).
 
 ## [0.21.0] — 2026-08-03
 
@@ -125,20 +141,6 @@ Each release is also published at
   1.88 minimum.
 
 ### Fixed
-
-- **Antigravity now works on macOS, in both the CLI and the menu-bar app.**
-  Local-server discovery (`discover_ls_ports`) only ever walked `/proc`, so on
-  macOS — which has no `/proc` — it silently returned nothing and every
-  Antigravity fetch failed with "no local server found" even while Antigravity
-  was running. It now shells out to `lsof -iTCP -sTCP:LISTEN -F pcn`, the
-  macOS equivalent, and matches listening processes with the same predicate
-  the Linux path already used (now case-insensitive, since the packaged macOS
-  app's process name is capitalized). Separately, the menu-bar app's own
-  vendor list (`VENDOR_AUTH` in `macos/ai-usagebar-menubar.swift`) had never
-  been updated when Antigravity shipped, so it stayed invisible there even
-  after enabling `[antigravity]` — it's now a `local`-kind entry alongside
-  Cursor, "configured" the same way the GNOME extension already detects it
-  (any of `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}`).
 
 - **TUI refresh flicker.** Auto-refresh and manual refresh now keep the last
   successful vendor snapshot visible with a `↻` indicator while revalidating.
@@ -1380,7 +1382,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.19.0...v0.20.0
