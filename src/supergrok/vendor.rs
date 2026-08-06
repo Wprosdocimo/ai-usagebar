@@ -148,11 +148,12 @@ fn render_tooltip(
     lines.push(TooltipLine::Sep);
     lines.push(TooltipLine::Body("".into()));
 
-    // Weekly headline — same layout as Anthropic/OpenAI window rows.
+    // CLI / Grok Build coding pool — not the grok.com chat "weekly SuperGrok"
+    // card (separate product surface the billing host does not expose).
     push_pct_row(
         &mut lines,
         theme,
-        "  󰔟  Weekly credits",
+        "  󰔟  Build credits",
         snap.weekly_pct,
         snap.reset_at,
         now,
@@ -268,7 +269,7 @@ mod tests {
         let o = sample_outcome(snap.clone());
         let out = render(&o, &snap, &Theme::default(), &opts(), now());
         assert!(out.text.contains("34%"));
-        assert!(out.tooltip.contains("Weekly credits"));
+        assert!(out.tooltip.contains("Build credits"));
         assert!(out.tooltip.contains("GrokBuild"));
         assert!(out.tooltip.contains("SuperGrok"));
         // Usage-% vendors (Anthropic / OpenAI) draw a filled progress bar in

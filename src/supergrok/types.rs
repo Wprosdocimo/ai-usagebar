@@ -155,10 +155,57 @@ fn resolve_usage_percent(cfg: &BillingConfig) -> Result<i32> {
     {
         return Ok(clamp_pct(p));
     }
+    // After a weekly rollover the credits payload often keeps a valid
+    // `currentPeriod` but omits percent fields until the first request of the
+    // new window — that is 0% used, not a schema break. Only error when we
+    // have no config surface at all.
+    if cfg.current_period.is_some()
+        || cfg.billing_period_end.is_some()
+        || cfg.prepaid_balance.is_some()
+        || cfg.is_unified_billing_user.is_some()
+    {
+        return Ok(0);
+    }
     Err(AppError::Schema(
-        "supergrok: billing response has no creditUsagePercent, monthly ratio, or productUsage percent"
+        "supergrok: billing response has no creditUsagePercent, monthly ratio, productUsage percent, or period"
             .into(),
     ))
+}
+
+/// Merge a secondary (legacy monthly) billing body into a primary credits
+/// response. Used when `?format=credits` is period-only and the plain
+/// `/billing` body still carries `monthlyLimit`/`used` (unified accounts).
+pub fn merge_billing(primary: BillingResponse, secondary: BillingResponse) -> BillingResponse {
+    let mut out = primary;
+    let sec = secondary.config.unwrap_or_default();
+    let mut cfg = out.config.unwrap_or_default();
+
+    if cfg.credit_usage_percent.is_none() && cfg.monthly_limit.is_none() {
+        if sec.monthly_limit.is_some() {
+            cfg.monthly_limit = sec.monthly_limit;
+        }
+        if sec.used.is_some() {
+            cfg.used = sec.used;
+        }
+        if cfg.billing_period_end.is_none() {
+            cfg.billing_period_end = sec.billing_period_end;
+            cfg.billing_period_start = sec.billing_period_start;
+        }
+    }
+    if cfg.product_usage.is_empty() && !sec.product_usage.is_empty() {
+        cfg.product_usage = sec.product_usage;
+    }
+    if cfg.prepaid_balance.is_none() {
+        cfg.prepaid_balance = sec.prepaid_balance;
+    }
+    if cfg.current_period.is_none() {
+        cfg.current_period = sec.current_period;
+    }
+    if out.subscription_tier.is_none() {
+        out.subscription_tier = secondary.subscription_tier;
+    }
+    out.config = Some(cfg);
+    out
 }
 
 fn resolve_reset_at(cfg: &BillingConfig) -> Option<DateTime<Utc>> {
@@ -255,6 +302,43 @@ mod tests {
     fn empty_config_is_schema_error() {
         let resp: BillingResponse = serde_json::from_str(r#"{"config":{}}"#).unwrap();
         assert!(to_snapshot(resp, "u").is_err());
+    }
+
+    #[test]
+    fn period_only_credits_after_rollover_is_zero_not_error() {
+        // Live shape observed right after weekly rollover: period present,
+        // percent fields omitted, prepaid zero — must not keep last week's %.
+        let raw = r#"{
+          "config": {
+            "currentPeriod": {
+              "type": "USAGE_PERIOD_TYPE_WEEKLY",
+              "start": "2026-08-06T01:03:38+00:00",
+              "end": "2026-08-13T01:03:38+00:00"
+            },
+            "prepaidBalance": {"val": 0},
+            "isUnifiedBillingUser": true
+          }
+        }"#;
+        let resp: BillingResponse = serde_json::from_str(raw).unwrap();
+        let snap = to_snapshot(resp, "u").unwrap();
+        assert_eq!(snap.weekly_pct, 0);
+        assert!(snap.products.is_empty());
+        assert_eq!(snap.prepaid_balance, Some(0.0));
+    }
+
+    #[test]
+    fn merge_fills_monthly_when_credits_has_no_percent() {
+        let credits: BillingResponse = serde_json::from_str(
+            r#"{"config":{"currentPeriod":{"end":"2026-08-13T00:00:00Z"},"prepaidBalance":{"val":0}}}"#,
+        )
+        .unwrap();
+        let monthly: BillingResponse = serde_json::from_str(
+            r#"{"config":{"monthlyLimit":{"val":15000},"used":{"val":3000},"billingPeriodEnd":"2026-09-01T00:00:00Z"}}"#,
+        )
+        .unwrap();
+        let merged = merge_billing(credits, monthly);
+        let snap = to_snapshot(merged, "u").unwrap();
+        assert_eq!(snap.weekly_pct, 20); // 3000/15000
     }
 
     #[test]

@@ -29,7 +29,11 @@ const TOKEN_AUTH_HEADER: &str = "xai-grok-cli";
 
 #[derive(Debug, Clone)]
 pub struct Endpoints {
+    /// Credits-config shape (`?format=credits`) — weekly % when present.
     pub billing: String,
+    /// Legacy monthly shape (plain `/billing`) — fill-in for unified accounts
+    /// that omit percent fields on the credits endpoint.
+    pub billing_legacy: String,
     pub token: String,
 }
 
@@ -37,6 +41,7 @@ impl Default for Endpoints {
     fn default() -> Self {
         Self {
             billing: format!("{BILLING_BASE}/billing?format=credits"),
+            billing_legacy: format!("{BILLING_BASE}/billing"),
             token: oauth::TOKEN_URL.to_string(),
         }
     }
@@ -85,6 +90,9 @@ pub async fn fetch_snapshot_at(
 
     if let Some(bytes) = cache.fresh_payload(cache_ttl)?
         && let Ok(outcome) = reuse_cache(&bytes, cache, false, &account)
+        // A snapshot whose period already ended must not keep blocking a
+        // refetch (shows "Resets now" + last week's % until TTL expires).
+        && !period_has_ended(&outcome.snapshot, now)
     {
         return Ok(outcome);
     }
@@ -158,13 +166,17 @@ async fn ensure_fresh_token(
     Ok(())
 }
 
-async fn fetch_live(
+fn period_has_ended(snap: &SuperGrokSnapshot, now: DateTime<Utc>) -> bool {
+    snap.reset_at.is_some_and(|r| r <= now)
+}
+
+async fn get_billing_json(
     client: &reqwest::Client,
-    endpoints: &Endpoints,
+    url: &str,
     entry: &AccountEntry,
-) -> Result<SuperGrokSnapshot> {
+) -> Result<BillingResponse> {
     let mut req = client
-        .get(&endpoints.billing)
+        .get(url)
         .header("Authorization", format!("Bearer {}", entry.key))
         .header("X-XAI-Token-Auth", TOKEN_AUTH_HEADER)
         .header("User-Agent", "xai-grok-cli")
@@ -175,7 +187,7 @@ async fn fetch_live(
 
     let resp = tokio::time::timeout(HTTP_TIMEOUT, req.send())
         .await
-        .map_err(|_| AppError::Transport("supergrok billing timeout".into()))??;
+        .map_err(|_| AppError::Transport(format!("supergrok billing timeout: {url}")))??;
 
     let status = resp.status();
     let bytes = read_body_capped(resp, MAX_BODY_BYTES).await?;
@@ -186,9 +198,23 @@ async fn fetch_live(
             body,
         });
     }
-    let parsed: BillingResponse = serde_json::from_slice(&bytes)
-        .map_err(|e| AppError::Schema(format!("supergrok billing: {e}")))?;
-    types::to_snapshot(parsed, &entry.account_key())
+    serde_json::from_slice(&bytes).map_err(|e| AppError::Schema(format!("supergrok billing: {e}")))
+}
+
+async fn fetch_live(
+    client: &reqwest::Client,
+    endpoints: &Endpoints,
+    entry: &AccountEntry,
+) -> Result<SuperGrokSnapshot> {
+    let credits = get_billing_json(client, &endpoints.billing, entry).await?;
+    // Best-effort merge of the legacy monthly body for unified accounts that
+    // omit percent fields on `?format=credits` (oh-my-pi #6388). A failure here
+    // must not discard a usable credits response.
+    let merged = match get_billing_json(client, &endpoints.billing_legacy, entry).await {
+        Ok(legacy) => types::merge_billing(credits, legacy),
+        Err(_) => credits,
+    };
+    types::to_snapshot(merged, &entry.account_key())
 }
 
 fn snap_to_json(snap: &SuperGrokSnapshot) -> serde_json::Value {
@@ -273,8 +299,9 @@ fn fallback_silent(cache: &Cache, account: &str, original: AppError) -> Result<F
         return Err(original);
     };
     match reuse_cache(&bytes, cache, true, account) {
-        Ok(o) => Ok(o),
-        Err(_) => Err(original),
+        // Never resurrect a prior period's % after rollover.
+        Ok(o) if !period_has_ended(&o.snapshot, Utc::now()) => Ok(o),
+        _ => Err(original),
     }
 }
 
@@ -283,11 +310,11 @@ fn fallback_with_error(cache: &Cache, account: &str, original: AppError) -> Resu
         return Err(original);
     };
     match reuse_cache(&bytes, cache, true, account) {
-        Ok(mut o) => {
+        Ok(mut o) if !period_has_ended(&o.snapshot, Utc::now()) => {
             o.last_error = error_to_pair(&original);
             Ok(o)
         }
-        Err(_) => Err(original),
+        _ => Err(original),
     }
 }
 
@@ -361,6 +388,7 @@ mod tests {
         let client = reqwest::Client::new();
         let endpoints = Endpoints {
             billing: format!("{}/v1/billing?format=credits", server.url()),
+            billing_legacy: format!("{}/v1/billing", server.url()),
             token: format!("{}/oauth2/token", server.url()),
         };
         let out = fetch_snapshot_at(
@@ -407,6 +435,7 @@ mod tests {
         let client = reqwest::Client::new();
         let endpoints = Endpoints {
             billing: format!("{}/v1/billing?format=credits", server.url()),
+            billing_legacy: format!("{}/v1/billing", server.url()),
             token: format!("{}/oauth2/token", server.url()),
         };
         let out = fetch_snapshot_at(
@@ -455,6 +484,7 @@ mod tests {
         let client = reqwest::Client::new();
         let endpoints = Endpoints {
             billing: format!("{}/v1/billing?format=credits", server.url()),
+            billing_legacy: format!("{}/v1/billing", server.url()),
             token: format!("{}/oauth2/token", server.url()),
         };
         let out = fetch_snapshot_at(
@@ -508,6 +538,7 @@ mod tests {
         let client = reqwest::Client::new();
         let endpoints = Endpoints {
             billing: format!("{}/v1/billing?format=credits", server.url()),
+            billing_legacy: format!("{}/v1/billing", server.url()),
             token: format!("{}/oauth2/token", server.url()),
         };
         let out = fetch_snapshot_at(

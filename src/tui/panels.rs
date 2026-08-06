@@ -747,7 +747,7 @@ fn supergrok_sections(s: &crate::usage::SuperGrokSnapshot, now: DateTime<Utc>) -
         },
         Section::Spacer,
         Section::Metric {
-            label: "Weekly credits".into(),
+            label: "Build credits".into(),
             pct: pct.clamp(0, 100) as u16,
             severity: severity_for(pct),
             value_label: format!("{pct}%"),
