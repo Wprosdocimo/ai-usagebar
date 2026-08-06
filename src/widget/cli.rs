@@ -10,6 +10,7 @@ use clap::{Parser, ValueEnum};
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "ai-usagebar",
+    version,
     args_conflicts_with_subcommands = true,
     about = "Waybar widget and terminal dashboard for multi-provider AI plan usage",
     long_about = "\

@@ -9,6 +9,12 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- `--version` / `-V` on the `ai-usagebar` binary, reporting the crate version
+  (#81). Until now the only way to tell which build was installed was parsing
+  `cargo install --list`.
+
 ## [0.22.0] — 2026-08-06
 
 ### Added
