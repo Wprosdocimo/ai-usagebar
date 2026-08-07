@@ -25,6 +25,9 @@ Each release is also published at
   `{weekly_pct}% · {weekly_reset}`; generic aliases and `{sgk_*}` placeholders
   are available. Endpoint is undocumented and may drift — treat like Cursor /
   Kiro.
+- `--version` / `-V` on the `ai-usagebar` binary, reporting the crate version
+  (#81). Until now the only way to tell which build was installed was parsing
+  `cargo install --list`.
 - **Kiro CLI vendor** (`--vendor kiro`, `[kiro]`, opt-in). Reads the credit
   pool from `AmazonCodeWhispererService.GetUsageLimits` — the exact call
   kiro-cli's own `/usage` slash command makes — using the AWS SSO OIDC
@@ -54,6 +57,20 @@ Each release is also published at
   unknown top-level fields. There is no prompt, and it applies to the terminal
   and menu bar alike since both drive the same switch path. Mirrored in
   claude-acc.
+
+- **Antigravity now works on macOS, in both the CLI and the menu-bar app.**
+  Local-server discovery (`discover_ls_ports`) only ever walked `/proc`, so on
+  macOS — which has no `/proc` — it silently returned nothing and every
+  Antigravity fetch failed with "no local server found" even while Antigravity
+  was running. It now shells out to `lsof -iTCP -sTCP:LISTEN -F pcn`, the
+  macOS equivalent, and matches listening processes with the same predicate
+  the Linux path already used (now case-insensitive, since the packaged macOS
+  app's process name is capitalized). Separately, the menu-bar app's own
+  vendor list (`VENDOR_AUTH` in `macos/ai-usagebar-menubar.swift`) had never
+  been updated when Antigravity shipped, so it stayed invisible there even
+  after enabling `[antigravity]` — it's now a `local`-kind entry alongside
+  Cursor, "configured" the same way the GNOME extension already detects it
+  (any of `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}`).
 
 ## [0.21.0] — 2026-08-03
 
@@ -139,20 +156,6 @@ Each release is also published at
   1.88 minimum.
 
 ### Fixed
-
-- **Antigravity now works on macOS, in both the CLI and the menu-bar app.**
-  Local-server discovery (`discover_ls_ports`) only ever walked `/proc`, so on
-  macOS — which has no `/proc` — it silently returned nothing and every
-  Antigravity fetch failed with "no local server found" even while Antigravity
-  was running. It now shells out to `lsof -iTCP -sTCP:LISTEN -F pcn`, the
-  macOS equivalent, and matches listening processes with the same predicate
-  the Linux path already used (now case-insensitive, since the packaged macOS
-  app's process name is capitalized). Separately, the menu-bar app's own
-  vendor list (`VENDOR_AUTH` in `macos/ai-usagebar-menubar.swift`) had never
-  been updated when Antigravity shipped, so it stayed invisible there even
-  after enabling `[antigravity]` — it's now a `local`-kind entry alongside
-  Cursor, "configured" the same way the GNOME extension already detects it
-  (any of `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}`).
 
 - **TUI refresh flicker.** Auto-refresh and manual refresh now keep the last
   successful vendor snapshot visible with a `↻` indicator while revalidating.
