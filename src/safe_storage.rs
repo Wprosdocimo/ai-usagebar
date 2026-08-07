@@ -109,10 +109,23 @@ mod tests {
     }
 
     #[test]
-    fn encryption_is_deterministic() {
-        // Fixed IV + no random salt: the same plaintext must encrypt identically,
-        // which is what lets a write-back be verified and tested.
+    fn key_derivation_matches_the_chromium_compatibility_vector() {
+        // Independently reproduced with OpenSSL's PBKDF2-HMAC-SHA1 implementation.
+        assert_eq!(
+            key(),
+            [
+                0x9b, 0xa5, 0xa2, 0x8a, 0x32, 0x39, 0xfe, 0xce, 0x3c, 0x5a, 0xe5, 0x70, 0xd6, 0x52,
+                0x3d, 0xcc,
+            ]
+        );
+    }
+
+    #[test]
+    fn encryption_matches_the_chromium_compatibility_vector() {
+        // Fixed IV + no random salt: this OpenSSL-generated vector protects the
+        // on-disk format across cryptography-crate upgrades.
         let k = key();
+        assert_eq!(encrypt(&k, b"same"), "djEwykc2I53A+doQo9OF96du2A==");
         assert_eq!(encrypt(&k, b"same"), encrypt(&k, b"same"));
     }
 

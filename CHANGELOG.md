@@ -14,11 +14,6 @@ Each release is also published at
 - `--version` / `-V` on the `ai-usagebar` binary, reporting the crate version
   (#81). Until now the only way to tell which build was installed was parsing
   `cargo install --list`.
-
-## [0.22.0] — 2026-08-06
-
-### Added
-
 - **Kiro CLI vendor** (`--vendor kiro`, `[kiro]`, opt-in). Reads the credit
   pool from `AmazonCodeWhispererService.GetUsageLimits` — the exact call
   kiro-cli's own `/usage` slash command makes — using the AWS SSO OIDC
@@ -1388,8 +1383,7 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.22.0...HEAD
-[0.22.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.21.0...v0.22.0
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.21.0...HEAD
 [0.21.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.19.0...v0.20.0
