@@ -390,7 +390,19 @@ fn is_stdout_tty() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::{Parser, error::ErrorKind};
+
+    #[test]
+    fn version_flags_report_the_crate_version() {
+        let expected = format!("ai-usagebar {}\n", env!("CARGO_PKG_VERSION"));
+
+        for flag in ["--version", "-V"] {
+            let err = Cli::try_parse_from(["ai-usagebar", flag])
+                .expect_err("a version flag exits through clap's display path");
+            assert_eq!(err.kind(), ErrorKind::DisplayVersion, "flag: {flag}");
+            assert_eq!(err.to_string(), expected, "flag: {flag}");
+        }
+    }
 
     #[test]
     fn usage_subcommand_parses_machine_readable_mode() {
