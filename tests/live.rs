@@ -49,10 +49,9 @@
 //!   `data.sqlite3`, then asserts the credit counters are non-negative and the
 //!   plan label is non-empty. `kiro_live` skips when there is no kiro-cli
 //!   install (no db and no `KIRO_DB_PATH`).
-//! - **SuperGrok**: reads the OIDC session from `~/.grok/auth.json` (after
-//!   `grok login`), then asserts weekly usage percent is non-negative and the
-//!   plan label is non-empty. `supergrok_live` skips when there is no Grok CLI
-//!   auth file (and no `SUPERGROK_AUTH_PATH`).
+//! - **SuperGrok**: asks the official Grok Build CLI's `x.ai/billing` ACP
+//!   extension, then asserts usage percent and plan. Set
+//!   `SUPERGROK_GROK_BINARY` to the trusted official executable.
 
 use std::time::Duration;
 
@@ -459,28 +458,21 @@ async fn kiro_live() {
 #[tokio::test]
 #[ignore = "live API; run with --ignored"]
 async fn supergrok_live() {
-    // SuperGrok has no API key — the credential is the OIDC session
-    // `grok login` wrote to ~/.grok/auth.json. Skips when that file is absent.
-    let auth_path = match std::env::var("SUPERGROK_AUTH_PATH") {
-        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => supergrok::creds::default_path().expect("resolve home dir"),
-    };
-    if !auth_path.exists() {
-        eprintln!(
-            "supergrok_live: no Grok CLI auth at {} — skipping (run `grok login`, or set SUPERGROK_AUTH_PATH)",
-            auth_path.display()
-        );
-        return;
-    }
-
+    // Grok Build owns every auth mode and returns only billing data over ACP.
+    let binary = std::env::var_os("SUPERGROK_GROK_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| ai_usagebar::config::Config::default().supergrok.grok_binary);
+    let auth_override = std::env::var_os("SUPERGROK_AUTH_PATH").map(std::path::PathBuf::from);
+    let config_override = std::env::var_os("SUPERGROK_CONFIG_PATH").map(std::path::PathBuf::from);
+    let scope_paths = supergrok::scope::ScopePaths::with_overrides(
+        auth_override.as_deref(),
+        config_override.as_deref(),
+    )
+    .expect("resolve Grok scope paths");
     let cache = xdg_cache_for("supergrok");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .unwrap();
-    let out = supergrok::fetch_snapshot(&client, &auth_path, &cache, Duration::from_secs(0))
+    let out = supergrok::fetch_snapshot(&binary, &scope_paths, &cache, Duration::ZERO)
         .await
-        .expect("supergrok fetch should succeed against the real billing surface");
+        .expect("SuperGrok billing should succeed through official Grok Build ACP");
 
     assert!(
         out.snapshot.weekly_pct >= 0,
@@ -495,14 +487,10 @@ async fn supergrok_live() {
         );
     }
     println!(
-        "✅ supergrok — plan={}, weekly {}%, products {:?}, prepaid {:?}, reset {:?}",
+        "✅ supergrok — plan={}, {} {}%, prepaid {:?}, reset {:?}",
         out.snapshot.plan,
+        out.snapshot.period.label(),
         out.snapshot.weekly_pct,
-        out.snapshot
-            .products
-            .iter()
-            .map(|p| format!("{}={}%", p.name, p.pct))
-            .collect::<Vec<_>>(),
         out.snapshot.prepaid_balance,
         out.snapshot.reset_at,
     );

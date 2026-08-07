@@ -1,5 +1,4 @@
-//! SuperGrok renderer — weekly subscription credit % + reset countdown,
-//! with optional per-product rows (GrokBuild / Api) in the tooltip.
+//! SuperGrok renderer — current subscription credit % + reset countdown.
 
 use std::collections::HashMap;
 
@@ -17,7 +16,7 @@ use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
 
-pub const DEFAULT_FORMAT: &str = "{weekly_pct}% · {weekly_reset}";
+pub const DEFAULT_FORMAT: &str = "{sgk_pct}% · {sgk_reset}";
 
 const DEFAULT_ICON: &str = "󰚩";
 
@@ -41,7 +40,7 @@ pub fn build_placeholders(
     placeholders(vec![
         ("icon", DEFAULT_ICON.to_string()),
         ("vendor_short", "sgk".to_string()),
-        // Cross-vendor aliases: SuperGrok's headline is the weekly credit pool.
+        // Cross-vendor compatibility aliases for the single current pool.
         ("plan", snap.plan.clone()),
         ("session_pct", pct.clone()),
         ("session_reset", reset.clone()),
@@ -51,6 +50,7 @@ pub fn build_placeholders(
         ("sgk_plan", snap.plan.clone()),
         ("sgk_pct", pct),
         ("sgk_reset", reset),
+        ("sgk_period", snap.period.label().to_string()),
         ("sgk_prepaid", prepaid),
     ])
 }
@@ -148,23 +148,15 @@ fn render_tooltip(
     lines.push(TooltipLine::Sep);
     lines.push(TooltipLine::Body("".into()));
 
-    // CLI / Grok Build coding pool — not the grok.com chat "weekly SuperGrok"
-    // card (separate product surface the billing host does not expose).
+    let period_label = format!("  󰔟  {} Build credits", snap.period.label());
     push_pct_row(
         &mut lines,
         theme,
-        "  󰔟  Build credits",
+        &period_label,
         snap.weekly_pct,
         snap.reset_at,
         now,
     );
-
-    for product in &snap.products {
-        lines.push(TooltipLine::Body("".into()));
-        // Product names come from the billing API — escape before embedding.
-        let label = format!("  󰚩  {}", escape(&product.name));
-        push_pct_row(&mut lines, theme, &label, product.pct, None, now);
-    }
 
     if let Some(bal) = snap.prepaid_balance {
         let bal_s = if bal < 0.0 {
@@ -179,18 +171,21 @@ fn render_tooltip(
         )));
     }
 
-    if let Some((code, msg)) = outcome.last_error.as_ref()
-        && *code != 0
-    {
+    if let Some((code, msg)) = outcome.last_error.as_ref() {
         let (icon, ecolor) = if *code >= 500 {
             ("󰅚", theme.red.as_str())
         } else {
             ("󰀪", theme.orange.as_str())
         };
+        let label = if *code == 0 {
+            "Refresh error".to_string()
+        } else {
+            format!("HTTP {code}")
+        };
         lines.push(TooltipLine::Body("".into()));
         lines.push(TooltipLine::Sep);
         lines.push(TooltipLine::Body(format!(
-            " <span foreground='{ecolor}'>  {icon}  HTTP {code}</span>"
+            " <span foreground='{ecolor}'>  {icon}  {label}</span>"
         )));
         lines.push(TooltipLine::Body(format!(
             "     <span foreground='{dim}'>{}</span>",
@@ -222,7 +217,7 @@ impl From<FetchOutcome> for VendorOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usage::SuperGrokProduct;
+    use crate::usage::SuperGrokPeriod;
     use chrono::TimeZone;
 
     fn now() -> DateTime<Utc> {
@@ -234,11 +229,8 @@ mod tests {
             plan: "SuperGrok".into(),
             account: "user-1".into(),
             weekly_pct: 34,
+            period: SuperGrokPeriod::Weekly,
             reset_at: Some(now() + chrono::Duration::hours(20)),
-            products: vec![SuperGrokProduct {
-                name: "GrokBuild".into(),
-                pct: 34,
-            }],
             prepaid_balance: Some(0.0),
         }
     }
@@ -270,7 +262,7 @@ mod tests {
         let out = render(&o, &snap, &Theme::default(), &opts(), now());
         assert!(out.text.contains("34%"));
         assert!(out.tooltip.contains("Build credits"));
-        assert!(out.tooltip.contains("GrokBuild"));
+        assert!(out.tooltip.contains("Weekly"));
         assert!(out.tooltip.contains("SuperGrok"));
         // Usage-% vendors (Anthropic / OpenAI) draw a filled progress bar in
         // the tooltip; SuperGrok must match that shape rather than bare %.
@@ -296,6 +288,7 @@ mod tests {
         assert_eq!(ph.get("vendor_short").map(String::as_str), Some("sgk"));
         assert_eq!(ph.get("weekly_pct").map(String::as_str), Some("34"));
         assert_eq!(ph.get("session_pct").map(String::as_str), Some("34"));
+        assert_eq!(ph.get("sgk_period").map(String::as_str), Some("Weekly"));
         assert_eq!(ph.get("sgk_prepaid").map(String::as_str), Some("$0.00"));
     }
 }

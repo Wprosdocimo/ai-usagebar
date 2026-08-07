@@ -121,7 +121,7 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
         VendorSnapshot::Novita(s) => (String::new(), vec![money(s.available)]),
         VendorSnapshot::Moonshot(s) => (String::new(), vec![ccy(s.available, &s.currency)]),
         VendorSnapshot::Grok(s) => (String::new(), vec![money(s.balance)]),
-        VendorSnapshot::SuperGrok(s) => (s.plan.clone(), vec![pct("wk", s.weekly_pct)]),
+        VendorSnapshot::SuperGrok(s) => (s.plan.clone(), vec![pct(s.period.short(), s.weekly_pct)]),
         VendorSnapshot::Antigravity(s) => (
             s.plan.clone(),
             vec![
@@ -747,7 +747,7 @@ fn supergrok_sections(s: &crate::usage::SuperGrokSnapshot, now: DateTime<Utc>) -
         },
         Section::Spacer,
         Section::Metric {
-            label: "Build credits".into(),
+            label: format!("{} Build credits", s.period.label()),
             pct: pct.clamp(0, 100) as u16,
             severity: severity_for(pct),
             value_label: format!("{pct}%"),
@@ -759,16 +759,6 @@ fn supergrok_sections(s: &crate::usage::SuperGrokSnapshot, now: DateTime<Utc>) -
             value: countdown::format(s.reset_at, now),
         },
     ];
-    for product in &s.products {
-        v.push(Section::Spacer);
-        v.push(Section::Metric {
-            label: product.name.clone(),
-            pct: product.pct.clamp(0, 100) as u16,
-            severity: severity_for(product.pct),
-            value_label: format!("{}%", product.pct),
-            footnote: String::new(),
-        });
-    }
     if let Some(bal) = s.prepaid_balance {
         v.push(Section::Spacer);
         v.push(Section::Text {

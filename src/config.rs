@@ -655,20 +655,47 @@ impl Default for GrokConfig {
     }
 }
 
-/// SuperGrok subscription OAuth — no API key. Reads the OIDC session the
-/// Grok Build CLI wrote to `~/.grok/auth.json` after `grok login`, refreshes
-/// it via `auth.x.ai`, and polls the CLI billing surface for weekly credits.
+/// SuperGrok subscription auth — no API key. Asks the official Grok Build
+/// CLI for billing through its `x.ai/billing` ACP extension, leaving every
+/// credential, issuer, proxy, and token-rotation decision inside Grok Build.
 ///
-/// Opt-in like Cursor/Kiro (`enabled` defaults to `false`): the billing host
-/// is undocumented and the credential is a rotating OAuth token, so it stays
-/// off until the user explicitly turns it on.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+/// Opt-in like Cursor/Kiro (`enabled` defaults to `false`): it requires a
+/// separate official executable and signed-in session, so it stays off until
+/// the user explicitly turns it on.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SuperGrokConfig {
     pub enabled: bool,
-    /// Override the Grok CLI auth file path (defaults to `~/.grok/auth.json`
-    /// — see `supergrok::creds::default_path`).
+    /// Trusted official Grok Build executable. Defaults to its canonical
+    /// `$GROK_HOME/bin/grok` (or `~/.grok/bin/grok`) installation path instead
+    /// of searching PATH, where unrelated programs can share the name.
+    pub grok_binary: PathBuf,
+    /// Opaque auth/config files used only to fingerprint the active cache
+    /// scope. Their contents are never parsed or copied to the cache.
     pub auth_path: Option<PathBuf>,
+    pub config_path: Option<PathBuf>,
+}
+
+impl Default for SuperGrokConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            grok_binary: default_grok_binary(),
+            auth_path: None,
+            config_path: None,
+        }
+    }
+}
+
+fn default_grok_binary() -> PathBuf {
+    let executable = if cfg!(windows) { "grok.exe" } else { "grok" };
+    let grok_home = std::env::var_os("GROK_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| crate::cache::home_dir().ok().map(|home| home.join(".grok")));
+    grok_home
+        .map(|home| home.join("bin").join(executable))
+        .unwrap_or_else(|| PathBuf::from(executable))
 }
 
 /// Antigravity reads its quota from whichever local Antigravity product is
@@ -821,7 +848,9 @@ impl Config {
         expand_tilde_opt(&mut self.cursor.db_path);
         expand_tilde_opt(&mut self.cursor.agent_auth_path);
         expand_tilde_opt(&mut self.kiro.db_path);
+        self.supergrok.grok_binary = expand_tilde(&self.supergrok.grok_binary);
         expand_tilde_opt(&mut self.supergrok.auth_path);
+        expand_tilde_opt(&mut self.supergrok.config_path);
         for account in &mut self.anthropic.accounts {
             account.credentials_path = expand_tilde(&account.credentials_path);
         }
@@ -893,6 +922,11 @@ impl Config {
                 "[minimax] region must be \"global\" or \"cn\", got {:?}",
                 self.minimax.region
             )));
+        }
+        if self.supergrok.grok_binary.as_os_str().is_empty() {
+            return Err(AppError::Other(
+                "[supergrok] grok_binary must not be empty".into(),
+            ));
         }
         let mut labels = HashSet::new();
         for account in &self.anthropic.accounts {
@@ -1837,9 +1871,55 @@ enabled = false
         assert!(!cfg.novita.enabled && cfg.novita.api_key.is_none());
         assert!(!cfg.moonshot.enabled && cfg.moonshot.api_key.is_none());
         assert!(!cfg.grok.enabled && cfg.grok.api_key.is_none());
-        assert!(!cfg.supergrok.enabled && cfg.supergrok.auth_path.is_none());
+        assert!(!cfg.supergrok.enabled);
+        assert_eq!(cfg.supergrok.grok_binary, default_grok_binary());
+        assert_eq!(
+            cfg.supergrok
+                .grok_binary
+                .file_name()
+                .and_then(|p| p.to_str()),
+            Some(if cfg!(windows) { "grok.exe" } else { "grok" })
+        );
+        assert!(cfg.supergrok.auth_path.is_none());
+        assert!(cfg.supergrok.config_path.is_none());
         assert!(!cfg.cursor.enabled && cfg.cursor.db_path.is_none());
         assert!(!cfg.kiro.enabled && cfg.kiro.db_path.is_none());
+    }
+
+    #[test]
+    fn supergrok_binary_must_not_be_empty() {
+        let file = write_toml(
+            r#"
+            [supergrok]
+            enabled = true
+            grok_binary = ""
+            "#,
+        );
+        let error = Config::load_from(file.path()).unwrap_err().to_string();
+        assert!(error.contains("grok_binary must not be empty"));
+    }
+
+    #[test]
+    fn supergrok_paths_are_tilde_expanded() {
+        let file = write_toml(
+            r#"
+            [supergrok]
+            grok_binary = "~/bin/grok"
+            auth_path = "~/.grok/auth.json"
+            config_path = "~/.grok/config.toml"
+            "#,
+        );
+        let config = Config::load_from(file.path()).unwrap();
+        let home = crate::cache::home_dir().unwrap();
+        assert_eq!(config.supergrok.grok_binary, home.join("bin/grok"));
+        assert_eq!(
+            config.supergrok.auth_path,
+            Some(home.join(".grok/auth.json"))
+        );
+        assert_eq!(
+            config.supergrok.config_path,
+            Some(home.join(".grok/config.toml"))
+        );
     }
 
     #[test]

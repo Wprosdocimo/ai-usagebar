@@ -643,14 +643,17 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
         }
         VendorId::Supergrok => {
             let cache = crate::cache::Cache::for_vendor("supergrok")?;
-            let auth_path = config
-                .supergrok
-                .auth_path
-                .clone()
-                .map(Ok)
-                .unwrap_or_else(crate::supergrok::creds::default_path)?;
-            let outcome =
-                crate::supergrok::fetch_snapshot(client, &auth_path, &cache, DEFAULT_TTL).await?;
+            let scope_paths = crate::supergrok::scope::ScopePaths::with_overrides(
+                config.supergrok.auth_path.as_deref(),
+                config.supergrok.config_path.as_deref(),
+            )?;
+            let outcome = crate::supergrok::fetch_snapshot(
+                &config.supergrok.grok_binary,
+                &scope_paths,
+                &cache,
+                DEFAULT_TTL,
+            )
+            .await?;
             Ok(outcome.into())
         }
         VendorId::Antigravity => {

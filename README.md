@@ -88,7 +88,7 @@ Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth c
 | Novita | API key (`NOVITA_API_KEY` env or `[novita] api_key` in config) | Set either. Opt-in. |
 | Moonshot | API key (`MOONSHOT_API_KEY` env or `[moonshot] api_key` in config) | Set either. Opt-in. Set `[moonshot] region = "cn"` for `api.moonshot.cn` (balance in CNY); the default `"global"` uses `api.moonshot.ai` (USD). |
 | Grok (xAI) | **Management** key (`XAI_MANAGEMENT_KEY` env or `[grok] api_key` in config) | Set either. Opt-in. This is **not** the inference key — create it under xAI Console → Management keys. See the team note below. |
-| SuperGrok | None — read OIDC session from `~/.grok/auth.json` | Opt-in. Run `grok login` once. Token auto-refreshes (rotated tokens written back to that file). Weekly included-credit usage from the CLI billing surface — **not** the Management API prepaid balance. |
+| SuperGrok | None — official Grok Build `x.ai/billing` ACP extension | Opt-in. Install the official Grok Build CLI and run `grok login` once. Grok Build retains sole ownership of tokens, account scope, custom OIDC/external providers, proxies, and refresh locking. Reports the current weekly or monthly included-credit period — **not** the Management API prepaid balance. |
 | MiniMax | **Token Plan** key (`MINIMAX_API_KEY` env or `[minimax] api_key` in config) | Set either. Opt-in. Must be the Token Plan **subscription** key — a pay-as-you-go key has no plan quota to report. Set `[minimax] region = "cn"` for `api.minimaxi.com`; the default `"global"` uses `api.minimax.io`. The two are separate instances and reject each other's keys. |
 | Google Antigravity | None — read from the local Antigravity server | Opt-in. Quota is served only while Antigravity 2.0, the Antigravity IDE, or an interactive `agy` session is running; all three share one account-wide quota. |
 | Cursor | None — read from Cursor's local `state.vscdb` (or the `cursor-agent` CLI's `auth.json`) | Opt-in. Sign in to the Cursor IDE at least once; ai-usagebar reads the session token it already wrote there. No key of your own to create. Headless machines with no desktop IDE work too: sign in to `cursor-agent` once and its own `auth.json` is used as a fallback when the IDE database is absent. |
@@ -136,7 +136,7 @@ For each API-key vendor, ai-usagebar checks in this order:
 
 - If you put inline `api_key` values in config, `chmod 600 ~/.config/ai-usagebar/config.toml`. The default behavior reads only env vars, which is safer when your config might be world-readable.
 - Don't commit your config dir if you check it into dotfiles unless you've redacted `api_key` lines.
-- OAuth credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`) are managed by their respective CLIs and already chmod-protected. SuperGrok reads and (on token rotation) writes `~/.grok/auth.json` the same way OpenAI refreshes Codex — without write-back a rotated refresh token would strand the Grok CLI.
+- OAuth credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`) are managed by their respective CLIs and already chmod-protected. SuperGrok is stricter: ai-usagebar never parses or writes Grok credentials; it asks the official Grok Build process for a credential-free billing result. The auth/config files are only hashed as opaque bytes to prevent cross-login cache reuse.
 - Cursor's session token lives in its own `state.vscdb`, managed entirely by the Cursor IDE — ai-usagebar opens it read-only and never writes to it. On machines without the IDE, the `cursor-agent` CLI's own `auth.json` is read as a fallback instead — same read-only treatment.
 - kiro-cli's AWS SSO OIDC session lives in its own `data.sqlite3`, managed entirely by kiro-cli — ai-usagebar opens it read-only; refreshed credentials are stored atomically in an account-scoped `kiro/oauth.json` cache file (mode 0600 on Unix), never written back to kiro-cli's database.
 
@@ -235,8 +235,13 @@ api_key_env = "XAI_MANAGEMENT_KEY"
 
 [supergrok]
 enabled = true             # disabled by default; enable once you've run `grok login`
-# No API key: OIDC session from the Grok Build CLI's ~/.grok/auth.json.
+# No API key: billing comes from the official Grok Build ACP process.
+# Defaults to $GROK_HOME/bin/grok or ~/.grok/bin/grok. Override only when the
+# trusted official binary was installed elsewhere.
+# grok_binary = "/opt/grok/bin/grok"
+# Opaque cache-scope fingerprint inputs; neither file is parsed or copied.
 # auth_path = "/home/you/.grok/auth.json"
+# config_path = "/home/you/.grok/config.toml"
 
 [cursor]
 enabled = true             # disabled by default; enable once you've signed in to Cursor
@@ -670,7 +675,7 @@ Then `hyprctl reload` (no logout needed).
 | **Novita** | `api.novita.ai/openapi/v1/billing/balance/detail` (documented) | Remaining credit balance ($) | No — widget/TUI only |
 | **Moonshot** | `api.moonshot.ai\|.cn/v1/users/me/balance` (documented) | Account balance ($ on `.ai`, ¥ on `.cn`) | No — widget/TUI only |
 | **Grok (xAI)** | `management-api.x.ai/v1/billing/teams/{team}/prepaid/balance` (Management API; documented) | Prepaid credit balance ($) | No — widget/TUI only |
-| **SuperGrok** | `cli-chat-proxy.grok.com/v1/billing?format=credits` (unofficial; same surface as Grok Build CLI) | Weekly included-credit %, optional per-product rows (GrokBuild / Api), prepaid API balance, reset | No — widget/TUI only |
+| **SuperGrok** | Official Grok Build `x.ai/billing` ACP extension | Current weekly/monthly included-credit %, prepaid API balance, reset | No — widget/TUI only |
 | **Anthropic (API)** | `api.anthropic.com/v1/organizations/cost_report` (Admin API; documented) | Month-to-date spend ($, excludes Priority Tier), optional spend-vs-limit % | No — widget/TUI only |
 | **Cursor** | `cursor.com/api/usage-summary` (undocumented; the dashboard's own frontend) | Two included-usage pools this billing cycle — Cursor Models (Auto/Composer) % and Other Models (named/API) % — plus plan, reset, on-demand | Yes |
 | **Kiro CLI** | `codewhisperer.<region>.amazonaws.com` `GetUsageLimits` (undocumented; the same call kiro-cli's own `/usage` slash command makes) | Single credit pool this cycle — used/limit/%, plan, reset | No — widget/TUI only |
@@ -739,9 +744,9 @@ When an endpoint drifts, **run `make smoke`**. It runs all ignored vendor tests,
 
 ### SuperGrok
 
-`{sgk_plan}`, `{sgk_pct}`, `{sgk_reset}`, `{sgk_prepaid}` — weekly included-credit usage from the Grok Build CLI billing surface (`cli-chat-proxy.grok.com`), authenticated with the OIDC session in `~/.grok/auth.json` after `grok login`. Default bar format is `{weekly_pct}% · {weekly_reset}`. Generic aliases: `{session_pct}` = `{weekly_pct}` = `sgk_pct` (one headline pool fills both slots), `{plan}` = subscription tier label when present.
+`{sgk_plan}`, `{sgk_pct}`, `{sgk_reset}`, `{sgk_period}`, `{sgk_prepaid}` — the current coherent included-credit period returned by the official Grok Build `x.ai/billing` ACP extension. `{sgk_period}` is `Weekly`, `Monthly`, or `Current period`. Default bar format is `{sgk_pct}% · {sgk_reset}`. For existing cross-vendor formats, `{session_pct}` and `{weekly_pct}` remain aliases of `sgk_pct` (and their reset aliases remain available); `{plan}` is the subscription tier when supplied.
 
-> Distinct from the `grok` vendor: SuperGrok is the **subscription** quota path (OAuth). Grok is the **Management API prepaid** balance path (management key). Token refresh writes rotated credentials back to `~/.grok/auth.json` so the official CLI keeps a live session.
+> Distinct from the `grok` vendor: SuperGrok is the **subscription** path owned by Grok Build authentication. Grok is the **Management API prepaid** balance path using a management key. ai-usagebar never parses, copies, caches, refreshes, or places the SuperGrok token in ACP messages; it only hashes the auth/config files as opaque cache-scope inputs. The executable defaults to Grok Build's canonical `$GROK_HOME/bin/grok` (or `~/.grok/bin/grok`) rather than searching PATH; set `[supergrok] grok_binary` only if your trusted official binary lives elsewhere.
 
 ### Anthropic (API)
 

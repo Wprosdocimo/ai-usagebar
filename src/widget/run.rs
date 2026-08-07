@@ -301,16 +301,23 @@ async fn grok_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
     ))
 }
 
-/// SuperGrok authenticates via the OIDC session `grok login` already wrote to
-/// `~/.grok/auth.json` — no API key to resolve.
+/// SuperGrok delegates auth and billing transport to the official Grok Build
+/// ACP process — no token or API key is parsed, cached, refreshed, or placed
+/// in an ACP message by ai-usagebar.
 async fn supergrok_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
-    let client = http_client()?;
     let cache = vendor_cache(cli, "supergrok")?;
-    let auth_path = match config.supergrok.auth_path.as_deref() {
-        Some(p) => p.to_path_buf(),
-        None => supergrok::creds::default_path()?,
-    };
-    let outcome = match supergrok::fetch_snapshot(&client, &auth_path, &cache, DEFAULT_TTL).await {
+    let scope_paths = supergrok::scope::ScopePaths::with_overrides(
+        config.supergrok.auth_path.as_deref(),
+        config.supergrok.config_path.as_deref(),
+    )?;
+    let outcome = match supergrok::fetch_snapshot(
+        &config.supergrok.grok_binary,
+        &scope_paths,
+        &cache,
+        DEFAULT_TTL,
+    )
+    .await
+    {
         Ok(o) => o,
         Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
         Err(e) => return Err(e),

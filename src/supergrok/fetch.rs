@@ -1,51 +1,21 @@
-//! SuperGrok fetch — read OAuth from `~/.grok/auth.json`, refresh when close
-//! to expiry (writing rotated tokens back), then
-//! `GET …/v1/billing?format=credits` with the Grok CLI host fingerprint.
-//!
-//! Cache/stale/error-fallback shape mirrors `kiro::fetch` / `cursor::fetch`.
+//! SuperGrok fetch/cache orchestration around Grok Build's billing ACP method.
 
+use std::future::Future;
 use std::path::Path;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
 use crate::error::{AppError, Result};
-use crate::usage::SuperGrokSnapshot;
-use crate::vendor::{MAX_BODY_BYTES, read_body_capped};
+use crate::usage::{SuperGrokPeriod, SuperGrokSnapshot};
 
-use super::creds::{self, AccountEntry, AuthFile};
-use super::oauth;
-use super::types::{self, BillingResponse};
+use super::scope::ScopePaths;
+use super::{acp, scope, types};
 
-/// CLI chat-proxy billing host. Pinned to HTTPS `*.grok.com` (same host the
-/// official Grok Build CLI uses). Not a public documented API.
-pub const BILLING_BASE: &str = "https://cli-chat-proxy.grok.com/v1";
-const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(15);
-/// Same gate header the Grok Build CLI sends so subscription billing accepts
-/// the OAuth bearer (OMP #4874 / grok-build billing.rs).
-const TOKEN_AUTH_HEADER: &str = "xai-grok-cli";
-
-#[derive(Debug, Clone)]
-pub struct Endpoints {
-    /// Credits-config shape (`?format=credits`) — weekly % when present.
-    pub billing: String,
-    /// Legacy monthly shape (plain `/billing`) — fill-in for unified accounts
-    /// that omit percent fields on the credits endpoint.
-    pub billing_legacy: String,
-    pub token: String,
-}
-
-impl Default for Endpoints {
-    fn default() -> Self {
-        Self {
-            billing: format!("{BILLING_BASE}/billing?format=credits"),
-            billing_legacy: format!("{BILLING_BASE}/billing"),
-            token: oauth::TOKEN_URL.to_string(),
-        }
-    }
-}
+const CACHE_SCHEMA: u8 = 2;
 
 #[derive(Debug, Clone)]
 pub struct FetchOutcome {
@@ -56,503 +26,454 @@ pub struct FetchOutcome {
 }
 
 pub async fn fetch_snapshot(
-    client: &reqwest::Client,
-    auth_path: &Path,
+    grok_binary: &Path,
+    scope_paths: &ScopePaths,
     cache: &Cache,
     cache_ttl: Duration,
 ) -> Result<FetchOutcome> {
-    fetch_snapshot_at(
-        client,
-        auth_path,
+    fetch_snapshot_with(
         cache,
         cache_ttl,
-        &Endpoints::default(),
         Utc::now(),
+        || scope::fingerprint(scope_paths),
+        || acp::fetch_billing(grok_binary),
     )
     .await
 }
 
-/// Test seam: inject endpoints + clock.
-pub async fn fetch_snapshot_at(
-    client: &reqwest::Client,
-    auth_path: &Path,
+async fn fetch_snapshot_with<S, F, Fut>(
     cache: &Cache,
     cache_ttl: Duration,
-    endpoints: &Endpoints,
     now: DateTime<Utc>,
-) -> Result<FetchOutcome> {
+    read_scope: S,
+    fetch_billing: F,
+) -> Result<FetchOutcome>
+where
+    S: Fn() -> Option<String>,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<types::BillingResponse>>,
+{
     cache.ensure_dir()?;
     let _lock = acquire_lock_async(&cache.lock_path(), LOCK_TIMEOUT).await?;
+    let scope_before = read_scope();
 
-    let mut auth = creds::read_from(auth_path)?;
-    let (slot_key, mut entry) = creds::select_account(&auth)?;
-    let account = entry.account_key();
-
-    if let Some(bytes) = cache.fresh_payload(cache_ttl)?
-        && let Ok(outcome) = reuse_cache(&bytes, cache, false, &account)
-        // A snapshot whose period already ended must not keep blocking a
-        // refetch (shows "Resets now" + last week's % until TTL expires).
+    if let Some(account_scope) = scope_before.as_deref()
+        && let Some(bytes) = cache.fresh_payload(cache_ttl)?
+        && let Ok(outcome) = reuse_cache(&bytes, cache, false, account_scope)
         && !period_has_ended(&outcome.snapshot, now)
     {
         return Ok(outcome);
     }
 
-    // Silent OIDC refresh when close to expiry; always persist rotation.
-    if let Err(e) = ensure_fresh_token(
-        client, endpoints, auth_path, &mut auth, &slot_key, &mut entry, now,
-    )
-    .await
-    {
-        if e.is_transient() {
-            return fallback_silent(cache, &account, e);
-        }
-        // Hard auth failure: still try cache with the error attached.
-        cache.mark_stale();
-        if let Some((code, msg)) = error_to_pair(&e) {
-            cache.write_last_error(code, &msg);
-        }
-        return fallback_with_error(cache, &account, e);
-    }
+    match fetch_billing().await {
+        Ok(response) => {
+            let account_scope = scope_before.as_deref().unwrap_or("uncached");
+            let mut snapshot = match types::to_snapshot(response, account_scope) {
+                Ok(snapshot) => snapshot,
+                Err(error) => return fallback(cache, scope_before.as_deref(), now, error),
+            };
+            let scope_after = read_scope();
 
-    match fetch_live(client, endpoints, &entry).await {
-        Ok(snap) => {
-            let bytes = serde_json::to_vec(&snap_to_json(&snap))?;
-            cache.write_payload(&bytes)?;
+            // A concurrent login, config change, or token rotation means the
+            // account identity was not stable across the request. Return the
+            // live result, but do not bind it to either cache scope.
+            if scope_before.is_some() && scope_before == scope_after {
+                let account_scope = scope_before.as_deref().expect("checked Some");
+                snapshot.account = account_scope.to_string();
+                let bytes =
+                    serde_json::to_vec(&CachedEnvelope::from_snapshot(account_scope, &snapshot))?;
+                cache.write_payload(&bytes)?;
+            } else {
+                snapshot.account = "uncached".into();
+            }
+
             Ok(FetchOutcome {
-                snapshot: snap,
+                snapshot,
                 stale: false,
                 last_error: None,
                 cache_age: Some(Duration::ZERO),
             })
         }
-        Err(e) if e.is_transient() => fallback_silent(cache, &account, e),
-        Err(e) => {
-            cache.mark_stale();
-            if let Some((code, msg)) = error_to_pair(&e) {
-                cache.write_last_error(code, &msg);
-            }
-            fallback_with_error(cache, &account, e)
+        Err(error) => fallback(cache, scope_before.as_deref(), now, error),
+    }
+}
+
+fn period_has_ended(snapshot: &SuperGrokSnapshot, now: DateTime<Utc>) -> bool {
+    snapshot.reset_at.is_some_and(|reset| reset <= now)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedEnvelope {
+    schema: u8,
+    scope: String,
+    snapshot: CachedSnapshot,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedSnapshot {
+    plan: String,
+    percent: i32,
+    period: String,
+    reset_at: Option<DateTime<Utc>>,
+    prepaid_balance: Option<f64>,
+}
+
+impl CachedEnvelope {
+    fn from_snapshot(scope: &str, snapshot: &SuperGrokSnapshot) -> Self {
+        let period = match snapshot.period {
+            SuperGrokPeriod::Weekly => "weekly",
+            SuperGrokPeriod::Monthly => "monthly",
+            SuperGrokPeriod::Unknown => "unknown",
+        };
+        Self {
+            schema: CACHE_SCHEMA,
+            scope: scope.to_string(),
+            snapshot: CachedSnapshot {
+                plan: snapshot.plan.clone(),
+                percent: snapshot.weekly_pct,
+                period: period.to_string(),
+                reset_at: snapshot.reset_at,
+                prepaid_balance: snapshot.prepaid_balance,
+            },
         }
     }
 }
 
-async fn ensure_fresh_token(
-    client: &reqwest::Client,
-    endpoints: &Endpoints,
-    auth_path: &Path,
-    auth: &mut AuthFile,
-    slot_key: &str,
-    entry: &mut AccountEntry,
-    now: DateTime<Utc>,
-) -> Result<()> {
-    if !creds::needs_refresh(entry, now) {
-        return Ok(());
+fn parse_cache(bytes: &[u8], account_scope: &str) -> Result<SuperGrokSnapshot> {
+    let cached: CachedEnvelope = serde_json::from_slice(bytes)?;
+    if cached.schema != CACHE_SCHEMA {
+        return Err(AppError::Schema(
+            "SuperGrok cache schema is obsolete; refetching".into(),
+        ));
     }
-    let refresh_token = entry
-        .refresh_token
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            AppError::Credentials(
-                "SuperGrok: access token expired and no refresh_token is stored. Run `grok login`."
-                    .into(),
-            )
-        })?;
-    let client_id = entry.client_id(slot_key)?;
-    let resp = oauth::refresh(client, &endpoints.token, &client_id, refresh_token).await?;
-    entry.apply_refresh(resp.access_token, resp.refresh_token, resp.expires_in, now);
-    auth.accounts.insert(slot_key.to_string(), entry.clone());
-    creds::write_back(auth_path, auth)?;
-    Ok(())
-}
-
-fn period_has_ended(snap: &SuperGrokSnapshot, now: DateTime<Utc>) -> bool {
-    snap.reset_at.is_some_and(|r| r <= now)
-}
-
-async fn get_billing_json(
-    client: &reqwest::Client,
-    url: &str,
-    entry: &AccountEntry,
-) -> Result<BillingResponse> {
-    let mut req = client
-        .get(url)
-        .header("Authorization", format!("Bearer {}", entry.key))
-        .header("X-XAI-Token-Auth", TOKEN_AUTH_HEADER)
-        .header("User-Agent", "xai-grok-cli")
-        .header("Accept", "application/json");
-    if let Some(uid) = entry.user_id.as_deref().filter(|s| !s.is_empty()) {
-        req = req.header("x-userid", uid);
+    if cached.scope != account_scope {
+        return Err(AppError::Schema(
+            "SuperGrok cache belongs to a different login; refetching".into(),
+        ));
     }
-
-    let resp = tokio::time::timeout(HTTP_TIMEOUT, req.send())
-        .await
-        .map_err(|_| AppError::Transport(format!("supergrok billing timeout: {url}")))??;
-
-    let status = resp.status();
-    let bytes = read_body_capped(resp, MAX_BODY_BYTES).await?;
-    if !status.is_success() {
-        let body = String::from_utf8_lossy(&bytes).chars().take(200).collect();
-        return Err(AppError::Http {
-            status: status.as_u16(),
-            body,
-        });
+    if !(0..=100).contains(&cached.snapshot.percent) {
+        return Err(AppError::Schema(
+            "SuperGrok cached percentage is out of range".into(),
+        ));
     }
-    serde_json::from_slice(&bytes).map_err(|e| AppError::Schema(format!("supergrok billing: {e}")))
-}
-
-async fn fetch_live(
-    client: &reqwest::Client,
-    endpoints: &Endpoints,
-    entry: &AccountEntry,
-) -> Result<SuperGrokSnapshot> {
-    let credits = get_billing_json(client, &endpoints.billing, entry).await?;
-    // Best-effort merge of the legacy monthly body for unified accounts that
-    // omit percent fields on `?format=credits` (oh-my-pi #6388). A failure here
-    // must not discard a usable credits response.
-    let merged = match get_billing_json(client, &endpoints.billing_legacy, entry).await {
-        Ok(legacy) => types::merge_billing(credits, legacy),
-        Err(_) => credits,
+    if cached.snapshot.plan.chars().count() > 128
+        || cached.snapshot.plan.chars().any(char::is_control)
+    {
+        return Err(AppError::Schema(
+            "SuperGrok cached plan label is invalid".into(),
+        ));
+    }
+    let period = match cached.snapshot.period.as_str() {
+        "weekly" => SuperGrokPeriod::Weekly,
+        "monthly" => SuperGrokPeriod::Monthly,
+        "unknown" => SuperGrokPeriod::Unknown,
+        _ => {
+            return Err(AppError::Schema(
+                "SuperGrok cached period kind is invalid".into(),
+            ));
+        }
     };
-    types::to_snapshot(merged, &entry.account_key())
-}
-
-fn snap_to_json(snap: &SuperGrokSnapshot) -> serde_json::Value {
-    serde_json::json!({
-        "account": snap.account,
-        "snapshot": {
-            "plan": snap.plan,
-            "account": snap.account,
-            "weekly_pct": snap.weekly_pct,
-            "reset_at": snap.reset_at.map(|t| t.to_rfc3339()),
-            "products": snap.products.iter().map(|p| {
-                serde_json::json!({"name": p.name, "pct": p.pct})
-            }).collect::<Vec<_>>(),
-            "prepaid_balance": snap.prepaid_balance,
-        }
-    })
-}
-
-fn parse_cache(bytes: &[u8], account: &str) -> Result<SuperGrokSnapshot> {
-    let v: serde_json::Value = serde_json::from_slice(bytes)?;
-    let cached_account = v.get("account").and_then(|x| x.as_str()).unwrap_or("");
-    if cached_account != account {
-        return Err(AppError::Schema(format!(
-            "supergrok cache belongs to a different account ({cached_account}); refetching"
-        )));
+    if cached
+        .snapshot
+        .prepaid_balance
+        .is_some_and(|balance| !balance.is_finite() || balance < 0.0)
+    {
+        return Err(AppError::Schema(
+            "SuperGrok cached prepaid balance is invalid".into(),
+        ));
     }
-    let s = v
-        .get("snapshot")
-        .ok_or_else(|| AppError::Schema("supergrok cache missing 'snapshot'".into()))?;
-    let plan = s
-        .get("plan")
-        .and_then(|x| x.as_str())
-        .unwrap_or("SuperGrok")
-        .to_string();
-    let weekly_pct = s
-        .get("weekly_pct")
-        .and_then(|x| x.as_i64())
-        .ok_or_else(|| AppError::Schema("supergrok cache missing weekly_pct".into()))?
-        as i32;
-    let reset_at = s
-        .get("reset_at")
-        .and_then(|x| x.as_str())
-        .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-        .map(|t| t.with_timezone(&Utc));
-    let products = s
-        .get("products")
-        .and_then(|x| x.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|p| {
-                    Some(crate::usage::SuperGrokProduct {
-                        name: p.get("name")?.as_str()?.to_string(),
-                        pct: p.get("pct")?.as_i64()? as i32,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let prepaid_balance = s.get("prepaid_balance").and_then(|x| x.as_f64());
+
     Ok(SuperGrokSnapshot {
-        plan,
-        account: account.to_string(),
-        weekly_pct,
-        reset_at,
-        products,
-        prepaid_balance,
+        plan: cached.snapshot.plan,
+        account: account_scope.to_string(),
+        weekly_pct: cached.snapshot.percent,
+        period,
+        reset_at: cached.snapshot.reset_at,
+        prepaid_balance: cached.snapshot.prepaid_balance,
     })
 }
 
-fn reuse_cache(bytes: &[u8], cache: &Cache, stale: bool, account: &str) -> Result<FetchOutcome> {
-    let snap = parse_cache(bytes, account)?;
+fn reuse_cache(
+    bytes: &[u8],
+    cache: &Cache,
+    stale: bool,
+    account_scope: &str,
+) -> Result<FetchOutcome> {
     Ok(FetchOutcome {
-        snapshot: snap,
+        snapshot: parse_cache(bytes, account_scope)?,
         stale,
         last_error: cache.read_last_error(),
         cache_age: cache.payload_age(),
     })
 }
 
-fn fallback_silent(cache: &Cache, account: &str, original: AppError) -> Result<FetchOutcome> {
+fn fallback(
+    cache: &Cache,
+    account_scope: Option<&str>,
+    now: DateTime<Utc>,
+    original: AppError,
+) -> Result<FetchOutcome> {
+    let Some(account_scope) = account_scope else {
+        return Err(original);
+    };
     let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
         return Err(original);
     };
-    match reuse_cache(&bytes, cache, true, account) {
-        // Never resurrect a prior period's % after rollover.
-        Ok(o) if !period_has_ended(&o.snapshot, Utc::now()) => Ok(o),
-        _ => Err(original),
-    }
-}
-
-fn fallback_with_error(cache: &Cache, account: &str, original: AppError) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    match reuse_cache(&bytes, cache, true, account) {
-        Ok(mut o) if !period_has_ended(&o.snapshot, Utc::now()) => {
-            o.last_error = error_to_pair(&original);
-            Ok(o)
+    match reuse_cache(&bytes, cache, true, account_scope) {
+        Ok(mut outcome) if !period_has_ended(&outcome.snapshot, now) => {
+            let error = error_to_pair(&original);
+            cache.mark_stale();
+            cache.write_last_error(error.0, &error.1);
+            outcome.last_error = Some(error);
+            Ok(outcome)
         }
         _ => Err(original),
     }
 }
 
-fn error_to_pair(e: &AppError) -> Option<(u16, String)> {
-    match e {
-        AppError::Http { status, body } => Some((*status, body.clone())),
-        other => Some((0, other.to_string())),
+fn error_to_pair(error: &AppError) -> (u16, String) {
+    match error {
+        AppError::Http { status, body } => (*status, body.clone()),
+        other => (0, other.to_string()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
+    use chrono::TimeZone;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempfile::TempDir;
 
-    fn cache_fixture() -> (TempDir, Cache) {
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 8, 7, 0, 0, 0).unwrap()
+    }
+
+    fn fixture() -> (TempDir, Cache) {
         let td = TempDir::new().unwrap();
         let cache = Cache::at(td.path().join("supergrok"));
-        cache.ensure_dir().unwrap();
         (td, cache)
     }
 
-    /// Write auth to a closed path under `dir`. Do **not** keep a file handle
-    /// open — `write_back` renames over the target, and Windows denies that
-    /// while the original handle is still open.
-    fn write_auth(dir: &Path, access: &str, refresh: &str, expires: &str) -> PathBuf {
-        let path = dir.join("auth.json");
-        let body = format!(
-            r#"{{
-              "https://auth.x.ai::cid": {{
-                "key": "{access}",
-                "refresh_token": "{refresh}",
-                "expires_at": "{expires}",
-                "user_id": "user-1",
-                "oidc_client_id": "cid"
-              }}
-            }}"#
-        );
-        std::fs::write(&path, body).unwrap();
-        path
+    fn weekly_response(percent: f64) -> types::BillingResponse {
+        serde_json::from_value(serde_json::json!({
+            "config": {
+                "creditUsagePercent": percent,
+                "currentPeriod": {
+                    "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                    "end": "2026-08-14T00:00:00Z"
+                }
+            },
+            "subscription_tier": "SuperGrok"
+        }))
+        .unwrap()
     }
 
     #[tokio::test]
-    async fn fresh_token_fetches_billing() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("GET", "/v1/billing")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "format".into(),
-                "credits".into(),
-            ))
-            .match_header("authorization", "Bearer good-at")
-            .match_header("x-xai-token-auth", "xai-grok-cli")
-            .with_status(200)
-            .with_body(
-                r#"{"config":{"creditUsagePercent":12.4,"currentPeriod":{"end":"2026-08-10T00:00:00Z"},"productUsage":[{"product":"GrokBuild","usagePercent":12.4}]}}"#,
-            )
-            .create_async()
-            .await;
-
-        let auth_td = TempDir::new().unwrap();
-        let auth = write_auth(
-            auth_td.path(),
-            "good-at",
-            "rt",
-            // Far future — no refresh.
-            "2099-01-01T00:00:00Z",
-        );
-        let (_td, cache) = cache_fixture();
-        let client = reqwest::Client::new();
-        let endpoints = Endpoints {
-            billing: format!("{}/v1/billing?format=credits", server.url()),
-            billing_legacy: format!("{}/v1/billing", server.url()),
-            token: format!("{}/oauth2/token", server.url()),
-        };
-        let out = fetch_snapshot_at(
-            &client,
-            &auth,
+    async fn live_fetch_writes_only_an_opaque_scope_to_cache() {
+        let (_td, cache) = fixture();
+        let outcome = fetch_snapshot_with(
             &cache,
-            Duration::from_secs(0),
-            &endpoints,
-            Utc::now(),
+            Duration::ZERO,
+            now(),
+            || Some("opaque-digest".into()),
+            || async { Ok(weekly_response(12.4)) },
         )
         .await
         .unwrap();
-        assert_eq!(out.snapshot.weekly_pct, 12);
-        assert_eq!(out.snapshot.products[0].name, "GrokBuild");
-        assert!(!out.stale);
+        assert_eq!(outcome.snapshot.weekly_pct, 12);
+        assert_eq!(outcome.snapshot.period, SuperGrokPeriod::Weekly);
+
+        let cache_text = std::fs::read_to_string(cache.payload_path()).unwrap();
+        assert!(cache_text.contains("opaque-digest"));
+        assert!(!cache_text.contains("access_token"));
+        assert!(!cache_text.contains("user_id"));
     }
 
     #[tokio::test]
-    async fn expired_token_refreshes_then_fetches() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("POST", "/oauth2/token")
-            .with_status(200)
-            .with_body(
-                r#"{"access_token":"fresh-at","refresh_token":"fresh-rt","expires_in":21600}"#,
-            )
-            .create_async()
-            .await;
-        server
-            .mock("GET", "/v1/billing")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "format".into(),
-                "credits".into(),
-            ))
-            .match_header("authorization", "Bearer fresh-at")
-            .with_status(200)
-            .with_body(r#"{"config":{"creditUsagePercent":5}}"#)
-            .create_async()
-            .await;
-
-        let auth_td = TempDir::new().unwrap();
-        let auth = write_auth(auth_td.path(), "stale-at", "old-rt", "2020-01-01T00:00:00Z");
-        let (_td, cache) = cache_fixture();
-        let client = reqwest::Client::new();
-        let endpoints = Endpoints {
-            billing: format!("{}/v1/billing?format=credits", server.url()),
-            billing_legacy: format!("{}/v1/billing", server.url()),
-            token: format!("{}/oauth2/token", server.url()),
-        };
-        let out = fetch_snapshot_at(
-            &client,
-            &auth,
-            &cache,
-            Duration::from_secs(0),
-            &endpoints,
-            Utc::now(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(out.snapshot.weekly_pct, 5);
-
-        // Rotated tokens must be written back.
-        let rewritten = creds::read_from(&auth).unwrap();
-        let (_, entry) = creds::select_account(&rewritten).unwrap();
-        assert_eq!(entry.key, "fresh-at");
-        assert_eq!(entry.refresh_token.as_deref(), Some("fresh-rt"));
-    }
-
-    #[tokio::test]
-    async fn fresh_cache_makes_no_network_call() {
-        let server = mockito::Server::new_async().await;
-        let auth_td = TempDir::new().unwrap();
-        let auth = write_auth(auth_td.path(), "good-at", "rt", "2099-01-01T00:00:00Z");
-        let (_td, cache) = cache_fixture();
+    async fn fresh_cache_skips_the_acp_process() {
+        let (_td, cache) = fixture();
+        cache.ensure_dir().unwrap();
+        let snapshot = types::to_snapshot(weekly_response(7.0), "scope-a").unwrap();
         cache
             .write_payload(
-                serde_json::json!({
-                    "account": "user-1",
-                    "snapshot": {
-                        "plan": "SuperGrok",
-                        "account": "user-1",
-                        "weekly_pct": 7,
-                        "reset_at": null,
-                        "products": [],
-                        "prepaid_balance": null
-                    }
-                })
-                .to_string()
-                .as_bytes(),
+                &serde_json::to_vec(&CachedEnvelope::from_snapshot("scope-a", &snapshot)).unwrap(),
             )
             .unwrap();
+        let called = AtomicBool::new(false);
 
-        let client = reqwest::Client::new();
-        let endpoints = Endpoints {
-            billing: format!("{}/v1/billing?format=credits", server.url()),
-            billing_legacy: format!("{}/v1/billing", server.url()),
-            token: format!("{}/oauth2/token", server.url()),
-        };
-        let out = fetch_snapshot_at(
-            &client,
-            &auth,
+        let outcome = fetch_snapshot_with(
             &cache,
             Duration::from_secs(3600),
-            &endpoints,
-            Utc::now(),
+            now(),
+            || Some("scope-a".into()),
+            || async {
+                called.store(true, Ordering::SeqCst);
+                Ok(weekly_response(99.0))
+            },
         )
         .await
         .unwrap();
-        assert_eq!(out.snapshot.weekly_pct, 7);
+        assert_eq!(outcome.snapshot.weekly_pct, 7);
+        assert!(!called.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
-    async fn http_error_falls_back_to_cache() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("GET", "/v1/billing")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "format".into(),
-                "credits".into(),
-            ))
-            .with_status(500)
-            .with_body("nope")
-            .create_async()
-            .await;
-
-        let auth_td = TempDir::new().unwrap();
-        let auth = write_auth(auth_td.path(), "good-at", "rt", "2099-01-01T00:00:00Z");
-        let (_td, cache) = cache_fixture();
-        cache
-            .write_payload(
-                serde_json::json!({
-                    "account": "user-1",
-                    "snapshot": {
-                        "plan": "SuperGrok",
-                        "account": "user-1",
-                        "weekly_pct": 3,
-                        "reset_at": null,
-                        "products": [],
-                        "prepaid_balance": null
-                    }
-                })
-                .to_string()
-                .as_bytes(),
-            )
-            .unwrap();
-
-        let client = reqwest::Client::new();
-        let endpoints = Endpoints {
-            billing: format!("{}/v1/billing?format=credits", server.url()),
-            billing_legacy: format!("{}/v1/billing", server.url()),
-            token: format!("{}/oauth2/token", server.url()),
-        };
-        let out = fetch_snapshot_at(
-            &client,
-            &auth,
+    async fn a_scope_change_during_fetch_returns_live_but_does_not_cache() {
+        let (_td, cache) = fixture();
+        let calls = AtomicUsize::new(0);
+        let outcome = fetch_snapshot_with(
             &cache,
-            Duration::from_secs(0),
-            &endpoints,
-            Utc::now(),
+            Duration::ZERO,
+            now(),
+            || {
+                let call = calls.fetch_add(1, Ordering::SeqCst);
+                Some(if call == 0 { "before" } else { "after" }.into())
+            },
+            || async { Ok(weekly_response(20.0)) },
         )
         .await
         .unwrap();
-        assert!(out.stale);
-        assert_eq!(out.snapshot.weekly_pct, 3);
-        assert_eq!(out.last_error.as_ref().map(|(c, _)| *c), Some(500));
+        assert_eq!(outcome.snapshot.account, "uncached");
+        assert!(!cache.payload_path().exists());
+    }
+
+    #[tokio::test]
+    async fn failure_falls_back_only_for_the_same_scope_and_live_period() {
+        let (_td, cache) = fixture();
+        cache.ensure_dir().unwrap();
+        let snapshot = types::to_snapshot(weekly_response(33.0), "scope-a").unwrap();
+        cache
+            .write_payload(
+                &serde_json::to_vec(&CachedEnvelope::from_snapshot("scope-a", &snapshot)).unwrap(),
+            )
+            .unwrap();
+
+        let fallback = fetch_snapshot_with(
+            &cache,
+            Duration::ZERO,
+            now(),
+            || Some("scope-a".into()),
+            || async { Err(AppError::Transport("offline".into())) },
+        )
+        .await
+        .unwrap();
+        assert!(fallback.stale);
+        assert_eq!(fallback.snapshot.weekly_pct, 33);
+
+        let other_scope = fetch_snapshot_with(
+            &cache,
+            Duration::ZERO,
+            now(),
+            || Some("scope-b".into()),
+            || async { Err(AppError::Transport("offline".into())) },
+        )
+        .await;
+        assert!(other_scope.is_err());
+    }
+
+    #[tokio::test]
+    async fn malformed_live_billing_preserves_the_last_good_same_scope_cache() {
+        let (_td, cache) = fixture();
+        cache.ensure_dir().unwrap();
+        let snapshot = types::to_snapshot(weekly_response(33.0), "scope-a").unwrap();
+        cache
+            .write_payload(
+                &serde_json::to_vec(&CachedEnvelope::from_snapshot("scope-a", &snapshot)).unwrap(),
+            )
+            .unwrap();
+
+        let fallback = fetch_snapshot_with(
+            &cache,
+            Duration::ZERO,
+            now(),
+            || Some("scope-a".into()),
+            || async { Ok(weekly_response(999.0)) },
+        )
+        .await
+        .unwrap();
+        assert!(fallback.stale);
+        assert_eq!(fallback.snapshot.weekly_pct, 33);
+        assert!(
+            fallback
+                .last_error
+                .as_ref()
+                .is_some_and(|(_, message)| message.contains("outside the supported range"))
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_scope_disables_cache_reuse() {
+        let (_td, cache) = fixture();
+        cache.ensure_dir().unwrap();
+        let snapshot = types::to_snapshot(weekly_response(33.0), "scope-a").unwrap();
+        cache
+            .write_payload(
+                &serde_json::to_vec(&CachedEnvelope::from_snapshot("scope-a", &snapshot)).unwrap(),
+            )
+            .unwrap();
+        let outcome = fetch_snapshot_with(
+            &cache,
+            Duration::from_secs(3600),
+            now(),
+            || None,
+            || async { Err(AppError::Transport("offline".into())) },
+        )
+        .await;
+        assert!(outcome.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_ended_period_is_never_resurrected_on_failure() {
+        let (_td, cache) = fixture();
+        cache.ensure_dir().unwrap();
+        let snapshot = types::to_snapshot(weekly_response(88.0), "scope-a").unwrap();
+        cache
+            .write_payload(
+                &serde_json::to_vec(&CachedEnvelope::from_snapshot("scope-a", &snapshot)).unwrap(),
+            )
+            .unwrap();
+        let after_reset = Utc.with_ymd_and_hms(2026, 8, 15, 0, 0, 0).unwrap();
+        let outcome = fetch_snapshot_with(
+            &cache,
+            Duration::from_secs(3600),
+            after_reset,
+            || Some("scope-a".into()),
+            || async { Err(AppError::Transport("offline".into())) },
+        )
+        .await;
+        assert!(outcome.is_err());
+    }
+
+    #[test]
+    fn cached_percentages_and_periods_are_strictly_validated() {
+        let base = serde_json::json!({
+            "schema": CACHE_SCHEMA,
+            "scope": "scope-a",
+            "snapshot": {
+                "plan": "SuperGrok",
+                "percent": 5,
+                "period": "weekly",
+                "reset_at": null,
+                "prepaid_balance": null
+            }
+        });
+        for (field, value) in [
+            ("percent", serde_json::json!(101)),
+            ("period", serde_json::json!("yearly")),
+            ("prepaid_balance", serde_json::json!(-1.0)),
+        ] {
+            let mut malformed = base.clone();
+            malformed["snapshot"][field] = value;
+            assert!(
+                parse_cache(malformed.to_string().as_bytes(), "scope-a").is_err(),
+                "field: {field}"
+            );
+        }
+
+        let mut obsolete = base;
+        obsolete["schema"] = serde_json::json!(1);
+        obsolete["account"] = serde_json::json!("person@example.test");
+        assert!(parse_cache(obsolete.to_string().as_bytes(), "scope-a").is_err());
     }
 }

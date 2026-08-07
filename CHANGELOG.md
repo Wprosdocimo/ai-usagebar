@@ -11,20 +11,18 @@ Each release is also published at
 
 ### Added
 
-- **SuperGrok subscription OAuth vendor** (`--vendor supergrok`, `[supergrok]`,
-  opt-in). Shows weekly included-credit usage (and optional per-product rows
-  such as GrokBuild / Api) from the same unofficial CLI billing surface the
-  Grok Build CLI uses —
-  `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` — authenticated
-  with the OIDC session `grok login` writes to `~/.grok/auth.json`. Access
-  tokens are refreshed via the documented `auth.x.ai` OIDC token endpoint when
-  close to expiry; rotated refresh tokens are written **back** to that file so
-  the Grok CLI keeps a live session (same write-back pattern as Codex OAuth).
-  Distinct from the existing `grok` vendor, which still reads prepaid
-  Management API balance with an `XAI_MANAGEMENT_KEY`. Default bar format is
-  `{weekly_pct}% · {weekly_reset}`; generic aliases and `{sgk_*}` placeholders
-  are available. Endpoint is undocumented and may drift — treat like Cursor /
-  Kiro.
+- **SuperGrok subscription vendor** (`--vendor supergrok`, `[supergrok]`,
+  opt-in). Shows the current weekly or monthly included-credit usage, reset,
+  tier, and prepaid balance from the official Grok Build CLI's `x.ai/billing`
+  ACP extension. ai-usagebar never parses, copies, caches, refreshes, or places
+  Grok credentials in ACP messages:
+  Grok Build retains account-scope, custom OIDC/external-provider, proxy,
+  rotation, and `auth.json.lock` ownership. Cache isolation uses only an opaque
+  digest of Grok's auth/config state, never a raw token or account identifier.
+  Distinct from the existing `grok` vendor, which reads prepaid Management API
+  balance with `XAI_MANAGEMENT_KEY`. `{sgk_*}` placeholders include the actual
+  period kind; legacy generic weekly aliases remain available for format
+  compatibility.
 - `--version` / `-V` on the `ai-usagebar` binary, reporting the crate version
   (#81). Until now the only way to tell which build was installed was parsing
   `cargo install --list`.
