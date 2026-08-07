@@ -191,7 +191,14 @@ fn account_key(profile_arn: &str, region: &str, refresh_token: &str) -> String {
         digest.update(b"profile\0");
         digest.update(profile_arn.as_bytes());
     }
-    format!("{:x}", digest.finalize())
+    let digest = digest.finalize();
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in digest {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 #[cfg(test)]
@@ -390,6 +397,7 @@ mod tests {
         );
         let one_again = read_credentials(&path2).unwrap();
         assert_eq!(one.account_key, one_again.account_key);
+        assert_eq!(one.account_key, "8b4d254cee50ffb1116ee414d5b91b93239e7507");
 
         let other_profile =
             serde_json::json!({"arn": "arn:aws:codewhisperer:us-east-1:999:profile/XYZ"})

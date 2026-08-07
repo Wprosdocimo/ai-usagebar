@@ -157,7 +157,14 @@ pub(crate) fn source_for(
 /// PBKDF2 format here; this use is namespacing, not a security signature.
 #[cfg(any(target_os = "macos", test))]
 fn desktop_cache_key(account_uuid: &str) -> String {
-    format!("{:x}", Sha1::digest(account_uuid.as_bytes()))
+    let digest = Sha1::digest(account_uuid.as_bytes());
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in digest {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 impl DesktopCreds {
@@ -396,6 +403,7 @@ mod tests {
         let b = desktop_cache_key("account-b");
 
         assert_eq!(a, desktop_cache_key("account-a"));
+        assert_eq!(a, "3bef308ed317769e8f67f213bfc6a6ff7c87a3a1");
         assert_ne!(a, b);
         assert_eq!(a.len(), 40);
         assert!(a.bytes().all(|byte| byte.is_ascii_hexdigit()));
