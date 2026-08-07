@@ -348,6 +348,7 @@ pub enum VendorSnapshot {
     Novita(NovitaSnapshot),
     Moonshot(MoonshotSnapshot),
     Grok(GrokSnapshot),
+    SuperGrok(SuperGrokSnapshot),
     AnthropicApi(AnthropicApiSnapshot),
     Antigravity(AntigravitySnapshot),
     Cursor(CursorSnapshot),
@@ -470,6 +471,55 @@ pub struct GrokSnapshot {
 }
 
 impl Eq for GrokSnapshot {}
+
+/// SuperGrok subscription usage returned by the official Grok Build CLI's
+/// credential-owning `x.ai/billing` ACP extension. Distinct from
+/// [`GrokSnapshot`] (Management API prepaid balance).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SuperGrokSnapshot {
+    /// Subscription tier label when the billing response supplies one
+    /// (e.g. "SuperGrok", "SuperGrok Heavy"); otherwise `"SuperGrok"`.
+    pub plan: String,
+    /// Opaque digest of Grok auth/config state. Never displayed — cache
+    /// isolation only.
+    pub account: String,
+    /// Current included-credit usage percent. The field name is retained as a
+    /// compatibility alias for format/render code; [`Self::period`] says
+    /// whether the server's actual window is weekly or monthly.
+    pub weekly_pct: i32,
+    pub period: SuperGrokPeriod,
+    /// When the current usage period ends.
+    pub reset_at: Option<DateTime<Utc>>,
+    /// Remaining prepaid (purchased) API credit in USD, when present.
+    pub prepaid_balance: Option<f64>,
+}
+
+impl Eq for SuperGrokSnapshot {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuperGrokPeriod {
+    Weekly,
+    Monthly,
+    Unknown,
+}
+
+impl SuperGrokPeriod {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Weekly => "Weekly",
+            Self::Monthly => "Monthly",
+            Self::Unknown => "Current period",
+        }
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::Weekly => "wk",
+            Self::Monthly => "mo",
+            Self::Unknown => "period",
+        }
+    }
+}
 
 /// OpenAI Codex OAuth — exposes whichever rolling windows the API reports.
 #[derive(Debug, Clone, PartialEq, Eq)]

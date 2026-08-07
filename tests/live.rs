@@ -49,6 +49,9 @@
 //!   `data.sqlite3`, then asserts the credit counters are non-negative and the
 //!   plan label is non-empty. `kiro_live` skips when there is no kiro-cli
 //!   install (no db and no `KIRO_DB_PATH`).
+//! - **SuperGrok**: asks the official Grok Build CLI's `x.ai/billing` ACP
+//!   extension, then asserts usage percent and plan. Set
+//!   `SUPERGROK_GROK_BINARY` to the trusted official executable.
 
 use std::time::Duration;
 
@@ -61,6 +64,7 @@ use ai_usagebar::kiro;
 use ai_usagebar::minimax;
 use ai_usagebar::openai;
 use ai_usagebar::openrouter;
+use ai_usagebar::supergrok;
 use ai_usagebar::zai;
 
 fn xdg_cache_for(test: &str) -> Cache {
@@ -447,6 +451,47 @@ async fn kiro_live() {
         out.snapshot.used,
         out.snapshot.limit,
         out.snapshot.pct(),
+        out.snapshot.reset_at,
+    );
+}
+
+#[tokio::test]
+#[ignore = "live API; run with --ignored"]
+async fn supergrok_live() {
+    // Grok Build owns every auth mode and returns only billing data over ACP.
+    let binary = std::env::var_os("SUPERGROK_GROK_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| ai_usagebar::config::Config::default().supergrok.grok_binary);
+    let auth_override = std::env::var_os("SUPERGROK_AUTH_PATH").map(std::path::PathBuf::from);
+    let config_override = std::env::var_os("SUPERGROK_CONFIG_PATH").map(std::path::PathBuf::from);
+    let scope_paths = supergrok::scope::ScopePaths::with_overrides(
+        auth_override.as_deref(),
+        config_override.as_deref(),
+    )
+    .expect("resolve Grok scope paths");
+    let cache = xdg_cache_for("supergrok");
+    let out = supergrok::fetch_snapshot(&binary, &scope_paths, &cache, Duration::ZERO)
+        .await
+        .expect("SuperGrok billing should succeed through official Grok Build ACP");
+
+    assert!(
+        out.snapshot.weekly_pct >= 0,
+        "supergrok: negative weekly_pct — shape changed? {}",
+        out.snapshot.weekly_pct
+    );
+    assert!(!out.snapshot.plan.is_empty(), "supergrok plan label empty");
+    if let Some(reset) = out.snapshot.reset_at {
+        assert!(
+            reset > chrono::Utc::now() - chrono::Duration::days(1),
+            "supergrok: reset_at looks implausibly old: {reset:?}"
+        );
+    }
+    println!(
+        "✅ supergrok — plan={}, {} {}%, prepaid {:?}, reset {:?}",
+        out.snapshot.plan,
+        out.snapshot.period.label(),
+        out.snapshot.weekly_pct,
+        out.snapshot.prepaid_balance,
         out.snapshot.reset_at,
     );
 }

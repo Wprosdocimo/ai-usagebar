@@ -26,6 +26,7 @@ use crate::novita;
 use crate::openai;
 use crate::openrouter;
 use crate::pango::escape;
+use crate::supergrok;
 use crate::theme::Theme;
 use crate::vendor::{HTTP_CLIENT_TIMEOUT, RenderOpts, VendorOutcome};
 use crate::waybar::WaybarOutput;
@@ -151,6 +152,7 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
         Vendor::Novita => novita_output(cli, &config).await,
         Vendor::Moonshot => moonshot_output(cli, &config).await,
         Vendor::Grok => grok_output(cli, &config).await,
+        Vendor::Supergrok => supergrok_output(cli, &config).await,
         Vendor::Antigravity => antigravity_output(cli, &config).await,
         Vendor::Cursor => cursor_output(cli, &config).await,
         Vendor::Minimax => minimax_output(cli, &config).await,
@@ -291,6 +293,41 @@ async fn grok_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
     let vendor_outcome: VendorOutcome = outcome.into();
     let opts = RenderOpts::from_cli(cli);
     Ok(grok::vendor::render(
+        &vendor_outcome,
+        &snap,
+        &theme,
+        &opts,
+        chrono::Utc::now(),
+    ))
+}
+
+/// SuperGrok delegates auth and billing transport to the official Grok Build
+/// ACP process — no token or API key is parsed, cached, refreshed, or placed
+/// in an ACP message by ai-usagebar.
+async fn supergrok_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
+    let cache = vendor_cache(cli, "supergrok")?;
+    let scope_paths = supergrok::scope::ScopePaths::with_overrides(
+        config.supergrok.auth_path.as_deref(),
+        config.supergrok.config_path.as_deref(),
+    )?;
+    let outcome = match supergrok::fetch_snapshot(
+        &config.supergrok.grok_binary,
+        &scope_paths,
+        &cache,
+        DEFAULT_TTL,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
+        Err(e) => return Err(e),
+    };
+
+    let theme = theme_from_cli(cli);
+    let snap = outcome.snapshot.clone();
+    let vendor_outcome: VendorOutcome = outcome.into();
+    let opts = RenderOpts::from_cli(cli);
+    Ok(supergrok::vendor::render(
         &vendor_outcome,
         &snap,
         &theme,

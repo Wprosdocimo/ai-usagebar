@@ -11,6 +11,18 @@ Each release is also published at
 
 ### Added
 
+- **SuperGrok subscription vendor** (`--vendor supergrok`, `[supergrok]`,
+  opt-in). Shows the current weekly or monthly included-credit usage, reset,
+  tier, and prepaid balance from the official Grok Build CLI's `x.ai/billing`
+  ACP extension. ai-usagebar never parses, copies, caches, refreshes, or places
+  Grok credentials in ACP messages:
+  Grok Build retains account-scope, custom OIDC/external-provider, proxy,
+  rotation, and `auth.json.lock` ownership. Cache isolation uses only an opaque
+  digest of Grok's auth/config state, never a raw token or account identifier.
+  Distinct from the existing `grok` vendor, which reads prepaid Management API
+  balance with `XAI_MANAGEMENT_KEY`. `{sgk_*}` placeholders include the actual
+  period kind; legacy generic weekly aliases remain available for format
+  compatibility.
 - `--version` / `-V` on the `ai-usagebar` binary, reporting the crate version
   (#81). Until now the only way to tell which build was installed was parsing
   `cargo install --list`.
