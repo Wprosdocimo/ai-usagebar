@@ -11,6 +11,9 @@ Each release is also published at
 
 ### Added
 
+- `--version` / `-V` on the `ai-usagebar` binary, reporting the crate version
+  (#81). Until now the only way to tell which build was installed was parsing
+  `cargo install --list`.
 - **Kiro CLI vendor** (`--vendor kiro`, `[kiro]`, opt-in). Reads the credit
   pool from `AmazonCodeWhispererService.GetUsageLimits` — the exact call
   kiro-cli's own `/usage` slash command makes — using the AWS SSO OIDC
