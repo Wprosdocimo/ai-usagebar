@@ -9,7 +9,7 @@ Each release is also published at
 
 ## [Unreleased]
 
-## [0.22.0] — 2026-08-07
+## [0.22.0] — 2026-08-11
 
 ### Added
 
@@ -71,6 +71,11 @@ Each release is also published at
   after enabling `[antigravity]` — it's now a `local`-kind entry alongside
   Cursor, "configured" the same way the GNOME extension already detects it
   (any of `~/.gemini/{antigravity,antigravity-cli,antigravity-ide}`).
+
+### Security
+
+- Updated the transitive `lru` dependency from 0.18.0 to 0.18.2, fixing
+  RUSTSEC-2026-0253 (a panic-safety use-after-free in `LruCache::pop`).
 
 ## [0.21.0] — 2026-08-03
 
