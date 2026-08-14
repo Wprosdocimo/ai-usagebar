@@ -198,6 +198,13 @@ mod tests {
         let two = fingerprint_without_env(&paths).unwrap();
         assert_eq!(one, two);
         assert_eq!(one.len(), 64);
+        // Independently reproduced with `sha256sum` and OpenSSL. Keep cache
+        // identities stable across hash-crate upgrades so an upgrade does not
+        // silently invalidate every user's last-known-good usage snapshot.
+        assert_eq!(
+            one,
+            "ed8be87685186d534763b874ed01adf912fddf2e929c1453c3362ca9f0d24308"
+        );
         assert!(!one.contains("secret"));
         assert!(!one.contains("person"));
     }
