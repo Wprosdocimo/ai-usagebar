@@ -9,6 +9,18 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-08-14
+
+### Changed
+
+- Updated the Base64, bundled SQLite, error-derivation, SHA-2, AES, and CBC
+  dependency stacks. Chromium safeStorage encryption remains byte-compatible,
+  and SuperGrok cache identities remain stable across the hash upgrade; both
+  formats now have independent fixed regression vectors.
+- Updated the pinned Rust build-cache and cross-compilation installer actions.
+  All dependency changes passed the full Linux, macOS, Windows, and Rust 1.88
+  compatibility matrix.
+
 ## [1.0.1] — 2026-08-14
 
 ### Added
@@ -1455,7 +1467,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.22.0...v1.0.0
 [0.22.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.21.0...v0.22.0
