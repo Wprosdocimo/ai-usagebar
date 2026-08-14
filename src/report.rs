@@ -14,13 +14,13 @@
 //! So this file only enumerates, projects, and formats — no vendor
 //! ever needs to know it exists.
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::json;
 
 use crate::config::Config;
 use crate::tui::app::{TabId, TabState, refresh_one, tabs_with_desktop};
-use crate::tui::panels::{Section, sections_for};
+use crate::tui::panels::{Section, sections_with_metadata_for};
 
 /// Matches the widget's `--pace-tolerance` default; only affects the pacing
 /// note appended to a metric's detail line.
@@ -30,9 +30,12 @@ const PACE_TOLERANCE: u32 = 5;
 struct Entry {
     id: String,
     name: String,
+    display_name: String,
     plan: Option<String>,
     sections: Vec<ReportSection>,
     error: Option<String>,
+    stale: bool,
+    fetched_at: Option<DateTime<Utc>>,
 }
 
 /// Lossless machine-readable projection of a TUI panel row. `metrics` remains
@@ -46,6 +49,8 @@ enum ReportSection {
         percent: u16,
         value: String,
         detail: String,
+        severity: String,
+        reset_at: Option<DateTime<Utc>>,
     },
     Text {
         label: String,
@@ -103,7 +108,10 @@ pub async fn run(json: bool) -> i32 {
     }
 
     if json {
-        println!("{}", render_json(&entries));
+        println!(
+            "{}",
+            render_json_for_primary(&entries, config.ui.primary.map(|vendor| vendor.slug()))
+        );
     } else {
         print!("{}", render_text(&entries));
     }
@@ -119,10 +127,16 @@ fn entry_from_state(tab: &TabId, state: &TabState, now: chrono::DateTime<Utc>) -
     let mut entry = Entry {
         id: tab_id(tab),
         name: tab_name(tab),
+        display_name: tab_display_name(tab),
         plan: None,
         sections: Vec::new(),
         error: match &state {
-            TabState::Error(message) => Some(message.clone()),
+            TabState::Error(message) => Some(crate::display::sanitize_untrusted_field(message)),
+            _ => None,
+        },
+        stale: matches!(state, TabState::Ready(ready) if ready.stale),
+        fetched_at: match state {
+            TabState::Ready(ready) => ready.fetched_at,
             _ => None,
         },
     };
@@ -131,21 +145,26 @@ fn entry_from_state(tab: &TabId, state: &TabState, now: chrono::DateTime<Utc>) -
     if entry.error.is_some() {
         return entry;
     }
-    for section in sections_for(state, now, PACE_TOLERANCE) {
-        match section {
+    for projected in sections_with_metadata_for(state, now, PACE_TOLERANCE) {
+        match projected.section {
             Section::Title { left, .. } => entry.plan = Some(left),
             Section::Metric {
                 label,
                 pct,
                 value_label,
                 footnote,
+                severity,
                 ..
-            } => entry.sections.push(ReportSection::Metric {
-                label,
-                percent: pct,
-                value: value_label,
-                detail: footnote,
-            }),
+            } => {
+                entry.sections.push(ReportSection::Metric {
+                    label,
+                    percent: pct,
+                    value: value_label,
+                    detail: footnote,
+                    severity: severity.as_str().into(),
+                    reset_at: projected.reset_at,
+                });
+            }
             Section::Text { label, value } => {
                 entry.sections.push(ReportSection::Text { label, value });
             }
@@ -172,16 +191,25 @@ fn tab_id(tab: &TabId) -> String {
 }
 
 fn tab_name(tab: &TabId) -> String {
-    match &tab.account {
-        // Mark a Desktop-sourced account so a mixed CLI+Desktop setup is legible;
-        // for a Desktop-only user every Claude row simply reads "· <label> (desktop)".
-        Some(account) if tab.desktop => format!("{} · {account} (desktop)", tab.vendor.slug()),
-        Some(account) => format!("{} · {account}", tab.vendor.slug()),
-        None => tab.vendor.slug().to_string(),
-    }
+    format_tab_name(tab, tab.vendor.slug())
 }
 
-fn render_json(entries: &[Entry]) -> String {
+fn tab_display_name(tab: &TabId) -> String {
+    format_tab_name(tab, tab.vendor.display_name())
+}
+
+fn format_tab_name(tab: &TabId, vendor_name: &str) -> String {
+    let name = match &tab.account {
+        // Mark a Desktop-sourced account so a mixed CLI+Desktop setup is legible;
+        // for a Desktop-only user every Claude row simply reads "· <label> (desktop)".
+        Some(account) if tab.desktop => format!("{vendor_name} · {account} (desktop)"),
+        Some(account) => format!("{vendor_name} · {account}"),
+        None => vendor_name.to_string(),
+    };
+    crate::display::sanitize_untrusted_field(&name)
+}
+
+fn render_json_for_primary(entries: &[Entry], primary: Option<&str>) -> String {
     let rows: Vec<serde_json::Value> = entries
         .iter()
         .map(|entry| {
@@ -194,11 +222,15 @@ fn render_json(entries: &[Entry]) -> String {
                         percent,
                         value,
                         detail,
+                        severity,
+                        reset_at,
                     } => Some(json!({
                         "label": label,
                         "percent": percent,
                         "value": value,
                         "detail": detail,
+                        "severity": severity,
+                        "reset_at": reset_at,
                     })),
                     _ => None,
                 })
@@ -206,14 +238,18 @@ fn render_json(entries: &[Entry]) -> String {
             json!({
                 "id": entry.id,
                 "name": entry.name,
+                "display_name": entry.display_name,
                 "plan": entry.plan,
+                "status": if entry.error.is_some() { "error" } else { "ready" },
                 "error": entry.error,
+                "stale": entry.stale,
+                "fetched_at": entry.fetched_at,
                 "metrics": metrics,
                 "sections": entry.sections,
             })
         })
         .collect();
-    json!({ "entries": rows }).to_string()
+    json!({ "primary": primary, "entries": rows }).to_string()
 }
 
 fn render_text(entries: &[Entry]) -> String {
@@ -300,16 +336,21 @@ fn render_text(entries: &[Entry]) -> String {
 mod tests {
     use super::*;
     use crate::tui::app::ReadyTab;
-    use crate::usage::{DeepseekSnapshot, OpenRouterSnapshot, VendorSnapshot};
+    use crate::usage::{
+        DeepseekSnapshot, KimiSnapshot, KiroSnapshot, OpenRouterSnapshot, VendorSnapshot,
+    };
     use crate::vendor::VendorId;
 
     fn entry(name: &str, sections: Vec<ReportSection>) -> Entry {
         Entry {
             id: name.into(),
             name: name.into(),
+            display_name: name.into(),
             plan: Some("Claude Max 20x".into()),
             sections,
             error: None,
+            stale: false,
+            fetched_at: None,
         }
     }
 
@@ -319,6 +360,8 @@ mod tests {
             percent,
             value: value.into(),
             detail: detail.into(),
+            severity: "mid".into(),
+            reset_at: None,
         }
     }
 
@@ -327,10 +370,12 @@ mod tests {
         let account = TabId::account("gmail");
         assert_eq!(tab_id(&account), "anthropic@gmail");
         assert_eq!(tab_name(&account), "anthropic · gmail");
+        assert_eq!(tab_display_name(&account), "Claude · gmail");
 
         let plain = TabId::vendor(VendorId::Cursor);
         assert_eq!(tab_id(&plain), "cursor");
         assert_eq!(tab_name(&plain), "cursor");
+        assert_eq!(tab_display_name(&plain), "Cursor");
     }
 
     #[test]
@@ -386,35 +431,122 @@ mod tests {
 
     #[test]
     fn json_carries_the_percentage_as_a_number() {
-        let rendered = render_json(&[entry(
-            "anthropic · gmail",
-            vec![metric("Session (5h)", 29, "29%", "Resets in 0h 50m")],
-        )]);
+        let rendered = render_json_for_primary(
+            &[entry(
+                "anthropic · gmail",
+                vec![metric("Session (5h)", 29, "29%", "Resets in 0h 50m")],
+            )],
+            None,
+        );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
         let first = &value["entries"][0];
         assert_eq!(first["plan"], "Claude Max 20x");
+        assert_eq!(first["display_name"], "anthropic · gmail");
         assert_eq!(first["metrics"][0]["percent"], 29);
         assert_eq!(first["metrics"][0]["detail"], "Resets in 0h 50m");
         assert!(first["error"].is_null());
+        assert_eq!(first["status"], "ready");
+        assert_eq!(first["stale"], false);
+        assert!(first["fetched_at"].is_null());
+        assert_eq!(first["metrics"][0]["severity"], "mid");
+        assert!(first["metrics"][0]["reset_at"].is_null());
+        assert!(value["primary"].is_null());
+    }
+
+    #[test]
+    fn json_carries_the_configured_primary_without_reordering_entries() {
+        let rendered = render_json_for_primary(
+            &[entry("anthropic", Vec::new()), entry("openai", Vec::new())],
+            Some("openai"),
+        );
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(value["primary"], "openai");
+        assert_eq!(value["entries"][0]["id"], "anthropic");
+        assert_eq!(value["entries"][1]["id"], "openai");
+    }
+
+    #[test]
+    fn json_exposes_absolute_resets_and_cache_freshness_additively() {
+        let fetched_at = Utc::now() - chrono::Duration::minutes(3);
+        let reset_at = Utc::now() + chrono::Duration::days(1);
+        let state = TabState::Ready(Box::new(ReadyTab {
+            snapshot: VendorSnapshot::Kiro(KiroSnapshot {
+                plan: "KIRO POWER".into(),
+                used: 4_000.0,
+                limit: 10_000.0,
+                reset_at: Some(reset_at),
+            }),
+            stale: true,
+            last_error: None,
+            fetched_at: Some(fetched_at),
+        }));
+        let projected = entry_from_state(&TabId::vendor(VendorId::Kiro), &state, Utc::now());
+        let rendered = render_json_for_primary(&[projected], None);
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        let first = &value["entries"][0];
+
+        assert_eq!(first["stale"], true);
+        let fetched_rfc3339 = fetched_at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true);
+        let reset_rfc3339 = reset_at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true);
+        assert_eq!(first["fetched_at"], fetched_rfc3339);
+        assert_eq!(first["metrics"][0]["reset_at"], reset_rfc3339);
+        assert_eq!(first["sections"][1]["reset_at"], reset_rfc3339);
+        assert_eq!(first["metrics"][0]["severity"], "low");
+    }
+
+    #[test]
+    fn report_reset_metadata_follows_multi_metric_order() {
+        let weekly_reset = Utc::now() + chrono::Duration::days(3);
+        let window_reset = Utc::now() + chrono::Duration::hours(2);
+        let state = TabState::Ready(Box::new(ReadyTab {
+            snapshot: VendorSnapshot::Kimi(KimiSnapshot {
+                plan: Some("Kimi Code".into()),
+                weekly_limit: 1_000,
+                weekly_used: 200,
+                weekly_remaining: 800,
+                weekly_reset_at: Some(weekly_reset),
+                window_limit: 100,
+                window_used: 40,
+                window_remaining: 60,
+                window_reset_at: Some(window_reset),
+            }),
+            stale: false,
+            last_error: None,
+            fetched_at: None,
+        }));
+        let projected = entry_from_state(&TabId::vendor(VendorId::Kimi), &state, Utc::now());
+        let resets: Vec<_> = projected
+            .sections
+            .iter()
+            .filter_map(|section| match section {
+                ReportSection::Metric { reset_at, .. } => Some(*reset_at),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(resets, vec![Some(weekly_reset), Some(window_reset)]);
     }
 
     #[test]
     fn json_preserves_non_metric_sections_without_fabricating_percentages() {
-        let rendered = render_json(&[entry(
-            "openrouter",
-            vec![
-                metric("Credit balance", 25, "$75.00", "$25.00 used"),
-                ReportSection::Spacer,
-                ReportSection::Text {
-                    label: "Resets".into(),
-                    value: "in 9d".into(),
-                },
-                ReportSection::Block {
-                    label: "Usage by period".into(),
-                    body: vec!["today $1.00 · week $5.00".into()],
-                },
-            ],
-        )]);
+        let rendered = render_json_for_primary(
+            &[entry(
+                "openrouter",
+                vec![
+                    metric("Credit balance", 25, "$75.00", "$25.00 used"),
+                    ReportSection::Spacer,
+                    ReportSection::Text {
+                        label: "Resets".into(),
+                        value: "in 9d".into(),
+                    },
+                    ReportSection::Block {
+                        label: "Usage by period".into(),
+                        body: vec!["today $1.00 · week $5.00".into()],
+                    },
+                ],
+            )],
+            None,
+        );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
         let first = &value["entries"][0];
         assert_eq!(first["metrics"].as_array().unwrap().len(), 1);
@@ -491,10 +623,10 @@ mod tests {
     fn failed_entries_do_not_duplicate_tui_retry_rows() {
         let failed = entry_from_state(
             &TabId::vendor(VendorId::Openai),
-            &TabState::Error("not signed in".into()),
+            &TabState::Error("not \x1b[31msigned in\u{202e}".into()),
             Utc::now(),
         );
-        assert_eq!(failed.error.as_deref(), Some("not signed in"));
+        assert_eq!(failed.error.as_deref(), Some("not [31msigned in"));
         assert!(failed.sections.is_empty());
     }
 

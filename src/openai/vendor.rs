@@ -254,7 +254,7 @@ fn render_tooltip(
         lines.push(TooltipLine::Body("".into()));
         lines.push(TooltipLine::Sep);
         lines.push(TooltipLine::Body(format!(
-            " <span foreground='{dim}'>OpenAI plan usage requires Codex OAuth.</span>"
+            " <span foreground='{dim}'>Codex plan usage requires Codex OAuth.</span>"
         )));
         lines.push(TooltipLine::Body(format!(
             " <span foreground='{dim}'>Run `codex login` to enable.</span>"

@@ -13,19 +13,28 @@ pub const MAX_UNTRUSTED_FIELD_CHARS: usize = 4 * 1024;
 ///
 /// Newlines are safe and useful in diagnostics. Tabs and carriage returns are
 /// normalized to spaces; every other Unicode control character (including ESC,
-/// BEL, DEL, and C1 controls) is removed. The result is capped by character,
-/// not byte, so UTF-8 is never split.
+/// BEL, DEL, and C1 controls) is removed. Invisible bidirectional markers and
+/// overrides are also removed so an untrusted label cannot visually reorder
+/// neighboring UI text. The result is capped by character, not byte, so UTF-8
+/// is never split.
 pub fn sanitize_untrusted_field(value: &str) -> String {
     value
         .chars()
         .filter_map(|ch| match ch {
             '\n' => Some('\n'),
             '\t' | '\r' => Some(' '),
-            _ if ch.is_control() => None,
+            _ if ch.is_control() || is_bidi_control(ch) => None,
             _ => Some(ch),
         })
         .take(MAX_UNTRUSTED_FIELD_CHARS)
         .collect()
+}
+
+fn is_bidi_control(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 #[cfg(test)]
@@ -34,10 +43,10 @@ mod tests {
 
     #[test]
     fn strips_terminal_sequences_but_keeps_text_and_newlines() {
-        let input = "before\x1b]52;c;Y2xpcGJvYXJk\x07after\nnext\tcolumn\rreturn";
+        let input = "before\x1b]52;c;Y2xpcGJvYXJk\x07after\nnext\tcolumn\rreturn\u{202e}spoof";
         assert_eq!(
             sanitize_untrusted_field(input),
-            "before]52;c;Y2xpcGJvYXJkafter\nnext column return"
+            "before]52;c;Y2xpcGJvYXJkafter\nnext column returnspoof"
         );
     }
 

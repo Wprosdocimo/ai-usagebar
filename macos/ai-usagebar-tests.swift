@@ -453,7 +453,7 @@ func testClaudeAccounts() {
     let overviewEntries = [
         MenuEntry(id: "anthropic@struct", name: "Claude · struct"),
         MenuEntry(id: "anthropic@gmail", name: "Claude · gmail"),
-        MenuEntry(id: "openai", name: "OpenAI"),
+        MenuEntry(id: "openai", name: "Codex"),
         MenuEntry(id: "cursor", name: "Cursor"),
     ]
     assertEqual(filterOverviewEntries(overviewEntries, requested: ["cursor", "anthropic"])
