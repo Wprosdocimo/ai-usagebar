@@ -20,6 +20,8 @@ Each release is also published at
 - Updated the pinned Rust build-cache and cross-compilation installer actions.
   All dependency changes passed the full Linux, macOS, Windows, and Rust 1.88
   compatibility matrix.
+- Documented how to disable Quattro's stock `omarchy.agents` widget when AI
+  Usage should be the bar's only agent-status item.
 
 ## [1.0.1] — 2026-08-14
 
