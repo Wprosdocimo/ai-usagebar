@@ -12,7 +12,7 @@
 //! encrypt transform is pure and platform-independent, so it is exercised by a
 //! round-trip test on Linux CI without any real secret (the hermeticity rule).
 
-use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+use aes::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 use base64::Engine;
 
 use crate::error::{AppError, Result};
@@ -51,7 +51,7 @@ pub fn decrypt(key: &[u8; KEY_LEN], value_b64: &str) -> Result<Vec<u8>> {
     }
     let ct = &raw[PREFIX.len()..];
     Aes128CbcDec::new(key.into(), &IV.into())
-        .decrypt_padded_vec_mut::<Pkcs7>(ct)
+        .decrypt_padded_vec::<Pkcs7>(ct)
         .map_err(|e| AppError::Other(format!("safeStorage decrypt failed: {e}")))
 }
 
@@ -59,7 +59,7 @@ pub fn decrypt(key: &[u8; KEY_LEN], value_b64: &str) -> Result<Vec<u8>> {
 /// the app wrote (deterministic: fixed IV, no random salt). Used for the token
 /// write-back after a refresh.
 pub fn encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> String {
-    let ct = Aes128CbcEnc::new(key.into(), &IV.into()).encrypt_padded_vec_mut::<Pkcs7>(plaintext);
+    let ct = Aes128CbcEnc::new(key.into(), &IV.into()).encrypt_padded_vec::<Pkcs7>(plaintext);
     let mut out = Vec::with_capacity(PREFIX.len() + ct.len());
     out.extend_from_slice(PREFIX);
     out.extend_from_slice(&ct);
