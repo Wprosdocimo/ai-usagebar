@@ -42,6 +42,13 @@ omarchy pkg aur add ai-usagebar-bin
 omarchy plugin add https://github.com/akitaonrails/ai-usagebar.git --enable
 ```
 
+Quattro enables its own `omarchy.agents` status widget by default. Disable it
+if you want AI Usage to be the only agent status item in the bar:
+
+```bash
+omarchy plugin disable omarchy.agents
+```
+
 The source-built `ai-usagebar` AUR package can replace `ai-usagebar-bin` in
 the first command.
 

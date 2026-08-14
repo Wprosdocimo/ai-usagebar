@@ -19,6 +19,13 @@ omarchy pkg aur add ai-usagebar-bin
 omarchy plugin add https://github.com/akitaonrails/ai-usagebar.git --enable
 ```
 
+To use AI Usage in place of Quattro's default Agents widget, disable the stock
+widget:
+
+```bash
+omarchy plugin disable omarchy.agents
+```
+
 Omarchy clones plugin repositories into `~/.config/omarchy/plugins/`. The root
 [manifest](../manifest.json) loads `omarchy/BarWidget.qml`, which owns the bar
 button and loads `Panel.qml` inside the same plugin. Update or remove it with
