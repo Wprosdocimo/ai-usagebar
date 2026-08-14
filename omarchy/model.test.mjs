@@ -27,6 +27,15 @@ const panelSource = fs.readFileSync(new URL('./Panel.qml', import.meta.url), 'ut
 assert.match(panelSource, /^Panel\s*\{/m);
 assert.match(panelSource, /property\s+var\s+anchorItem:\s*null/);
 assert.match(panelSource, /property\s+var\s+hostWidget:\s*null/);
+assert.match(panelSource, /SettingsView\s*\{/);
+assert.match(panelSource, /function\s+openSettings\s*\(/);
+
+const settingsViewSource = fs.readFileSync(new URL('./SettingsView.qml', import.meta.url), 'utf8');
+assert.match(settingsViewSource, /command:\s*\["ai-usagebar",\s*"settings",\s*"show"\]/);
+assert.match(settingsViewSource, /command:\s*\["ai-usagebar",\s*"settings",\s*"apply"\]/);
+assert.match(settingsViewSource, /stdinEnabled:\s*true/);
+assert.match(settingsViewSource, /write\(root\.pendingPayload\s*\+\s*"\\n"\)/);
+assert.doesNotMatch(settingsViewSource, /command:\s*\[[^\]]*(?:api.?key|secret|pendingPayload)/i);
 
 const raw = JSON.stringify({primary: 'openai', entries: [
   {
@@ -102,5 +111,58 @@ assert.equal(model.providerName({id: 'anthropic', display_name: 'Claude · <b>wo
   'Claude · ‹b›work‹/b›');
 assert.equal(model.providerName({id: 'openai', name: 'openai'}), 'openai');
 assert.equal(model.errorMessage(''), 'The usage command failed without an error message.');
+
+const settingsRaw = JSON.stringify({
+  schema_version: 1,
+  primary: 'openai',
+  primary_choices: [
+    {id: 'anthropic', label: 'Claude'},
+    {id: 'openai', label: 'Codex'}
+  ],
+  keys: [
+    {id: 'kimi', label: 'Kimi', environment: 'KIMI_API_KEY', note: 'coding-plan usage',
+     configured: true, inline_configured: true, environment_configured: false}
+  ]
+});
+const settings = model.parseSettingsSnapshot(settingsRaw);
+assert.equal(settings.ok, true);
+assert.equal(settings.primary, 'openai');
+assert.equal(settings.primary_choices[0].id, 'anthropic');
+assert.equal(settings.primary_choices[0].value, 'anthropic');
+assert.equal(settings.primary_choices[0].label, 'Claude');
+assert.equal(settings.primary_choices[1].label, 'Codex');
+assert.equal(settings.keys[0].inline_configured, true);
+assert.equal(settings.keys[0].environment, 'KIMI_API_KEY');
+assert.equal(model.parseSettingsSnapshot('{').ok, false);
+assert.equal(model.parseSettingsSnapshot(JSON.stringify({schema_version: 2, primary_choices: [], keys: []})).ok, false);
+const noEnabled = model.parseSettingsSnapshot(JSON.stringify({
+  schema_version: 1, primary: 'anthropic', primary_choices: [], keys: []
+}));
+assert.equal(noEnabled.ok, true);
+assert.equal(noEnabled.primary, '');
+
+const patch = model.buildSettingsPatch('openai', [
+  {id: 'kimi', action: 'set', value: 'secret-value'},
+  {id: 'zai', action: 'clear'}
+]);
+assert.equal(patch.ok, true);
+assert.deepEqual(JSON.parse(patch.payload), {
+  schema_version: 1,
+  primary: 'openai',
+  keys: {
+    kimi: {action: 'set', value: 'secret-value'},
+    zai: {action: 'clear'}
+  }
+});
+const keyOnlyPatch = model.buildSettingsPatch('', [{id: 'kimi', action: 'clear'}]);
+assert.deepEqual(JSON.parse(keyOnlyPatch.payload), {
+  schema_version: 1, keys: {kimi: {action: 'clear'}}
+});
+assert.equal(model.buildSettingsPatch('', []).ok, false);
+assert.equal(model.buildSettingsPatch('openai', [{id: '__proto__', action: 'clear'}]).ok, false);
+assert.equal(model.buildSettingsPatch('openai', [{id: 'kimi', action: 'set', value: ''}]).ok, false);
+assert.equal(model.buildSettingsPatch('openai', [{id: 'kimi', action: 'bogus'}]).ok, false);
+assert.equal(model.parseSettingsApplyResult('{"ok":true}'), true);
+assert.equal(model.parseSettingsApplyResult('{"ok":false}'), false);
 
 console.log('Omarchy model tests passed');

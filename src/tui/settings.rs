@@ -10,6 +10,8 @@
 //! key and save" is all it takes. Files with inline keys are atomically written
 //! and `chmod 600`ed.
 
+use std::collections::BTreeMap;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
@@ -18,6 +20,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui_bubbletea_theme::BubbleTheme;
+use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, value};
 
 use crate::config::Config;
@@ -551,6 +554,245 @@ fn default_config_path() -> Result<PathBuf> {
     // the next load and silently discard all settings the overlay did not copy.
     crate::config::resolved_path()
         .ok_or_else(|| AppError::Other("could not resolve config dir".into()))
+}
+
+// ─── Native frontend bridge ───────────────────────────────────────────────
+
+/// Versioned, non-secret description consumed by native desktop frontends.
+/// Inline key values are deliberately represented only as booleans: a
+/// long-lived shell process never needs to receive credentials just to draw a
+/// settings form.
+#[derive(Debug, Serialize)]
+struct SettingsSnapshot {
+    schema_version: u8,
+    primary: String,
+    primary_choices: Vec<PrimaryChoice>,
+    keys: Vec<KeyStatus>,
+}
+
+#[derive(Debug, Serialize)]
+struct PrimaryChoice {
+    id: String,
+    label: String,
+}
+
+#[derive(Debug, Serialize)]
+struct KeyStatus {
+    id: String,
+    label: String,
+    environment: String,
+    note: String,
+    configured: bool,
+    inline_configured: bool,
+    environment_configured: bool,
+}
+
+/// Additive patch accepted on stdin by `ai-usagebar settings apply`.
+/// Missing keys remain byte-for-byte untouched. `clear` explicitly removes an
+/// inline key, matching the TUI overlay's existing empty-dirty-field behavior.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplyRequest {
+    schema_version: u8,
+    primary: Option<String>,
+    #[serde(default)]
+    keys: BTreeMap<String, KeyMutation>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "lowercase", deny_unknown_fields)]
+enum KeyMutation {
+    Set { value: String },
+    Clear,
+}
+
+const SETTINGS_SCHEMA_VERSION: u8 = 1;
+const MAX_SETTINGS_REQUEST_BYTES: u64 = 64 * 1024;
+const MAX_API_KEY_BYTES: usize = 16 * 1024;
+
+fn configured_key_env<'a>(cfg: &'a Config, section: &str, fallback: &'a str) -> &'a str {
+    match section {
+        "anthropic_api" => &cfg.anthropic_api.api_key_env,
+        "zai" => &cfg.zai.api_key_env,
+        "openrouter" => &cfg.openrouter.api_key_env,
+        "deepseek" => &cfg.deepseek.api_key_env,
+        "kimi" => &cfg.kimi.api_key_env,
+        "kilo" => &cfg.kilo.api_key_env,
+        "novita" => &cfg.novita.api_key_env,
+        "moonshot" => &cfg.moonshot.api_key_env,
+        "grok" => &cfg.grok.api_key_env,
+        "minimax" => &cfg.minimax.api_key_env,
+        _ => fallback,
+    }
+}
+
+fn snapshot_from_config_with(
+    cfg: &Config,
+    environment_configured: impl Fn(&str) -> bool,
+) -> SettingsSnapshot {
+    let state = SettingsState::from_config(cfg);
+    let primary_choices = state
+        .primary_choices
+        .iter()
+        .map(|id| PrimaryChoice {
+            id: id.slug().to_string(),
+            label: id.display_name().to_string(),
+        })
+        .collect();
+    let keys = KEY_VENDORS
+        .iter()
+        .map(|vendor| {
+            let environment = configured_key_env(cfg, vendor.section, vendor.env);
+            let inline_configured =
+                config_inline_key(cfg, vendor.section).is_some_and(|v| !v.is_empty());
+            let environment_configured = environment_configured(environment);
+            KeyStatus {
+                id: vendor.id.slug().to_string(),
+                label: vendor.label.to_string(),
+                environment: environment.to_string(),
+                note: vendor.note.to_string(),
+                configured: inline_configured || environment_configured,
+                inline_configured,
+                environment_configured,
+            }
+        })
+        .collect();
+    SettingsSnapshot {
+        schema_version: SETTINGS_SCHEMA_VERSION,
+        primary: state.primary.slug().to_string(),
+        primary_choices,
+        keys,
+    }
+}
+
+fn settings_snapshot_json(cfg: &Config) -> Result<String> {
+    Ok(serde_json::to_string(&snapshot_from_config_with(
+        cfg,
+        |environment| std::env::var_os(environment).is_some_and(|value| !value.is_empty()),
+    ))?)
+}
+
+#[cfg(test)]
+fn settings_snapshot_json_with(
+    cfg: &Config,
+    environment_configured: impl Fn(&str) -> bool,
+) -> Result<String> {
+    Ok(serde_json::to_string(&snapshot_from_config_with(
+        cfg,
+        environment_configured,
+    ))?)
+}
+
+fn vendor_from_slug(slug: &str) -> Option<VendorId> {
+    VendorId::all().iter().copied().find(|id| id.slug() == slug)
+}
+
+fn state_from_apply_request(cfg: &Config, raw: &str) -> Result<SettingsState> {
+    let request: ApplyRequest = serde_json::from_str(raw)?;
+    if request.schema_version != SETTINGS_SCHEMA_VERSION {
+        return Err(AppError::Other(format!(
+            "unsupported settings schema version {}",
+            request.schema_version
+        )));
+    }
+
+    let mut state = SettingsState::from_config(cfg);
+    if let Some(primary) = request.primary {
+        let id = vendor_from_slug(&primary)
+            .ok_or_else(|| AppError::Other(format!("unknown primary vendor {primary:?}")))?;
+        if !state.primary_choices.contains(&id) {
+            return Err(AppError::Other(format!(
+                "primary vendor {primary:?} is not enabled"
+            )));
+        }
+        state.primary = id;
+    }
+
+    for (id, mutation) in request.keys {
+        let index = KEY_VENDORS
+            .iter()
+            .position(|vendor| vendor.id.slug() == id)
+            .ok_or_else(|| AppError::Other(format!("unknown API-key vendor {id:?}")))?;
+        let input = &mut state.keys[index];
+        match mutation {
+            KeyMutation::Set { value } => {
+                if value.is_empty() {
+                    return Err(AppError::Other(format!(
+                        "API key for {id:?} is empty; use the clear action to remove it"
+                    )));
+                }
+                if value.len() > MAX_API_KEY_BYTES {
+                    return Err(AppError::Other(format!(
+                        "API key for {id:?} exceeds {MAX_API_KEY_BYTES} bytes"
+                    )));
+                }
+                if value.chars().any(char::is_control) {
+                    return Err(AppError::Other(format!(
+                        "API key for {id:?} contains control characters"
+                    )));
+                }
+                input.buf = value;
+            }
+            KeyMutation::Clear => input.buf.clear(),
+        }
+        input.cursor = input.buf.chars().count();
+        input.dirty = true;
+        input.revealed = false;
+    }
+    Ok(state)
+}
+
+#[cfg(test)]
+fn apply_settings_json_to_path(cfg: &Config, raw: &str, path: &Path) -> Result<()> {
+    let state = state_from_apply_request(cfg, raw)?;
+    save_to_path(&state, path)
+}
+
+fn read_settings_request<R: BufRead>(reader: R) -> Result<String> {
+    let mut limited = reader.take(MAX_SETTINGS_REQUEST_BYTES + 1);
+    let mut bytes = Vec::new();
+    limited.read_until(b'\n', &mut bytes)?;
+    if bytes.len() as u64 > MAX_SETTINGS_REQUEST_BYTES {
+        return Err(AppError::Other(format!(
+            "settings request exceeds {MAX_SETTINGS_REQUEST_BYTES} bytes"
+        )));
+    }
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| AppError::Other("settings request is not valid UTF-8".into()))
+}
+
+fn apply_settings_from_stdin() -> Result<()> {
+    let raw = read_settings_request(std::io::stdin().lock())?;
+    let cfg = Config::load()?;
+    let state = state_from_apply_request(&cfg, &raw)?;
+    save_to_config_default(&state)
+}
+
+/// Administrative settings bridge for native frontends. `show` never emits a
+/// secret; `apply` accepts its patch only over stdin so keys do not appear in
+/// argv or the process environment.
+pub fn run_cli(action: &crate::widget::cli::SettingsAction) -> i32 {
+    let result = match action {
+        crate::widget::cli::SettingsAction::Show => Config::load()
+            .and_then(|cfg| settings_snapshot_json(&cfg))
+            .map(|json| println!("{json}")),
+        crate::widget::cli::SettingsAction::Apply => {
+            apply_settings_from_stdin().map(|()| println!(r#"{{"ok":true}}"#))
+        }
+    };
+    match result {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("settings: {error}");
+            1
+        }
+    }
 }
 
 // ─── Render ────────────────────────────────────────────────────────────────
@@ -1251,5 +1493,127 @@ api_key_env = "OPENROUTER_API_KEY"
             default_config_path().unwrap(),
             crate::config::resolved_path().unwrap()
         );
+    }
+
+    #[test]
+    fn native_snapshot_reports_key_state_without_serializing_secrets() {
+        let mut cfg = Config::default();
+        cfg.zai.api_key = Some("never-leak-this-key".into());
+        cfg.zai.api_key_env = "CUSTOM_ZAI_KEY".into();
+        let raw = settings_snapshot_json_with(&cfg, |name| name == "CUSTOM_ZAI_KEY").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["primary"], "anthropic");
+        let zai = parsed["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "zai")
+            .unwrap();
+        assert_eq!(zai["configured"], true);
+        assert_eq!(zai["inline_configured"], true);
+        assert_eq!(zai["environment_configured"], true);
+        assert_eq!(zai["environment"], "CUSTOM_ZAI_KEY");
+        assert!(!raw.contains("never-leak-this-key"));
+        assert!(parsed.get("api_key").is_none());
+    }
+
+    #[test]
+    fn native_key_only_patch_does_not_require_or_replace_primary() {
+        let cfg = Config::default();
+        let original_primary = SettingsState::from_config(&cfg).primary;
+        let request = serde_json::json!({
+            "schema_version": 1,
+            "keys": {"kimi": {"action": "set", "value": "new-kimi-key"}}
+        });
+
+        let state = state_from_apply_request(&cfg, &request.to_string()).unwrap();
+        assert_eq!(state.primary, original_primary);
+        let kimi_index = KEY_VENDORS
+            .iter()
+            .position(|vendor| vendor.id == VendorId::Kimi)
+            .unwrap();
+        assert!(state.keys[kimi_index].dirty);
+        assert_eq!(state.keys[kimi_index].buf, "new-kimi-key");
+    }
+
+    #[test]
+    fn native_patch_reuses_tui_persistence_and_preserves_existing_config() {
+        let (_dir, path) = temp_config(Some(
+            r#"# keep this comment
+[ui]
+primary = "anthropic"
+
+[zai]
+enabled = true
+api_key_env = "ZAI_API_KEY"
+plan_tier = "pro"
+
+[openrouter]
+enabled = true
+"#,
+        ));
+        let cfg = Config::load_from(&path).unwrap();
+        let request = serde_json::json!({
+            "schema_version": 1,
+            "primary": "openrouter",
+            "keys": {
+                "zai": {"action": "set", "value": "new-zai-key"}
+            }
+        });
+
+        apply_settings_json_to_path(&cfg, &request.to_string(), &path).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("# keep this comment"));
+        assert!(raw.contains("plan_tier = \"pro\""));
+        assert!(raw.contains("api_key_env = \"ZAI_API_KEY\""));
+        assert!(raw.contains("primary = \"openrouter\""));
+        assert!(raw.contains("api_key = \"new-zai-key\""));
+    }
+
+    #[test]
+    fn native_patch_distinguishes_clear_from_unchanged() {
+        let (_dir, path) = temp_config(Some(
+            "[zai]\nenabled = true\napi_key = \"remove-me\"\n\
+             [openrouter]\nenabled = true\napi_key = \"keep-me\"\n",
+        ));
+        let cfg = Config::load_from(&path).unwrap();
+        let request = serde_json::json!({
+            "schema_version": 1,
+            "primary": "zai",
+            "keys": {"zai": {"action": "clear"}}
+        });
+
+        apply_settings_json_to_path(&cfg, &request.to_string(), &path).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("remove-me"));
+        assert!(raw.contains("keep-me"));
+    }
+
+    #[test]
+    fn native_patch_errors_never_echo_key_values() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "primary": "anthropic",
+            "keys": {
+                "zai": {"action": "set", "value": "secret\nwith-control"}
+            }
+        })
+        .to_string();
+        let error = state_from_apply_request(&Config::default(), &raw)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("secret"));
+        assert!(error.contains("control characters"));
+    }
+
+    #[test]
+    fn native_patch_input_is_bounded_before_json_parsing() {
+        let oversized = vec![b'x'; MAX_SETTINGS_REQUEST_BYTES as usize + 1];
+        let error = read_settings_request(std::io::Cursor::new(oversized))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("exceeds"));
     }
 }

@@ -224,3 +224,102 @@ function errorMessage(value) {
   var message = cleanText(value, 500).trim()
   return message === "" ? "The usage command failed without an error message." : message
 }
+
+function settingsId(value) {
+  var id = cleanText(value, 80).trim()
+  if (!/^[a-z0-9_]+$/.test(id)
+      || id === "__proto__" || id === "constructor" || id === "prototype") return ""
+  return id
+}
+
+// The Rust bridge deliberately returns only key-presence booleans. Keep this
+// parser strict so a compromised/older helper cannot smuggle rich text or an
+// unbounded model into the long-lived shell process.
+function parseSettingsSnapshot(raw) {
+  try {
+    var parsed = JSON.parse(String(raw || ""))
+    if (!parsed || Number(parsed.schema_version) !== 1
+        || !Array.isArray(parsed.primary_choices) || !Array.isArray(parsed.keys))
+      return { ok: false, error: "The settings command returned an unsupported response.", primary: "", primary_choices: [], keys: [] }
+
+    var choices = []
+    for (var i = 0; i < parsed.primary_choices.length && i < 64; i++) {
+      var choice = parsed.primary_choices[i]
+      var choiceId = settingsId(choice && choice.id)
+      if (choiceId === "") continue
+      choices.push({ id: choiceId, value: choiceId, label: cleanText(choice.label, 120) || choiceId })
+    }
+
+    var keys = []
+    for (var j = 0; j < parsed.keys.length && j < 32; j++) {
+      var key = parsed.keys[j]
+      var keyId = settingsId(key && key.id)
+      if (keyId === "") continue
+      keys.push({
+        id: keyId,
+        label: cleanText(key.label, 120) || keyId,
+        environment: cleanText(key.environment, 160),
+        note: cleanText(key.note, 240),
+        configured: key.configured === true,
+        inline_configured: key.inline_configured === true,
+        environment_configured: key.environment_configured === true
+      })
+    }
+
+    var primary = settingsId(parsed.primary)
+    var primaryAvailable = false
+    for (var k = 0; k < choices.length; k++) {
+      if (choices[k].id === primary) {
+        primaryAvailable = true
+        break
+      }
+    }
+    if (!primaryAvailable) primary = choices.length > 0 ? choices[0].id : ""
+    return { ok: true, error: "", primary: primary, primary_choices: choices, keys: keys }
+  } catch (error) {
+    return { ok: false, error: "The settings command returned invalid JSON.", primary: "", primary_choices: [], keys: [] }
+  }
+}
+
+function buildSettingsPatch(primary, changes) {
+  var primaryId = settingsId(primary)
+  var rawPrimary = String(primary || "").trim()
+  if (rawPrimary !== "" && primaryId === "")
+    return { ok: false, error: "Choose a valid primary provider.", payload: "" }
+  var keys = {}
+  var list = Array.isArray(changes) ? changes : []
+  var seen = []
+  for (var i = 0; i < list.length; i++) {
+    var change = list[i] || {}
+    var id = settingsId(change.id)
+    if (id === "" || seen.indexOf(id) >= 0)
+      return { ok: false, error: "A settings row has an invalid provider id.", payload: "" }
+    seen.push(id)
+    if (change.action === "clear") {
+      keys[id] = { action: "clear" }
+    } else if (change.action === "set") {
+      var value = String(change.value || "")
+      if (value === "") return { ok: false, error: "An edited API key is empty.", payload: "" }
+      if (value.length > 16384) return { ok: false, error: "An API key is too long.", payload: "" }
+      keys[id] = { action: "set", value: value }
+    } else return { ok: false, error: "A settings row has an invalid action.", payload: "" }
+  }
+  if (primaryId === "" && seen.length === 0)
+    return { ok: false, error: "There are no settings changes to save.", payload: "" }
+  var patch = { schema_version: 1, keys: keys }
+  if (primaryId !== "") patch.primary = primaryId
+  return {
+    ok: true,
+    error: "",
+    payload: JSON.stringify(patch)
+  }
+}
+
+function parseSettingsApplyResult(raw) {
+  try {
+    var parsed = JSON.parse(String(raw || ""))
+    return parsed && parsed.ok === true
+  } catch (error) {
+    return false
+  }
+}

@@ -35,6 +35,7 @@ Panel {
   property double lastSuccessfulMs: 0
   property double nowMs: Date.now()
   property bool cursorActive: false
+  property bool settingsOpen: false
 
   readonly property int refreshIntervalSec: Math.max(30, Math.min(3600,
     Number(setting("refreshIntervalSec", 300)) || 300))
@@ -107,6 +108,26 @@ Panel {
 
   function refresh() { startRefresh() }
 
+  function openSettings() {
+    settingsOpen = true
+    cursorActive = false
+    if (panelFlick) panelFlick.contentY = 0
+    Qt.callLater(function() { settingsView.forceActiveFocus() })
+  }
+
+  function closeSettings() {
+    settingsOpen = false
+    if (panelFlick) panelFlick.contentY = 0
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function openTerminalSettings() {
+    if (hostWidget && typeof hostWidget.launchDashboard === "function")
+      hostWidget.launchDashboard()
+    else if (bar)
+      bar.run("omarchy-launch-floating-terminal-with-presentation ai-usagebar-tui")
+  }
+
   function switchPanel(direction) {
     if (bar && typeof bar.switchPanelFrom === "function")
       return bar.switchPanelFrom(barIdentity, direction)
@@ -152,13 +173,17 @@ Panel {
 
   onEntriesChanged: Qt.callLater(syncSelection)
   onConfiguredProviderChanged: Qt.callLater(syncSelection)
-  onOpenedChanged: if (opened) {
-    cursorActive = false
-    nowMs = Date.now()
-    if (panelFlick) panelFlick.contentY = 0
-    if (lastSuccessfulMs === 0 || nowMs - lastSuccessfulMs >= refreshIntervalSec * 1000)
-      startRefresh()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  onOpenedChanged: {
+    if (opened) {
+      cursorActive = false
+      nowMs = Date.now()
+      if (panelFlick) panelFlick.contentY = 0
+      if (lastSuccessfulMs === 0 || nowMs - lastSuccessfulMs >= refreshIntervalSec * 1000)
+        startRefresh()
+      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    } else {
+      settingsOpen = false
+    }
   }
 
   Timer {
@@ -212,9 +237,11 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // Native form controls own Tab/Enter/Esc while settings are open.
+      blocked: root.settingsOpen
 
       onMoveRequested: function(dx, dy) {
-        if (dx !== 0) {
+        if (!root.settingsOpen && dx !== 0) {
           root.cursorActive = true
           root.selectEntry(root.entryIndex + dx)
         }
@@ -222,10 +249,13 @@ Panel {
           panelFlick.contentY = root.clamp(panelFlick.contentY + dy * Style.space(56), 0,
             Math.max(0, panelFlick.contentHeight - panelFlick.height))
       }
-      onActivateRequested: root.refresh()
-      onCloseRequested: root.close()
+      onActivateRequested: if (!root.settingsOpen) root.refresh()
+      onCloseRequested: root.settingsOpen ? root.closeSettings() : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onTextKey: function(text) { if (text === "r" || text === "R") root.refresh() }
+      onTextKey: function(text) {
+        if (!root.settingsOpen && (text === "r" || text === "R")) root.refresh()
+        else if (!root.settingsOpen && (text === "s" || text === "S")) root.openSettings()
+      }
 
       Flickable {
         id: panelFlick
@@ -245,15 +275,18 @@ Panel {
 
           PanelHero {
             width: parent.width
-            title: root.entry ? Model.providerName(root.entry) : "AI usage"
-            meta: root.heroMeta()
-            detail: root.entry && root.summary.text !== "Ready" ? Model.autoTextSafe(root.summary.text) : ""
+            title: root.settingsOpen ? "Settings"
+              : (root.entry ? Model.providerName(root.entry) : "AI usage")
+            meta: root.settingsOpen ? "Primary provider & API keys" : root.heroMeta()
+            detail: root.settingsOpen
+              ? "Existing configuration stays in place until you save."
+              : (root.entry && root.summary.text !== "Ready" ? Model.autoTextSafe(root.summary.text) : "")
             foreground: root.foreground
             fontFamily: root.fontFamily
 
             iconComponent: Component {
               Text {
-                text: "󰚩"
+                text: root.settingsOpen ? "󰒓" : "󰚩"
                 color: root.alarming ? root.urgent : root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
@@ -261,20 +294,45 @@ Panel {
             }
 
             trailingControl: Component {
-              PanelActionButton {
-                iconText: "󰑐"
-                tooltipText: "Refresh usage"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                enabled: !usageProcess.running
-                onClicked: root.refresh()
+              Row {
+                spacing: Style.space(4)
+
+                PanelActionButton {
+                  visible: !root.settingsOpen
+                  iconText: "󰑐"
+                  tooltipText: "Refresh usage"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  enabled: !usageProcess.running
+                  onClicked: root.refresh()
+                }
+
+                PanelActionButton {
+                  iconText: root.settingsOpen ? "󰁍" : "󰒓"
+                  tooltipText: root.settingsOpen ? "Back to usage" : "Settings"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
+                }
               }
             }
           }
 
+          SettingsView {
+            id: settingsView
+            visible: root.settingsOpen
+            width: parent.width
+            foreground: root.foreground
+            urgent: root.urgent
+            fontFamily: root.fontFamily
+            onSaved: root.startRefresh()
+            onFallbackRequested: root.openTerminalSettings()
+            onCloseRequested: root.closeSettings()
+          }
+
           ListView {
             id: providerList
-            visible: root.visibleEntries.length > 1
+            visible: !root.settingsOpen && root.visibleEntries.length > 1
             width: parent.width
             height: visible ? Style.spacing.controlHeight : 0
             orientation: ListView.Horizontal
@@ -307,7 +365,7 @@ Panel {
 
           BorderSurface {
             readonly property string message: root.statusMessage()
-            visible: message !== ""
+            visible: !root.settingsOpen && message !== ""
             width: parent.width
             implicitHeight: statusText.implicitHeight + Style.spacing.xl * 2
             color: root.alpha(root.statusIsUrgent() ? root.urgent : root.foreground, 0.09)
@@ -331,7 +389,7 @@ Panel {
           }
 
           Column {
-            visible: root.loading && root.entries.length === 0
+            visible: !root.settingsOpen && root.loading && root.entries.length === 0
             width: parent.width
             spacing: Style.space(8)
 
@@ -353,7 +411,7 @@ Panel {
 
           Column {
             id: usageSection
-            visible: root.entrySections.length > 0
+            visible: !root.settingsOpen && root.entrySections.length > 0
             width: parent.width
             spacing: Style.space(8)
 
@@ -403,7 +461,7 @@ Panel {
           }
 
           Text {
-            visible: !root.loading && !root.entry && root.statusMessage() === ""
+            visible: !root.settingsOpen && !root.loading && !root.entry && root.statusMessage() === ""
             width: parent.width
             topPadding: Style.space(20)
             text: "No configured provider reported usage."
@@ -415,7 +473,7 @@ Panel {
           }
 
           Text {
-            visible: root.entryFetchedAt !== ""
+            visible: !root.settingsOpen && root.entryFetchedAt !== ""
             width: parent.width
             topPadding: Style.space(2)
             text: Model.formatUpdated(root.entryFetchedAt, root.nowMs)

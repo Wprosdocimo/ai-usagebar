@@ -9,6 +9,21 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- The Omarchy Quattro panel now includes a native QML settings form for the
+  primary provider and every supported API-key provider. Stored secret values
+  never enter the shell; it receives presence metadata only and sends changed
+  values to the Rust config owner over stdin.
+
+### Changed
+
+- Native and terminal settings share the existing `toml_edit` persistence
+  path, including comment preservation, explicit clear-versus-unchanged
+  behavior, automatic provider opt-in, mode-0600 writes on Unix, Waybar
+  refresh, environment-variable precedence, and legacy config-path fallback.
+  Existing configs and non-Omarchy frontends require no migration.
+
 ## [1.0.0] — 2026-08-14
 
 ### Added

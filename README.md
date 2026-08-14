@@ -4,7 +4,7 @@ Native Omarchy Quattro panel, Waybar widget, and tabbed TUI for AI plan usage ac
 
 This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar) and stays drop-in compatible with it. It keeps the minimalist Pango-bordered tooltip, Omarchy theme auto-detection, and flock-protected OAuth refresh, then adds broad multi-vendor support and a proper testable codebase instead of one long shell script.
 
-![Waybar widget showing `cld 29% · 1h 12m` in the top-right, with the hover tooltip showing Claude Max 20x session/weekly/sonnet/extra-usage progress bars](screenshot.png)
+![Native Omarchy Quattro panel showing Kimi quota usage, reset countdowns, and provider tabs](screenshots/omarchy-quattro-panel.png)
 
 ## Features
 
@@ -30,6 +30,20 @@ This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar)
 - **Live API smoke tests**: `make smoke` hits the real undocumented endpoints and catches schema drift early.
 
 ## Install
+
+### Omarchy Quattro
+
+The native plugin is a display frontend and does not bundle the
+`ai-usagebar` executable. Install the binary first, then add and enable the
+plugin:
+
+```bash
+omarchy pkg aur add ai-usagebar-bin
+omarchy plugin add https://github.com/akitaonrails/ai-usagebar.git --enable
+```
+
+The source-built `ai-usagebar` AUR package can replace `ai-usagebar-bin` in
+the first command.
 
 ### Arch (AUR)
 
@@ -123,9 +137,10 @@ rather than silently querying the wrong URL.
 Kilo, Novita, Moonshot, Grok, SuperGrok, Antigravity, Cursor, MiniMax, and Kiro CLI all default to **disabled** so that existing
 installs are unaffected until you opt in. Two ways to do it:
 
-- **Via the TUI Settings overlay** (`ai-usagebar-tui`, then `s`): saving a
-  non-empty API key sets that vendor's `enabled = true` for you. Clearing the
-  field again removes the inline key from `config.toml`.
+- **Via Settings**: use the gear or `s` in the Omarchy panel, or run
+  `ai-usagebar-tui` and press `s`. Saving a non-empty API key sets that vendor's
+  `enabled = true` for you. Clearing it removes the inline key from
+  `config.toml`.
 - **By hand**: add `enabled = true` to the vendor's section alongside the key.
 
 The primary-vendor selector only offers vendors that are currently enabled, so a
@@ -323,13 +338,8 @@ The Waybar widget is optional. The TUI is the best way to see every enabled vend
 ### Omarchy Quattro
 
 Omarchy 4's Quattro shell can host ai-usagebar as a native Quickshell plugin.
-Install the binary first, then add this repository through Omarchy's plugin
-manager:
-
-```bash
-yay -S ai-usagebar-bin
-omarchy plugin add https://github.com/akitaonrails/ai-usagebar.git --enable
-```
+Follow the two-step [Omarchy installation](#omarchy-quattro) above; adding the
+plugin alone does not install its binary dependency.
 
 Update or remove the plugin without editing `shell.json` by hand:
 
@@ -341,8 +351,10 @@ omarchy plugin remove akitaonrails.ai-usagebar
 The widget uses the providers and accounts already enabled in
 `~/.config/ai-usagebar/config.toml`; it never stores a second copy of API keys.
 Left-click opens the panel, right-click launches the TUI, and middle-click or
-scroll switches providers. See the [Omarchy plugin guide](omarchy/README.md)
-for settings, keyboard controls, update commands, and development checks.
+scroll switches providers. Open the gear or press `s` for the native QML
+settings form. See the [Omarchy plugin guide](omarchy/README.md) for its
+drop-in compatibility and credential-handling details, keyboard controls,
+update commands, and development checks.
 
 The only plugin dependency is the `ai-usagebar` executable installed above.
 Inside Quattro's unsandboxed shell process, the plugin runs the fixed
@@ -881,14 +893,15 @@ stay in TOML rather than expanding the already-full Settings modal.
 
 ### Settings overlay
 
-![Settings overlay floating over the TUI — Primary vendor radio (Anthropic selected), masked Z.AI API key (•••), masked OpenRouter API key (•••), Save button, key hints at bottom. This older screenshot predates the DeepSeek and Kimi key fields described below.](screenshots/tui-settings.png)
+![Settings overlay floating over the TUI — Primary vendor radio (Claude selected), masked Z.AI API key (•••), masked OpenRouter API key (•••), Save button, key hints at bottom. This older screenshot predates later API-key providers described below.](screenshots/tui-settings.png)
 
 Press `s` while the TUI is open. The overlay lets you:
 
 - Pick the **primary vendor** that the widget defaults to and that the TUI selects on startup. Use `←` / `→` to cycle.
-- Enter your **Z.AI API key**, **OpenRouter API key**, **DeepSeek API key**, and **Kimi API key** inline. Keys are masked as you type; press `Ctrl-V` to reveal or hide them. Env vars (`ZAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `KIMI_API_KEY`) still win at runtime if they're set; the inline key is the fallback. DeepSeek and Kimi remain disabled until their respective config sections set `enabled = true`.
-
-Saving an API key in the overlay does not enable the vendor — you still need `enabled = true` in `[kimi]` or `[deepseek]` for the widget and TUI to include it.
+- Enter a key for any supported API-key provider. Keys are masked as you type;
+  press `Ctrl-V` to reveal or hide them. The provider's configured environment
+  variable still wins at runtime; the inline key is the fallback. Saving a
+  non-empty key also sets that provider's `enabled = true`.
 
 Key bindings inside the overlay:
 
@@ -899,6 +912,10 @@ Key bindings inside the overlay:
 - `Esc` — discard and close
 
 Save writes to `~/.config/ai-usagebar/config.toml` via `toml_edit` so your existing comments and unrelated fields are preserved. The file is automatically `chmod 600`ed on save, so inline keys aren't world-readable.
+
+Omarchy's native QML form uses the same Rust persistence path and semantics.
+It never loads stored key values into the long-lived shell process: blank means
+unchanged, clear is explicit, and new values are sent to the binary over stdin.
 
 After save, the Settings overlay fires `SIGRTMIN+13` so any Waybar module configured with `signal: 13` refreshes immediately. You don't need to wait for the next 300-second interval or kick the bar by hand. The TUI's own tabs also re-fetch right away, so a freshly set API key takes effect on the spot.
 
