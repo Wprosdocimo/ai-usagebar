@@ -1,6 +1,6 @@
 # ai-usagebar
 
-Waybar widget and tabbed TUI for AI plan usage across **Anthropic Claude**, **OpenAI Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, **Kimi**, and other supported AI coding services.
+Native Omarchy Quattro panel, Waybar widget, and tabbed TUI for AI plan usage across **Claude**, **Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, **Kimi**, and other supported AI coding services.
 
 This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar) and stays drop-in compatible with it. It keeps the minimalist Pango-bordered tooltip, Omarchy theme auto-detection, and flock-protected OAuth refresh, then adds broad multi-vendor support and a proper testable codebase instead of one long shell script.
 
@@ -9,10 +9,17 @@ This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar)
 ## Features
 
 - **Per-vendor Waybar modules** with the same JSON shape as claudebar.
+- **Native Omarchy Quattro plugin** with the shell's own theme tokens, popup
+  geometry, controls, keyboard navigation, provider switching, live reset
+  countdowns, and cache/error states. The repository installs directly through
+  `omarchy plugin add` on Omarchy 4.
 - **Tabbed TUI** (`ai-usagebar-tui`) with Tab/h/l switching, per-tab refresh, and 60-second auto-refresh. Native ratatui widgets fill the available terminal width and keep the vendor tabs visually consistent. Opens on an **Overview** tab summarizing every vendor at once (one compact row each); `[ui] overview_vendors` picks which vendors it lists, while `[ui] vendor_box = "sidebar" | "navbar" | "none"` controls the navigation layout.
 - **Optional local Claude Code context monitor** in the TUI, with a bounded,
   compaction-aware view of recent session input-context usage.
-- **Native desktop integrations** for GNOME Shell and the macOS menu bar. The macOS app supports thirteen vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok, Anthropic API, Cursor, Google Antigravity); the GNOME extension covers Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, and Google Antigravity. (Cursor isn't in the GNOME extension yet.)
+- **Native desktop integrations** for Omarchy Quattro, GNOME Shell, and the
+  macOS menu bar. Omarchy consumes the complete multi-provider report; the
+  macOS app supports thirteen vendors and the GNOME extension covers
+  Claude, Codex, Z.AI, OpenRouter, DeepSeek, and Google Antigravity.
 - **Scroll-to-cycle on the bar**: wire `on-scroll-up` / `on-scroll-down`, and one bar item cycles through your enabled vendors.
 - **Config-driven primary vendor**: set `[ui] primary` once; the widget shows that vendor by default and the TUI opens on its tab.
 - **Local testing tools**: `--pretty` renders ANSI-colored terminal output (auto-detects TTY), and `--watch N` re-renders every N seconds.
@@ -73,13 +80,13 @@ API-key vendors work unchanged via environment variables or `config.toml`.
 
 ## Authentication
 
-Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth credentials that their official CLIs already wrote to disk, several vendors use API keys, and local-product integrations reuse their own signed-in session or local server. The table below is authoritative; API keys can come from environment variables or, if you do not source secrets in your shell, inline `config.toml` values.
+Each vendor authenticates a little differently. Claude and Codex use OAuth credentials that their official CLIs already wrote to disk, several vendors use API keys, and local-product integrations reuse their own signed-in session or local server. The table below is authoritative; API keys can come from environment variables or, if you do not source secrets in your shell, inline `config.toml` values.
 
 | Vendor | Method | Action required |
 |---|---|---|
-| Anthropic | OAuth, read from `~/.claude/.credentials.json` (or the macOS login Keychain — see below) | Run `claude` once to log in. Token auto-refreshes. |
-| Anthropic (API) | Console Admin key (`ANTHROPIC_ADMIN_KEY` env or `[anthropic_api] api_key` in config) | Set either. Opt-in. This is an organization Admin key (`sk-ant-admin01-…`), not an inference key or Claude Code OAuth credential. |
-| OpenAI | OAuth, read from `~/.codex/auth.json` | Run `codex login` once. Token auto-refreshes. |
+| Claude | OAuth, read from `~/.claude/.credentials.json` (or the macOS login Keychain — see below) | Run `claude` once to log in. Token auto-refreshes. |
+| Anthropic API | Console Admin key (`ANTHROPIC_ADMIN_KEY` env or `[anthropic_api] api_key` in config) | Set either. Opt-in. This is an organization Admin key (`sk-ant-admin01-…`), not an inference key or Claude Code OAuth credential. |
+| Codex | OAuth, read from `~/.codex/auth.json` | Run `codex login` once. Token auto-refreshes. |
 | Z.AI | API key (`ZAI_API_KEY` env or `[zai] api_key` in config) | Set either. |
 | OpenRouter | API key (`OPENROUTER_API_KEY` env or `[openrouter] api_key` in config) | Set either. |
 | DeepSeek | API key (`DEEPSEEK_API_KEY` env or `[deepseek] api_key` in config) | Set either. Opt-in — see below. |
@@ -112,7 +119,7 @@ rather than silently querying the wrong URL.
 
 ### Enabling a vendor
 
-`enabled = true` is what makes a vendor fetch. Anthropic (API), DeepSeek, Kimi,
+`enabled = true` is what makes a vendor fetch. Anthropic API, DeepSeek, Kimi,
 Kilo, Novita, Moonshot, Grok, SuperGrok, Antigravity, Cursor, MiniMax, and Kiro CLI all default to **disabled** so that existing
 installs are unaffected until you opt in. Two ways to do it:
 
@@ -146,7 +153,7 @@ On macOS, recent Claude Code builds don't write `~/.claude/.credentials.json` �
 
 ## Configuration
 
-`~/.config/ai-usagebar/config.toml` (optional — defaults enable Anthropic, OpenAI, Z.AI, and OpenRouter; all other vendors are opt-in). Full example:
+`~/.config/ai-usagebar/config.toml` (optional — defaults enable Claude, Codex, Z.AI, and OpenRouter; all other vendors are opt-in). Full example:
 
 ```toml
 [ui]
@@ -290,6 +297,10 @@ ai-usagebar-tui
 In JSON, `metrics` contains only percentage gauges. The ordered `sections`
 array is the lossless view and also includes balance text, grouped breakdowns,
 and visual spacers; non-percentage rows never invent a numeric percentage.
+The report also exposes the configured `primary` id. Entries carry a canonical
+`display_name` plus `status`, `stale`, and `fetched_at`; metric rows carry
+`severity` and the absolute `reset_at` timestamp when the provider reports one.
+These fields are additive, so existing report consumers remain compatible.
 
 ## Standalone TUI — no Waybar required
 
@@ -309,7 +320,39 @@ The Waybar widget is optional. The TUI is the best way to see every enabled vend
 
 ## Native desktop integrations
 
-The [macOS menu bar app](macos/README.md) supports thirteen vendors — **Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok (xAI), Anthropic (API), Cursor, and Google Antigravity**. The [GNOME Shell extension](gnome-extension/README.md) supports **Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, and Google Antigravity**, whose two independent quota pools it renders as grouped rows. Cursor is not in the GNOME extension yet — use `ai-usagebar --vendor cursor` or the TUI there.
+### Omarchy Quattro
+
+Omarchy 4's Quattro shell can host ai-usagebar as a native Quickshell plugin.
+Install the binary first, then add this repository through Omarchy's plugin
+manager:
+
+```bash
+yay -S ai-usagebar-bin
+omarchy plugin add https://github.com/akitaonrails/ai-usagebar.git --enable
+```
+
+Update or remove the plugin without editing `shell.json` by hand:
+
+```bash
+omarchy plugin update akitaonrails.ai-usagebar
+omarchy plugin remove akitaonrails.ai-usagebar
+```
+
+The widget uses the providers and accounts already enabled in
+`~/.config/ai-usagebar/config.toml`; it never stores a second copy of API keys.
+Left-click opens the panel, right-click launches the TUI, and middle-click or
+scroll switches providers. See the [Omarchy plugin guide](omarchy/README.md)
+for settings, keyboard controls, update commands, and development checks.
+
+The only plugin dependency is the `ai-usagebar` executable installed above.
+Inside Quattro's unsandboxed shell process, the plugin runs the fixed
+`ai-usagebar usage --json` command for reports and launches `ai-usagebar-tui`
+only when requested. It installs no service, runs no installer of its own,
+requests no elevated privileges, and does not overwrite user configuration.
+
+### GNOME and macOS
+
+The [macOS menu bar app](macos/README.md) supports thirteen vendors — **Claude, Codex, Z.AI, OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok (xAI), Anthropic API, Cursor, and Google Antigravity**. The [GNOME Shell extension](gnome-extension/README.md) supports **Claude, Codex, Z.AI, OpenRouter, DeepSeek, and Google Antigravity**, whose two independent quota pools it renders as grouped rows. Cursor is not in the GNOME extension yet — use `ai-usagebar --vendor cursor` or the TUI there.
 
 ## Waybar config
 
@@ -676,7 +719,7 @@ Then `hyprctl reload` (no logout needed).
 | **Moonshot** | `api.moonshot.ai\|.cn/v1/users/me/balance` (documented) | Account balance ($ on `.ai`, ¥ on `.cn`) | No — widget/TUI only |
 | **Grok (xAI)** | `management-api.x.ai/v1/billing/teams/{team}/prepaid/balance` (Management API; documented) | Prepaid credit balance ($) | No — widget/TUI only |
 | **SuperGrok** | Official Grok Build `x.ai/billing` ACP extension | Current weekly/monthly included-credit %, prepaid API balance, reset | No — widget/TUI only |
-| **Anthropic (API)** | `api.anthropic.com/v1/organizations/cost_report` (Admin API; documented) | Month-to-date spend ($, excludes Priority Tier), optional spend-vs-limit % | No — widget/TUI only |
+| **Anthropic API** | `api.anthropic.com/v1/organizations/cost_report` (Admin API; documented) | Month-to-date spend ($, excludes Priority Tier), optional spend-vs-limit % | No — widget/TUI only |
 | **Cursor** | `cursor.com/api/usage-summary` (undocumented; the dashboard's own frontend) | Two included-usage pools this billing cycle — Cursor Models (Auto/Composer) % and Other Models (named/API) % — plus plan, reset, on-demand | Yes |
 | **Kiro CLI** | `codewhisperer.<region>.amazonaws.com` `GetUsageLimits` (undocumented; the same call kiro-cli's own `/usage` slash command makes) | Single credit pool this cycle — used/limit/%, plan, reset | No — widget/TUI only |
 
@@ -748,7 +791,7 @@ When an endpoint drifts, **run `make smoke`**. It runs all ignored vendor tests,
 
 > Distinct from the `grok` vendor: SuperGrok is the **subscription** path owned by Grok Build authentication. Grok is the **Management API prepaid** balance path using a management key. ai-usagebar never parses, copies, caches, refreshes, or places the SuperGrok token in ACP messages; it only hashes the auth/config files as opaque cache-scope inputs. The executable defaults to Grok Build's canonical `$GROK_HOME/bin/grok` (or `~/.grok/bin/grok`) rather than searching PATH; set `[supergrok] grok_binary` only if your trusted official binary lives elsewhere.
 
-### Anthropic (API)
+### Anthropic API
 
 `{aapi_headline}`, `{aapi_spent}`, `{aapi_limit}`, `{aapi_pct}` — month-to-date spend for the API/Console account from the Admin API `cost_report`. The headline is `$1.34 / $1000 · 0%` when a positive, finite `monthly_limit` is set in config, `$1.34/mo` otherwise. Generic aliases `{plan}`, `{session_pct}`, and `{weekly_pct}` are also available (the last two both map to the spend-vs-limit %).
 
@@ -780,7 +823,7 @@ make clippy                                        # cargo clippy -D warnings
 
 ## TUI controls
 
-![ai-usagebar-tui showing the OpenAI tab — Codex 5h and weekly gauges, Credits block with message-count ranges, tabs at top, key hints in the footer](screenshots/tui-openai.png)
+![ai-usagebar-tui showing the Codex tab — 5h and weekly gauges, Credits block with message-count ranges, tabs at top, key hints in the footer](screenshots/tui-openai.png)
 
 - `Tab` / `l` / `→` — next tab
 - `Shift+Tab` / `h` / `←` — previous tab

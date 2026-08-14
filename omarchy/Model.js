@@ -1,0 +1,226 @@
+// Pure data shaping for the Omarchy Quattro widget. Keep this file free of
+// QML globals so the exact report contract and selection behavior can also be
+// exercised by Node in CI.
+
+function cleanText(value, maxLength) {
+  var text = value === undefined || value === null ? "" : String(value)
+  // The Rust projection already strips terminal controls. This second, cheap
+  // boundary keeps hand-authored/older JSON from putting controls in a
+  // long-lived shell process.
+  text = text.replace(/[\t\r]/g, " ")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
+    .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+  var limit = Number(maxLength) || 2048
+  if (text.length <= limit) return text
+  var end = limit - 1
+  var finalCodeUnit = text.charCodeAt(end - 1)
+  if (finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff) end--
+  return text.slice(0, end) + "…"
+}
+
+// Shared Omarchy components use Text.AutoText. Replace angle brackets before
+// passing provider-controlled labels into those components so they can never
+// be reclassified as rich text (including an image tag with a remote URL).
+function autoTextSafe(value) {
+  return cleanText(value, 1000)
+    .replace(/[\n\u2028\u2029]/g, " ")
+    .replace(/</g, "‹")
+    .replace(/>/g, "›")
+}
+
+function finitePercent(value) {
+  var number = Number(value)
+  if (!isFinite(number)) return null
+  return Math.max(0, Math.min(100, Math.round(number)))
+}
+
+function normalizeSection(raw) {
+  if (!raw || typeof raw !== "object") return null
+  var type = String(raw.type || "")
+  if (type === "spacer") return { type: "spacer" }
+  if (type === "metric") {
+    var percent = finitePercent(raw.percent)
+    if (percent === null) return null
+    var severity = String(raw.severity || "")
+    if (["low", "mid", "high", "critical"].indexOf(severity) < 0)
+      severity = percent >= 90 ? "critical" : percent >= 75 ? "high" : percent >= 50 ? "mid" : "low"
+    return {
+      type: "metric",
+      label: cleanText(raw.label, 160),
+      percent: percent,
+      value: cleanText(raw.value, 240),
+      detail: cleanText(raw.detail, 1000),
+      severity: severity,
+      reset_at: cleanText(raw.reset_at, 80)
+    }
+  }
+  if (type === "text") {
+    return {
+      type: "text",
+      label: cleanText(raw.label, 160),
+      value: cleanText(raw.value, 1000)
+    }
+  }
+  if (type === "block") {
+    var body = Array.isArray(raw.body) ? raw.body : []
+    var lines = []
+    for (var i = 0; i < body.length && i < 24; i++) lines.push(cleanText(body[i], 1000))
+    return { type: "block", label: cleanText(raw.label, 160), body: lines }
+  }
+  return null
+}
+
+function normalizeEntry(raw) {
+  if (!raw || typeof raw !== "object") return null
+  var id = cleanText(raw.id, 180).trim()
+  if (id === "") return null
+  var sourceSections = Array.isArray(raw.sections) ? raw.sections : []
+  var sections = []
+  for (var i = 0; i < sourceSections.length && i < 96; i++) {
+    var section = normalizeSection(sourceSections[i])
+    if (section) sections.push(section)
+  }
+  var error = raw.error === undefined || raw.error === null ? "" : cleanText(raw.error, 1200)
+  return {
+    id: id,
+    name: cleanText(raw.name, 240),
+    display_name: cleanText(raw.display_name, 240),
+    plan: cleanText(raw.plan, 240),
+    status: error !== "" || raw.status === "error" ? "error" : "ready",
+    error: error,
+    stale: raw.stale === true,
+    fetched_at: cleanText(raw.fetched_at, 80),
+    sections: sections
+  }
+}
+
+function parseReport(raw) {
+  try {
+    var parsed = JSON.parse(String(raw || ""))
+    if (!parsed || !Array.isArray(parsed.entries))
+      return { ok: false, error: "The usage command returned an unsupported report.", primary: "", entries: [] }
+    var entries = []
+    for (var i = 0; i < parsed.entries.length && i < 64; i++) {
+      var entry = normalizeEntry(parsed.entries[i])
+      if (entry) entries.push(entry)
+    }
+    if (parsed.entries.length > 0 && entries.length === 0)
+      return { ok: false, error: "The usage report did not contain a valid provider entry.", primary: "", entries: [] }
+    return { ok: true, error: "", primary: cleanText(parsed.primary, 180).trim(), entries: entries }
+  } catch (error) {
+    return { ok: false, error: "The usage command returned invalid JSON.", primary: "", entries: [] }
+  }
+}
+
+function baseProvider(id) {
+  return String(id || "").split("@")[0]
+}
+
+function providerName(entry) {
+  if (!entry) return "AI usage"
+  // The Rust report owns canonical product names. `name` is the compatible
+  // fallback for older binaries; the machine id is only a last resort.
+  var title = cleanText(entry.display_name || entry.name, 240).trim()
+  if (title === "") title = baseProvider(entry.id).replace(/_/g, " ") || "AI usage"
+  return autoTextSafe(title)
+}
+
+function filteredEntries(entries, configuredProvider) {
+  var list = Array.isArray(entries) ? entries : []
+  var wanted = String(configuredProvider || "").trim().toLowerCase()
+  if (wanted === "") return list.slice()
+  var exact = list.filter(function(entry) { return String(entry.id).toLowerCase() === wanted })
+  if (exact.length > 0) return exact
+  return list.filter(function(entry) { return baseProvider(entry.id).toLowerCase() === wanted })
+}
+
+function selectedIndex(entries, selectedId) {
+  var list = Array.isArray(entries) ? entries : []
+  for (var i = 0; i < list.length; i++) if (list[i].id === selectedId) return i
+  return list.length > 0 ? 0 : -1
+}
+
+function preferredEntryId(entries, primaryProvider) {
+  var list = Array.isArray(entries) ? entries : []
+  if (list.length === 0) return ""
+  var primary = String(primaryProvider || "").toLowerCase()
+  for (var i = 0; i < list.length; i++)
+    if (String(list[i].id).toLowerCase() === primary) return list[i].id
+  for (var j = 0; j < list.length; j++)
+    if (baseProvider(list[j].id).toLowerCase() === primary) return list[j].id
+  return list[0].id
+}
+
+function headline(entry) {
+  if (!entry) return { text: "", percent: null, severity: "low", label: "" }
+  var best = null
+  var sections = entry.sections || []
+  for (var i = 0; i < sections.length; i++) {
+    var section = sections[i]
+    if (section.type === "metric" && (!best || section.percent > best.percent)) best = section
+  }
+  if (best) {
+    var bestText = /balance/i.test(best.label) && best.value !== ""
+      ? best.value : best.percent + "%"
+    return {
+      text: bestText,
+      percent: best.percent,
+      severity: best.severity,
+      label: best.label
+    }
+  }
+  for (var j = 0; j < sections.length; j++) {
+    var row = sections[j]
+    if (row.type === "text" && /(balance|available|spend|prepaid)/i.test(row.label) && row.value !== "")
+      return { text: row.value, percent: null, severity: "low", label: row.label }
+  }
+  return { text: entry.status === "error" ? "Error" : "Ready", percent: null, severity: "low", label: "" }
+}
+
+function isAlarming(entry) {
+  if (!entry) return false
+  var summary = headline(entry)
+  return entry.status === "error" || entry.stale === true || summary.severity === "critical"
+}
+
+function formatDuration(milliseconds) {
+  if (!(milliseconds > 0)) return "now"
+  var minutes = Math.floor(milliseconds / 60000)
+  var hours = Math.floor(minutes / 60)
+  var days = Math.floor(hours / 24)
+  if (days > 0) return days + "d " + (hours % 24) + "h"
+  if (hours > 0) return hours + "h " + (minutes % 60) + "m"
+  return Math.max(1, minutes) + "m"
+}
+
+function formatReset(resetAt, nowMs) {
+  if (!resetAt) return ""
+  var resetMs = new Date(String(resetAt)).getTime()
+  if (!isFinite(resetMs)) return ""
+  var remaining = resetMs - Number(nowMs)
+  return remaining > 0 ? "Resets in " + formatDuration(remaining) : "Reset due"
+}
+
+function formatUpdated(fetchedAt, nowMs) {
+  if (!fetchedAt) return "Updated time unavailable"
+  var fetchedMs = new Date(String(fetchedAt)).getTime()
+  if (!isFinite(fetchedMs)) return "Updated time unavailable"
+  var elapsed = Math.max(0, Number(nowMs) - fetchedMs)
+  if (elapsed < 60000) return "Updated just now"
+  return "Updated " + formatDuration(elapsed) + " ago"
+}
+
+function metricDetail(row) {
+  var detail = cleanText(row && row.detail, 1000)
+  if (!row || !row.reset_at) return detail
+  // Older human-readable reset text remains useful to CLI consumers. Strip
+  // just that fragment in the native panel, which renders a live countdown.
+  detail = detail.replace(/^Resets in [^·]+\s*(?:·\s*)?/i, "")
+  detail = detail.replace(/\s*·\s*reset\s+[^·]+$/i, "")
+  return detail.trim()
+}
+
+function errorMessage(value) {
+  var message = cleanText(value, 500).trim()
+  return message === "" ? "The usage command failed without an error message." : message
+}

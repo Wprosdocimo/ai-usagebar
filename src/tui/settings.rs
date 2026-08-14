@@ -578,7 +578,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &SettingsState, theme: &Theme) {
         Line::from(""),
         section_header(
             "API keys",
-            "pick a row, type the key, then Ctrl-S — Claude & OpenAI use CLI login",
+            "pick a row, type the key, then Ctrl-S — Claude & Codex use CLI login",
             &bubble,
         ),
     ];
@@ -634,7 +634,7 @@ fn section_header(title: &str, sub: &str, theme: &BubbleTheme) -> Line<'static> 
 
 fn primary_line(state: &SettingsState, theme: &BubbleTheme) -> Line<'static> {
     let focused = state.focus == Focus::Primary;
-    let name = vendor_label(state.primary).to_string();
+    let name = state.primary.display_name().to_string();
     if focused {
         Line::from(vec![
             theme.span("   "),
@@ -736,27 +736,6 @@ fn save_line(focused: bool, theme: &BubbleTheme) -> Line<'static> {
         Span::styled(marker, theme.accent.add_modifier(Modifier::BOLD)),
         Span::styled("  Save  (Ctrl-S)  ", style),
     ])
-}
-
-fn vendor_label(v: VendorId) -> &'static str {
-    match v {
-        VendorId::Anthropic => "Anthropic",
-        VendorId::AnthropicApi => "Anthropic API",
-        VendorId::Openai => "OpenAI",
-        VendorId::Zai => "Z.AI",
-        VendorId::Openrouter => "OpenRouter",
-        VendorId::Deepseek => "DeepSeek",
-        VendorId::Kimi => "Kimi",
-        VendorId::Kilo => "Kilo",
-        VendorId::Novita => "Novita",
-        VendorId::Moonshot => "Moonshot",
-        VendorId::Grok => "Grok",
-        VendorId::Supergrok => "SuperGrok",
-        VendorId::Antigravity => "Antigravity",
-        VendorId::Cursor => "Cursor",
-        VendorId::Minimax => "MiniMax",
-        VendorId::Kiro => "Kiro",
-    }
 }
 
 /// Center a rectangle of `percent_x * percent_y` over `r`.

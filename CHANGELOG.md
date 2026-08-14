@@ -9,6 +9,42 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-08-14
+
+### Added
+
+- **Native Omarchy 4 / Quattro plugin.** The repository is now directly
+  installable with `omarchy plugin add` and renders every configured provider
+  in Quattro's shared Quickshell design system: native bar interaction and
+  popup placement, theme-aware typography/surfaces/meters, provider switching,
+  keyboard navigation, live reset countdowns, refresh state, and stale/error
+  handling. It keeps credential access and network collection in the Rust
+  binary instead of duplicating vendor logic inside the shell.
+- `ai-usagebar usage --json` now exposes the configured `primary` id, canonical
+  `display_name`, additive `status`, `stale`, and `fetched_at` entry metadata,
+  plus `severity` and absolute `reset_at` values on percentage metrics.
+  Existing `metrics` and lossless `sections` consumers are unchanged;
+  long-lived native panels no longer have to parse human countdown strings.
+
+### Changed
+
+- Promoted the project to its first stable release with the provider, config,
+  CLI, report, cache, and native frontend compatibility guarantees established
+  across the 0.x series.
+- User-facing subscription labels now consistently use the recognizable
+  **Claude** and **Codex** product names. Stable machine ids remain `anthropic`
+  and `openai`, and the separate organization-spend integration remains
+  **Anthropic API**.
+- Canonical provider names and metric reset metadata now originate in the Rust
+  core. Native frontends remain platform-specific presentation adapters rather
+  than carrying copied vendor tables or metric-order assumptions.
+
+### Security
+
+- UI-bound report fields now remove Unicode bidirectional control characters
+  in addition to terminal controls, preventing untrusted labels or diagnostics
+  from visually reordering neighboring text.
+
 ## [0.22.0] — 2026-08-11
 
 ### Added
@@ -1402,7 +1438,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.22.0...v1.0.0
 [0.22.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/akitaonrails/ai-usagebar/compare/v0.20.0...v0.20.1

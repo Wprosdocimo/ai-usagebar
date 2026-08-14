@@ -70,44 +70,12 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn vendor_label(id: VendorId) -> &'static str {
-    match id {
-        VendorId::Anthropic => "Claude",
-        VendorId::AnthropicApi => "Anthropic API",
-        VendorId::Openai => "OpenAI",
-        VendorId::Zai => "GLM (Z.AI)",
-        VendorId::Openrouter => "OpenRouter",
-        VendorId::Deepseek => "DeepSeek",
-        VendorId::Kimi => "Kimi",
-        VendorId::Kilo => "Kilo",
-        VendorId::Novita => "Novita",
-        VendorId::Moonshot => "Moonshot",
-        VendorId::Grok => "Grok",
-        VendorId::Supergrok => "SuperGrok",
-        VendorId::Antigravity => "Antigravity",
-        VendorId::Cursor => "Cursor",
-        VendorId::Minimax => "MiniMax",
-        VendorId::Kiro => "Kiro",
-    }
-}
-
-fn compact_vendor_label(id: VendorId) -> &'static str {
-    match id {
-        VendorId::Anthropic => "Claude",
-        VendorId::AnthropicApi => "Anthropic API",
-        VendorId::Openai => "OpenAI",
-        VendorId::Zai => "Z.AI",
-        VendorId::Openrouter => "OpenRouter",
-        VendorId::Deepseek => "DeepSeek",
-        VendorId::Kimi => "Kimi",
-        VendorId::Kilo => "Kilo",
-        VendorId::Novita => "Novita",
-        VendorId::Moonshot => "Moonshot",
-        VendorId::Grok => "Grok",
-        VendorId::Supergrok => "SuperGrok",
-        VendorId::Antigravity => "Antigravity",
-        VendorId::Cursor => "Cursor",
-        VendorId::Minimax => "MiniMax",
-        VendorId::Kiro => "Kiro",
+    // The wide label adds product context for Z.AI; all canonical names live
+    // on VendorId so new providers do not require another copied match table.
+    if id == VendorId::Zai {
+        "GLM (Z.AI)"
+    } else {
+        id.display_name()
     }
 }
 
@@ -125,8 +93,8 @@ fn tab_label(tab: &TabId) -> String {
 /// Compact variant for the narrow top-nav strip.
 fn compact_tab_label(tab: &TabId) -> String {
     let label = match &tab.account {
-        Some(acct) => format!("{} · {}", compact_vendor_label(tab.vendor), acct),
-        None => compact_vendor_label(tab.vendor).to_string(),
+        Some(acct) => format!("{} · {}", tab.vendor.display_name(), acct),
+        None => tab.vendor.display_name().to_string(),
     };
     crate::display::sanitize_untrusted_field(&label)
 }
