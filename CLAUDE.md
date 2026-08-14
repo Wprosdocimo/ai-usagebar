@@ -7,7 +7,8 @@ these are invariants we keep almost-forgetting, not a project tour.
 
 When cutting a new version (patch, minor, or major):
 
-1. **Bump `Cargo.toml` `version`** — e.g. `0.3.2` → `0.3.3`.
+1. **Bump both versions** — `Cargo.toml` `version` and the root Omarchy
+   `manifest.json` `version` must match the release tag.
 2. **Update `CHANGELOG.md`**:
    - Add a new `## [X.Y.Z] — YYYY-MM-DD` section above the previous one.
    - Categorize entries by **Added / Changed / Fixed / Security** (Keep-A-Changelog).
@@ -32,6 +33,8 @@ When cutting a new version (patch, minor, or major):
    cargo test                                  # 200+ tests must pass
    cargo clippy --all-targets -- -D warnings   # clean
    cargo machete                               # no unused deps
+   node omarchy/model.test.mjs                 # Quattro report/UI model
+   omarchy plugin validate .                   # plugin manifest + entry points
    ```
 7. **Commit, tag, push**:
    ```
@@ -90,6 +93,12 @@ patch version instead.
   the user's choice (and `chmod 600`ed by the Settings overlay), but
   **never commit** a real key. The `.gitignore` covers `.env`,
   `*.credentials.json`, and `.claude/`.
+- **Frontend adapters stay thin.** Provider fetching, credentials, canonical
+  product names, metric projection, and reset metadata belong in Rust.
+  `VendorId::display_name` is the shared label source; do not add a complete
+  provider-name table to a frontend. Build report metrics through
+  `SectionBuilder::push_metric` so the absolute reset travels with its row;
+  never recreate a per-vendor metric-order table in `report.rs`.
 - **Tests are hermetic.** A `#[test]`/`#[tokio::test]` must never read or
   write a real `$HOME`/`$XDG` path (config, cache, creds, Omarchy theme)
   or branch on an ambient env var — the AUR `check()` runs `cargo test`
@@ -176,6 +185,8 @@ vendor's response shape drifts:
   auto-signals waybar after save)
 - `src/tui/panels.rs` — native ratatui per-vendor panels
 - `src/widget/` — Waybar widget shell (CLI, render, pretty, run)
+- `manifest.json`, `omarchy/` — Omarchy 4 / Quattro plugin manifest, native
+  Quickshell panel, pure report model, and Node contract tests
 - `src/tooltip.rs` — shared Pango bordered-box renderer (used by
   every vendor's tooltip)
 - `packaging/aur/PKGBUILD` — source-build AUR pkg

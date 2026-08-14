@@ -51,6 +51,53 @@ pub enum Section {
     Spacer,
 }
 
+/// Internal metadata carried alongside a public [`Section`]. Keeping this
+/// wrapper private to the crate lets machine-readable frontends receive
+/// absolute reset timestamps without adding a source-breaking field to the
+/// public `Section::Metric` variant.
+pub(crate) struct SectionProjection {
+    pub section: Section,
+    pub reset_at: Option<DateTime<Utc>>,
+}
+
+struct SectionBuilder(Vec<SectionProjection>);
+
+impl SectionBuilder {
+    fn new(sections: Vec<Section>) -> Self {
+        Self(
+            sections
+                .into_iter()
+                .map(|section| {
+                    assert!(
+                        !matches!(section, Section::Metric { .. }),
+                        "metric sections must declare reset metadata with push_metric"
+                    );
+                    SectionProjection {
+                        section,
+                        reset_at: None,
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    fn push(&mut self, section: Section) {
+        assert!(
+            !matches!(section, Section::Metric { .. }),
+            "metric sections must declare reset metadata with push_metric"
+        );
+        self.0.push(SectionProjection {
+            section,
+            reset_at: None,
+        });
+    }
+
+    fn push_metric(&mut self, section: Section, reset_at: Option<DateTime<Utc>>) {
+        assert!(matches!(section, Section::Metric { .. }));
+        self.0.push(SectionProjection { section, reset_at });
+    }
+}
+
 /// Compact one-line projection of a vendor snapshot for the Overview: a short
 /// plan/tier sub-label (may be empty) plus a few key metric cells — a percent
 /// or a balance — each carrying a severity for coloring. Same numbers as
@@ -196,15 +243,28 @@ pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
 
 /// Build the section list for the currently-active vendor's snapshot.
 pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> Vec<Section> {
+    sections_with_metadata_for(tab, now, pace_tolerance)
+        .into_iter()
+        .map(|projected| projected.section)
+        .collect()
+}
+
+/// Rich projection used by machine-readable frontends. The TUI continues to
+/// expose the source-compatible [`sections_for`] result above.
+pub(crate) fn sections_with_metadata_for(
+    tab: &TabState,
+    now: DateTime<Utc>,
+    pace_tolerance: u32,
+) -> Vec<SectionProjection> {
     let mut sections = match tab {
-        TabState::Loading => vec![
+        TabState::Loading => SectionBuilder::new(vec![
             Section::Spacer,
             Section::Text {
                 label: "".into(),
                 value: "  Loading…".into(),
             },
-        ],
-        TabState::Error(e) => vec![
+        ]),
+        TabState::Error(e) => SectionBuilder::new(vec![
             Section::Spacer,
             Section::Text {
                 label: "Error".into(),
@@ -215,7 +275,7 @@ pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> 
                 label: "".into(),
                 value: "Press `r` to retry, `q` to quit.".into(),
             },
-        ],
+        ]),
         TabState::Ready(r) => {
             let snapshot = &r.snapshot;
             let last_error = &r.last_error;
@@ -244,7 +304,11 @@ pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> 
                 Some(at) => format!("Updated {}", local_time_hms(at)),
                 None => "Updated —".to_string(),
             };
-            if let Some(Section::Title { right, .. }) = sections.first_mut() {
+            if let Some(SectionProjection {
+                section: Section::Title { right, .. },
+                ..
+            }) = sections.0.first_mut()
+            {
                 *right = Some(updated);
             }
             // Error footer (when present) still lives in the body.
@@ -255,10 +319,10 @@ pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> 
             sections
         }
     };
-    for section in &mut sections {
-        sanitize_section(section);
+    for projected in &mut sections.0 {
+        sanitize_section(&mut projected.section);
     }
-    sections
+    sections.0
 }
 
 /// Sanitize at the final projection boundary so every vendor field, cached
@@ -331,21 +395,24 @@ fn warning_label(
     Some((label.into(), value))
 }
 
-fn anthropic_api_sections(s: &crate::usage::AnthropicApiSnapshot) -> Vec<Section> {
-    let mut v = vec![Section::Title {
+fn anthropic_api_sections(s: &crate::usage::AnthropicApiSnapshot) -> SectionBuilder {
+    let mut v = SectionBuilder::new(vec![Section::Title {
         left: "Anthropic API".into(),
         right: None,
-    }];
+    }]);
     match (s.limit.filter(|l| *l > 0.0), s.pct()) {
         (Some(limit), Some(pct)) => {
             let p = pct.clamp(0, 100) as u16;
-            v.push(Section::Metric {
-                label: "Spend (mo)".into(),
-                pct: p,
-                severity: severity_for(pct),
-                value_label: format!("${:.2} of ${:.0}", s.spent, limit),
-                footnote: format!("{pct}% of monthly limit"),
-            });
+            v.push_metric(
+                Section::Metric {
+                    label: "Spend (mo)".into(),
+                    pct: p,
+                    severity: severity_for(pct),
+                    value_label: format!("${:.2} of ${:.0}", s.spent, limit),
+                    footnote: format!("{pct}% of monthly limit"),
+                },
+                None,
+            );
         }
         _ => {
             v.push(Section::Text {
@@ -374,11 +441,11 @@ fn anthropic_sections(
     s: &crate::usage::AnthropicSnapshot,
     now: DateTime<Utc>,
     tol: u32,
-) -> Vec<Section> {
-    let mut v = vec![Section::Title {
+) -> SectionBuilder {
+    let mut v = SectionBuilder::new(vec![Section::Title {
         left: format!("Claude {}", s.plan),
         right: None,
-    }];
+    }]);
 
     push_window(&mut v, "Session (5h)", &s.session, now, tol, true);
     push_window(&mut v, "Weekly (7d)", &s.weekly, now, tol, true);
@@ -408,22 +475,29 @@ fn anthropic_sections(
             ),
             None => (e.fmt_spent(), "no monthly limit reported".to_string()),
         };
-        v.push(Section::Metric {
-            label: "Extra usage".into(),
-            pct,
-            severity: severity_for(pct as i32),
-            value_label,
-            footnote,
-        });
+        v.push_metric(
+            Section::Metric {
+                label: "Extra usage".into(),
+                pct,
+                severity: severity_for(pct as i32),
+                value_label,
+                footnote,
+            },
+            None,
+        );
     }
     v
 }
 
-fn openai_sections(s: &crate::usage::OpenAiSnapshot, now: DateTime<Utc>, tol: u32) -> Vec<Section> {
-    let mut v = vec![Section::Title {
+fn openai_sections(
+    s: &crate::usage::OpenAiSnapshot,
+    now: DateTime<Utc>,
+    tol: u32,
+) -> SectionBuilder {
+    let mut v = SectionBuilder::new(vec![Section::Title {
         left: s.plan.clone(),
         right: None,
-    }];
+    }]);
     if let Some(session) = &s.session {
         push_window(&mut v, "Codex 5h", session, now, tol, true);
     }
@@ -462,11 +536,11 @@ fn openai_sections(s: &crate::usage::OpenAiSnapshot, now: DateTime<Utc>, tol: u3
     v
 }
 
-fn zai_sections(s: &crate::usage::ZaiSnapshot, now: DateTime<Utc>) -> Vec<Section> {
-    let mut v = vec![Section::Title {
+fn zai_sections(s: &crate::usage::ZaiSnapshot, now: DateTime<Utc>) -> SectionBuilder {
+    let mut v = SectionBuilder::new(vec![Section::Title {
         left: s.plan.clone(),
         right: None,
-    }];
+    }]);
     if let Some(w) = &s.session {
         push_window(&mut v, "Session (5h)", w, now, 5, false);
     }
@@ -486,23 +560,26 @@ fn zai_sections(s: &crate::usage::ZaiSnapshot, now: DateTime<Utc>) -> Vec<Sectio
     v
 }
 
-fn openrouter_sections(s: &crate::usage::OpenRouterSnapshot) -> Vec<Section> {
-    let mut v = vec![Section::Title {
+fn openrouter_sections(s: &crate::usage::OpenRouterSnapshot) -> SectionBuilder {
+    let mut v = SectionBuilder::new(vec![Section::Title {
         left: s.label.clone(),
         right: None,
-    }];
+    }]);
     let pct = s.consumed_pct().clamp(0, 100) as u16;
     v.push(Section::Spacer);
-    v.push(Section::Metric {
-        label: "Credit balance".into(),
-        pct,
-        severity: severity_for(pct as i32),
-        value_label: format!("${:.2}", s.balance()),
-        footnote: format!(
-            "${:.2} of ${:.2} used ({pct}%)",
-            s.total_usage, s.total_credits
-        ),
-    });
+    v.push_metric(
+        Section::Metric {
+            label: "Credit balance".into(),
+            pct,
+            severity: severity_for(pct as i32),
+            value_label: format!("${:.2}", s.balance()),
+            footnote: format!(
+                "${:.2} of ${:.2} used ({pct}%)",
+                s.total_usage, s.total_credits
+            ),
+        },
+        None,
+    );
     v.push(Section::Spacer);
     v.push(Section::Block {
         label: "Usage by period".into(),
@@ -533,13 +610,16 @@ fn openrouter_sections(s: &crate::usage::OpenRouterSnapshot) -> Vec<Section> {
 /// Antigravity holds two independent pools (Gemini, Claude & GPT OSS), each
 /// with a 5-hour and a weekly window. Grouped by window type so the two pools
 /// sit side by side, matching the GNOME dropdown.
-fn antigravity_sections(s: &crate::usage::AntigravitySnapshot, now: DateTime<Utc>) -> Vec<Section> {
+fn antigravity_sections(
+    s: &crate::usage::AntigravitySnapshot,
+    now: DateTime<Utc>,
+) -> SectionBuilder {
     use crate::antigravity::vendor::{GROUP_PRIMARY, GROUP_THIRD_PARTY};
 
-    let mut v = vec![Section::Title {
+    let mut v = SectionBuilder::new(vec![Section::Title {
         left: s.plan.clone(),
         right: None,
-    }];
+    }]);
     for (heading, primary, third_party) in [
         ("Session", &s.session, s.third_party_session.as_ref()),
         ("Weekly", &s.weekly, s.third_party_weekly.as_ref()),
@@ -557,11 +637,11 @@ fn antigravity_sections(s: &crate::usage::AntigravitySnapshot, now: DateTime<Utc
     v
 }
 
-fn cursor_sections(s: &crate::usage::CursorSnapshot, now: DateTime<Utc>) -> Vec<Section> {
-    let mut v = vec![Section::Title {
+fn cursor_sections(s: &crate::usage::CursorSnapshot, now: DateTime<Utc>) -> SectionBuilder {
+    let mut v = SectionBuilder::new(vec![Section::Title {
         left: format!("Cursor {}", s.plan),
         right: None,
-    }];
+    }]);
     if s.unlimited {
         v.push(Section::Spacer);
         v.push(Section::Text {
@@ -571,24 +651,30 @@ fn cursor_sections(s: &crate::usage::CursorSnapshot, now: DateTime<Utc>) -> Vec<
     } else {
         // Two included-usage pools, mirroring the dashboard's two bars.
         v.push(Section::Spacer);
-        v.push(Section::Metric {
-            label: "Cursor Models".into(),
-            pct: s.auto_pct.clamp(0, 100) as u16,
-            severity: severity_for(s.auto_pct),
-            value_label: format!("{}%", s.auto_pct),
-            footnote: "Auto + Composer".into(),
-        });
+        v.push_metric(
+            Section::Metric {
+                label: "Cursor Models".into(),
+                pct: s.auto_pct.clamp(0, 100) as u16,
+                severity: severity_for(s.auto_pct),
+                value_label: format!("{}%", s.auto_pct),
+                footnote: "Auto + Composer".into(),
+            },
+            s.reset_at,
+        );
         v.push(Section::Spacer);
-        v.push(Section::Metric {
-            label: "Other Models".into(),
-            pct: s.api_pct.clamp(0, 100) as u16,
-            severity: severity_for(s.api_pct),
-            value_label: format!("{}%", s.api_pct),
-            footnote: format!(
-                "Named / API models · on-demand {}",
-                if s.on_demand_enabled { "on" } else { "off" }
-            ),
-        });
+        v.push_metric(
+            Section::Metric {
+                label: "Other Models".into(),
+                pct: s.api_pct.clamp(0, 100) as u16,
+                severity: severity_for(s.api_pct),
+                value_label: format!("{}%", s.api_pct),
+                footnote: format!(
+                    "Named / API models · on-demand {}",
+                    if s.on_demand_enabled { "on" } else { "off" }
+                ),
+            },
+            s.reset_at,
+        );
     }
     v.push(Section::Spacer);
     v.push(Section::Text {
@@ -602,14 +688,16 @@ fn cursor_sections(s: &crate::usage::CursorSnapshot, now: DateTime<Utc>) -> Vec<
 /// the reset row — the same shape as `anthropic_api_sections` but with a
 /// real percentage (Kiro always reports both used and limit) instead of an
 /// optional configured one.
-fn kiro_sections(s: &crate::usage::KiroSnapshot, now: DateTime<Utc>) -> Vec<Section> {
+fn kiro_sections(s: &crate::usage::KiroSnapshot, now: DateTime<Utc>) -> SectionBuilder {
     let pct = s.pct();
-    vec![
+    let mut v = SectionBuilder::new(vec![
         Section::Title {
             left: format!("Kiro {}", s.plan),
             right: None,
         },
         Section::Spacer,
+    ]);
+    v.push_metric(
         Section::Metric {
             label: "Credits".into(),
             pct: pct.clamp(0, 100) as u16,
@@ -617,12 +705,14 @@ fn kiro_sections(s: &crate::usage::KiroSnapshot, now: DateTime<Utc>) -> Vec<Sect
             value_label: format!("{pct}%"),
             footnote: format!("{:.2} of {:.0}", s.used, s.limit),
         },
-        Section::Spacer,
-        Section::Text {
-            label: "Resets".into(),
-            value: countdown::format(s.reset_at, now),
-        },
-    ]
+        s.reset_at,
+    );
+    v.push(Section::Spacer);
+    v.push(Section::Text {
+        label: "Resets".into(),
+        value: countdown::format(s.reset_at, now),
+    });
+    v
 }
 
 /// MiniMax groups quota by model bucket, so the panel is laid out by window
@@ -633,13 +723,13 @@ fn minimax_sections(
     s: &crate::usage::MinimaxSnapshot,
     now: DateTime<Utc>,
     tol: u32,
-) -> Vec<Section> {
+) -> SectionBuilder {
     use crate::minimax::vendor::{POOL_GENERAL, POOL_VIDEO};
 
-    let mut v = vec![Section::Title {
+    let mut v = SectionBuilder::new(vec![Section::Title {
         left: s.plan.clone(),
         right: None,
-    }];
+    }]);
     for (heading, general, video) in [
         ("Session", &s.session, s.video_session.as_ref()),
         ("Weekly", &s.weekly, s.video_weekly.as_ref()),
@@ -657,8 +747,8 @@ fn minimax_sections(
     v
 }
 
-fn kilo_sections(s: &crate::usage::KiloSnapshot) -> Vec<Section> {
-    vec![
+fn kilo_sections(s: &crate::usage::KiloSnapshot) -> SectionBuilder {
+    SectionBuilder::new(vec![
         Section::Title {
             left: s.label.clone(),
             right: None,
@@ -668,11 +758,11 @@ fn kilo_sections(s: &crate::usage::KiloSnapshot) -> Vec<Section> {
             label: "Balance".into(),
             value: format!("${:.2}", s.balance),
         },
-    ]
+    ])
 }
 
-fn novita_sections(s: &crate::usage::NovitaSnapshot) -> Vec<Section> {
-    let mut v = vec![
+fn novita_sections(s: &crate::usage::NovitaSnapshot) -> SectionBuilder {
+    let mut v = SectionBuilder::new(vec![
         Section::Title {
             left: "Novita".into(),
             right: None,
@@ -689,7 +779,7 @@ fn novita_sections(s: &crate::usage::NovitaSnapshot) -> Vec<Section> {
                 s.cash, s.credit_limit
             )],
         },
-    ];
+    ]);
     if s.outstanding > 0.0 {
         v.push(Section::Spacer);
         v.push(Section::Block {
@@ -700,14 +790,14 @@ fn novita_sections(s: &crate::usage::NovitaSnapshot) -> Vec<Section> {
     v
 }
 
-fn moonshot_sections(s: &crate::usage::MoonshotSnapshot) -> Vec<Section> {
+fn moonshot_sections(s: &crate::usage::MoonshotSnapshot) -> SectionBuilder {
     let cur = &s.currency;
     let fmt = |v: f64| match cur.as_str() {
         "USD" => format!("${v:.2}"),
         "CNY" => format!("¥{v:.2}"),
         _ => format!("{v:.2} {cur}"),
     };
-    vec![
+    SectionBuilder::new(vec![
         Section::Title {
             left: "Kimi (Moonshot)".into(),
             right: None,
@@ -721,11 +811,11 @@ fn moonshot_sections(s: &crate::usage::MoonshotSnapshot) -> Vec<Section> {
             label: "Breakdown".into(),
             body: vec![format!("cash {} · voucher {}", fmt(s.cash), fmt(s.voucher))],
         },
-    ]
+    ])
 }
 
-fn grok_sections(s: &crate::usage::GrokSnapshot) -> Vec<Section> {
-    vec![
+fn grok_sections(s: &crate::usage::GrokSnapshot) -> SectionBuilder {
+    SectionBuilder::new(vec![
         Section::Title {
             left: "Grok (xAI)".into(),
             right: None,
@@ -735,17 +825,19 @@ fn grok_sections(s: &crate::usage::GrokSnapshot) -> Vec<Section> {
             label: "Prepaid balance".into(),
             value: format!("${:.2}", s.balance),
         },
-    ]
+    ])
 }
 
-fn supergrok_sections(s: &crate::usage::SuperGrokSnapshot, now: DateTime<Utc>) -> Vec<Section> {
+fn supergrok_sections(s: &crate::usage::SuperGrokSnapshot, now: DateTime<Utc>) -> SectionBuilder {
     let pct = s.weekly_pct;
-    let mut v = vec![
+    let mut v = SectionBuilder::new(vec![
         Section::Title {
             left: s.plan.clone(),
             right: None,
         },
         Section::Spacer,
+    ]);
+    v.push_metric(
         Section::Metric {
             label: format!("{} Build credits", s.period.label()),
             pct: pct.clamp(0, 100) as u16,
@@ -753,12 +845,13 @@ fn supergrok_sections(s: &crate::usage::SuperGrokSnapshot, now: DateTime<Utc>) -
             value_label: format!("{pct}%"),
             footnote: String::new(),
         },
-        Section::Spacer,
-        Section::Text {
-            label: "Resets".into(),
-            value: countdown::format(s.reset_at, now),
-        },
-    ];
+        s.reset_at,
+    );
+    v.push(Section::Spacer);
+    v.push(Section::Text {
+        label: "Resets".into(),
+        value: countdown::format(s.reset_at, now),
+    });
     if let Some(bal) = s.prepaid_balance {
         v.push(Section::Spacer);
         v.push(Section::Text {
@@ -769,7 +862,7 @@ fn supergrok_sections(s: &crate::usage::SuperGrokSnapshot, now: DateTime<Utc>) -
     v
 }
 
-fn deepseek_sections(s: &crate::usage::DeepseekSnapshot) -> Vec<Section> {
+fn deepseek_sections(s: &crate::usage::DeepseekSnapshot) -> SectionBuilder {
     let currency = &s.currency;
     let fmt = |v: f64| match currency.as_str() {
         "USD" => format!("${v:.2}"),
@@ -781,10 +874,10 @@ fn deepseek_sections(s: &crate::usage::DeepseekSnapshot) -> Vec<Section> {
     } else {
         "unavailable"
     };
-    let mut v = vec![Section::Title {
+    let mut v = SectionBuilder::new(vec![Section::Title {
         left: "DeepSeek".into(),
         right: None,
-    }];
+    }]);
     v.push(Section::Spacer);
     v.push(Section::Text {
         label: "Balance".into(),
@@ -806,48 +899,54 @@ fn deepseek_sections(s: &crate::usage::DeepseekSnapshot) -> Vec<Section> {
     v
 }
 
-fn kimi_sections(s: &crate::usage::KimiSnapshot, now: DateTime<Utc>, _tol: u32) -> Vec<Section> {
+fn kimi_sections(s: &crate::usage::KimiSnapshot, now: DateTime<Utc>, _tol: u32) -> SectionBuilder {
     let plan = s.plan.as_deref().unwrap_or("Kimi");
-    let mut v = vec![Section::Title {
+    let mut v = SectionBuilder::new(vec![Section::Title {
         left: plan.into(),
         right: None,
-    }];
+    }]);
 
     let weekly_pct = s.weekly_pct().clamp(0, 100) as u16;
     v.push(Section::Spacer);
-    v.push(Section::Metric {
-        label: "Weekly quota".into(),
-        pct: weekly_pct,
-        severity: severity_for(s.weekly_pct()),
-        value_label: format!("{} / {}", s.weekly_used, s.weekly_limit),
-        footnote: format!(
-            "{} remaining · reset {}",
-            s.weekly_remaining,
-            countdown::format(s.weekly_reset_at, now)
-        ),
-    });
+    v.push_metric(
+        Section::Metric {
+            label: "Weekly quota".into(),
+            pct: weekly_pct,
+            severity: severity_for(s.weekly_pct()),
+            value_label: format!("{} / {}", s.weekly_used, s.weekly_limit),
+            footnote: format!(
+                "{} remaining · reset {}",
+                s.weekly_remaining,
+                countdown::format(s.weekly_reset_at, now)
+            ),
+        },
+        s.weekly_reset_at,
+    );
 
     if s.window_limit > 0 {
         let window_pct = s.window_pct().clamp(0, 100) as u16;
         v.push(Section::Spacer);
-        v.push(Section::Metric {
-            label: "Rolling window (5h)".into(),
-            pct: window_pct,
-            severity: severity_for(s.window_pct()),
-            value_label: format!("{} / {}", s.window_used, s.window_limit),
-            footnote: format!(
-                "{} remaining · reset {}",
-                s.window_remaining,
-                countdown::format(s.window_reset_at, now)
-            ),
-        });
+        v.push_metric(
+            Section::Metric {
+                label: "Rolling window (5h)".into(),
+                pct: window_pct,
+                severity: severity_for(s.window_pct()),
+                value_label: format!("{} / {}", s.window_used, s.window_limit),
+                footnote: format!(
+                    "{} remaining · reset {}",
+                    s.window_remaining,
+                    countdown::format(s.window_reset_at, now)
+                ),
+            },
+            s.window_reset_at,
+        );
     }
 
     v
 }
 
 fn push_window(
-    sections: &mut Vec<Section>,
+    sections: &mut SectionBuilder,
     label: &str,
     w: &crate::usage::UsageWindow,
     now: DateTime<Utc>,
@@ -866,13 +965,16 @@ fn push_window(
         format!("Resets in {}", reset_text)
     };
     sections.push(Section::Spacer);
-    sections.push(Section::Metric {
-        label: label.into(),
-        pct,
-        severity: severity_for(pct as i32),
-        value_label: format!("{pct}%"),
-        footnote,
-    });
+    sections.push_metric(
+        Section::Metric {
+            label: label.into(),
+            pct,
+            severity: severity_for(pct as i32),
+            value_label: format!("{pct}%"),
+            footnote,
+        },
+        w.resets_at,
+    );
 }
 
 /// Render the given sections into `area`. Lays them out vertically; metric

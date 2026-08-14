@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 0
 
       - id: check
-        name: Tag, Cargo.toml, changelog and packaging must agree
+        name: Tag, manifests, changelog and packaging must agree
         env:
           RELEASE_REF: ${{ inputs.ref || github.ref_name }}
         run: |
@@ -64,6 +64,8 @@ jobs:
           }
           check "Cargo.toml version" \
             "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" "$version"
+          check "Omarchy plugin version" \
+            "$(jq -r '.version' manifest.json)" "$version"
           check "PKGBUILD pkgver" \
             "$(grep -m1 '^pkgver=' packaging/aur/PKGBUILD | cut -d= -f2)" "$version"
           check "PKGBUILD-bin pkgver" \
@@ -103,12 +105,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           key: ${{ matrix.target }}
 
-      - name: Test GNOME marker logic
-        run: node gnome-extension/marker-logic.test.mjs
+      - name: Test desktop integration models
+        run: make desktop-test
 
       - name: Install nasm (x86_64 native build; ring assembles its primitives)
         if: matrix.builder == 'cargo'
