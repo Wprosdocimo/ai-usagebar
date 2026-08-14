@@ -10,6 +10,9 @@ fn main() {
     if let Some(Command::Account { action }) = &cli.command {
         std::process::exit(ai_usagebar::account::run(action));
     }
+    if let Some(Command::Settings { action }) = &cli.command {
+        std::process::exit(ai_usagebar::tui::settings::run_cli(action));
+    }
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

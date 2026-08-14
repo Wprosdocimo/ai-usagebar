@@ -150,6 +150,21 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Read or update settings for native desktop frontends.
+    Settings {
+        #[command(subcommand)]
+        action: SettingsAction,
+    },
+}
+
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum SettingsAction {
+    /// Print a non-secret JSON settings description.
+    Show,
+
+    /// Apply one JSON settings patch read from standard input.
+    Apply,
 }
 
 #[derive(clap::Subcommand, Debug, Clone)]
@@ -411,6 +426,29 @@ mod tests {
     fn usage_subcommand_parses_machine_readable_mode() {
         let cli = Cli::parse_from(["ai-usagebar", "usage", "--json"]);
         assert!(matches!(cli.command, Some(Command::Usage { json: true })));
+    }
+
+    #[test]
+    fn settings_subcommands_are_additive_and_take_no_widget_flags() {
+        let show = Cli::parse_from(["ai-usagebar", "settings", "show"]);
+        assert!(matches!(
+            show.command,
+            Some(Command::Settings {
+                action: SettingsAction::Show
+            })
+        ));
+
+        let apply = Cli::parse_from(["ai-usagebar", "settings", "apply"]);
+        assert!(matches!(
+            apply.command,
+            Some(Command::Settings {
+                action: SettingsAction::Apply
+            })
+        ));
+
+        assert!(
+            Cli::try_parse_from(["ai-usagebar", "--vendor", "kimi", "settings", "show",]).is_err()
+        );
     }
 
     #[test]

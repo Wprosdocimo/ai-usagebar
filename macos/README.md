@@ -17,15 +17,15 @@ A single Swift file (`NSStatusItem` + `NSAttributedString`); no Xcode project.
 
 The selector supports **thirteen vendors** that ship in the binary:
 
-- **Rate-limit windows (5h / weekly):** Anthropic (Claude), OpenAI (Codex),
+- **Rate-limit windows (5h / weekly):** Claude, Codex,
   Z.AI (GLM), and Google Antigravity (two independent pools — Gemini, and
   Claude & GPT OSS — each with its own 5h/weekly pair).
 - **Included-usage pools:** Cursor (Cursor Models and Other Models, both reset
   on the billing cycle).
 - **Balance-only:** OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok
-  (xAI), and Anthropic (API). These have no 5h/weekly quota windows, so the app
+  (xAI), and Anthropic API. These have no 5h/weekly quota windows, so the app
   shows their balance/credits in the header (`cr <amount>`) and suppresses the
-  session/weekly rows. Anthropic (API) additionally renders a spend-vs-limit
+  session/weekly rows. Anthropic API additionally renders a spend-vs-limit
   bar when a monthly limit is configured.
 
 Only **enabled** vendors appear in the selector. The opt-in vendors (DeepSeek,
@@ -83,7 +83,7 @@ Settings persist in `UserDefaults` and apply **live, no rebuild**.
 | Bar width | 8 | cells per menu-bar bar (4–20) |
 | Colors (low/mid/high/critical/empty) | One Dark | bar color per severity (≥90 / ≥75 / ≥50 / else) |
 | Refresh interval | 30 s | 5–3600 |
-| Vendor | anthropic | selectors: only enabled vendors (see [Vendor scope](#vendor-scope)). Anthropic, OpenAI, and Z.AI expose session/weekly windows; balance-only vendors show a credit balance instead. |
+| Vendor | anthropic | selectors: only enabled vendors (see [Vendor scope](#vendor-scope)). Claude, Codex, and Z.AI expose session/weekly windows; balance-only vendors show a credit balance instead. |
 | Binary path | auto | empty = `~/.cargo/bin`, Homebrew, then `PATH` |
 | Global vendor shortcut | on | **⌥⌘\\** cycles every configured vendor/account and Overview; turns itself back off if macOS cannot register it |
 | Global compact shortcut | on | **⌥⌘E** toggles Overview between mini bars and compact text; turns itself back off if unavailable |

@@ -122,6 +122,30 @@ impl VendorId {
         }
     }
 
+    /// Canonical human-readable name for shared reports and compact UI labels.
+    /// Platform frontends may add context (for example, "GLM (Z.AI)" in a
+    /// wide TUI tab), but should not carry their own full vendor-name table.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            VendorId::Anthropic => "Claude",
+            VendorId::AnthropicApi => "Anthropic API",
+            VendorId::Openai => "Codex",
+            VendorId::Zai => "Z.AI",
+            VendorId::Openrouter => "OpenRouter",
+            VendorId::Deepseek => "DeepSeek",
+            VendorId::Kimi => "Kimi",
+            VendorId::Kilo => "Kilo",
+            VendorId::Novita => "Novita",
+            VendorId::Moonshot => "Moonshot",
+            VendorId::Grok => "Grok",
+            VendorId::Supergrok => "SuperGrok",
+            VendorId::Antigravity => "Antigravity",
+            VendorId::Cursor => "Cursor",
+            VendorId::Minimax => "MiniMax",
+            VendorId::Kiro => "Kiro",
+        }
+    }
+
     pub fn all() -> &'static [VendorId] {
         &[
             VendorId::Anthropic,
@@ -181,6 +205,18 @@ impl RenderOpts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_vendor_has_stable_machine_and_display_names() {
+        for vendor in VendorId::all() {
+            assert!(!vendor.slug().is_empty());
+            assert!(!vendor.display_name().is_empty());
+        }
+        assert_eq!(VendorId::Anthropic.slug(), "anthropic");
+        assert_eq!(VendorId::Anthropic.display_name(), "Claude");
+        assert_eq!(VendorId::Openai.display_name(), "Codex");
+        assert_eq!(VendorId::Zai.display_name(), "Z.AI");
+    }
 
     #[tokio::test]
     async fn body_over_the_cap_is_refused_and_under_it_round_trips() {
