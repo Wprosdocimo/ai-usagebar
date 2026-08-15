@@ -1,6 +1,6 @@
 [package]
 name = "ai-usagebar"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -75,6 +75,9 @@ ratatui-bubbletea-theme = "0.2"
 # links SQLite via cc, so no system libsqlite3-dev is required — keeping the
 # AUR source build's hermeticity (see CLAUDE.md's release checklist).
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
 
 [dev-dependencies]
 mockito = "1"

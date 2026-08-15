@@ -792,6 +792,9 @@ fn theme_from_cli(cli: &Cli) -> Theme {
 fn fallback(err: &AppError, _cli: &Cli) -> WaybarOutput {
     let tooltip = match err {
         AppError::Credentials(m) => format!("Credentials error.\n{m}"),
+        AppError::Http { status, .. } if matches!(status, 401 | 403) => {
+            format!("HTTP {status}\n{}", crate::error::AUTH_FAILURE_MESSAGE)
+        }
         AppError::Http { status, body } => format!("HTTP {status}\n{body}"),
         AppError::Schema(m) => format!("API schema drift.\n{m}"),
         AppError::Io { path, source } => format!("I/O error at {}.\n{source}", path.display()),
@@ -910,7 +913,24 @@ mod tests {
             &cli_default(),
         );
         assert_eq!(out.tooltip, "bad &lt;markup&gt; &amp; value");
-        assert!(serde_json::from_str::<serde_json::Value>(out.to_json_line().trim()).is_ok());
+        let json: serde_json::Value = serde_json::from_str(out.to_json_line().trim()).unwrap();
+        assert_eq!(json["text"], "⚠");
+        assert_eq!(json["tooltip"], "bad &lt;markup&gt; &amp; value");
+    }
+
+    #[test]
+    fn fallback_does_not_expose_authentication_response_bodies() {
+        let out = fallback(
+            &AppError::Http {
+                status: 401,
+                body: "PANCEA user@example.test <credential>&token".into(),
+            },
+            &cli_default(),
+        );
+        assert!(out.tooltip.contains(crate::error::AUTH_FAILURE_MESSAGE));
+        assert!(!out.tooltip.contains("PANCEA"));
+        assert!(!out.tooltip.contains("user@example.test"));
+        assert!(!out.tooltip.contains("&amp;token"));
     }
 
     #[test]

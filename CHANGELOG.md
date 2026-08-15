@@ -9,6 +9,20 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-08-15
+
+### Security
+
+- macOS OAuth refreshes now update Claude Code's login-Keychain entry through
+  Security.framework instead of placing access and refresh tokens in a
+  subprocess argument list.
+- Unix configuration files containing inline API keys are automatically
+  tightened to mode `0600`; the app fails closed if it cannot protect them.
+- Cached and live user-facing authentication failures discard provider response
+  bodies, and widget fallback diagnostics are Pango-escaped before display.
+- Claude and Grok subprocesses no longer inherit API keys belonging to unrelated
+  ai-usagebar providers.
+
 ## [1.0.2] — 2026-08-14
 
 ### Changed
@@ -1469,7 +1483,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/akitaonrails/ai-usagebar/compare/v0.22.0...v1.0.0

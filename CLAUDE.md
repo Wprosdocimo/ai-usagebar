@@ -169,9 +169,10 @@ vendor's response shape drifts:
   a fallback to the headless `cursor-agent` CLI's `auth.json` when the IDE db
   is absent — `db::resolve_access_token` tries both. Tests seed a temp db /
   auth file and pass the paths in; never touch the real ones.
-- `src/anthropic/keychain.rs` — macOS-only `security(1)` fallback when
+- `src/anthropic/keychain.rs` — macOS-only Keychain fallback when
   `~/.claude/.credentials.json` is absent (Claude Code on macOS stores
-  the OAuth blob in the login Keychain). Module-gated with
+  the OAuth blob in the login Keychain). Reads use `security(1)`; writes use
+  Security.framework so OAuth JSON never enters process arguments. Module-gated with
   `#[cfg(target_os = "macos")]`; Linux build never compiles it.
 - `src/cache.rs` — atomic per-vendor cache writes + flock, plus the shared
   cross-platform path resolvers (`xdg_cache_dir`, `home_dir`). `home_dir`

@@ -40,6 +40,9 @@ async fn fetch_billing_inner(grok_binary: &Path) -> Result<BillingResponse> {
         // are returned on stdout, so discard stderr instead of persisting it.
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    for var in crate::vendor::vendor_secret_env_vars_to_remove(&["XAI_API_KEY", "GROK_API_KEY"]) {
+        command.env_remove(var);
+    }
 
     let mut child = command.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {

@@ -78,14 +78,14 @@ pub async fn run(json: bool) -> i32 {
     let config = match Config::load() {
         Ok(config) => config,
         Err(error) => {
-            eprintln!("ai-usagebar usage: {error}");
+            eprintln!("ai-usagebar usage: {}", error.user_message());
             return 1;
         }
     };
     let client = match crate::widget::run::http_client() {
         Ok(client) => client,
         Err(error) => {
-            eprintln!("ai-usagebar usage: {error}");
+            eprintln!("ai-usagebar usage: {}", error.user_message());
             return 1;
         }
     };

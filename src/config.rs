@@ -17,6 +17,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
 use serde::{Deserialize, Serialize};
 
 use crate::anthropic::creds::CredsTarget;
@@ -832,6 +835,8 @@ impl Config {
                 // silently pointed at a directory named `~`.
                 config.expand_paths();
                 config.validate()?;
+                #[cfg(unix)]
+                config.protect_inline_api_keys(path)?;
                 Ok(config)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -854,6 +859,49 @@ impl Config {
         for account in &mut self.anthropic.accounts {
             account.credentials_path = expand_tilde(&account.credentials_path);
         }
+    }
+
+    /// Explicitly enumerate every inline API-key field. Adding a new API-key
+    /// vendor must add it here so its config file receives the same protection.
+    #[cfg(unix)]
+    fn has_inline_api_keys(&self) -> bool {
+        [
+            self.zai.api_key.as_deref(),
+            self.openrouter.api_key.as_deref(),
+            self.deepseek.api_key.as_deref(),
+            self.kimi.api_key.as_deref(),
+            self.kilo.api_key.as_deref(),
+            self.novita.api_key.as_deref(),
+            self.minimax.api_key.as_deref(),
+            self.moonshot.api_key.as_deref(),
+            self.grok.api_key.as_deref(),
+            self.anthropic_api.api_key.as_deref(),
+        ]
+        .into_iter()
+        .any(|key| key.is_some_and(|key| !key.is_empty()))
+    }
+
+    #[cfg(unix)]
+    fn protect_inline_api_keys(&self, path: &Path) -> Result<()> {
+        if !self.has_inline_api_keys() {
+            return Ok(());
+        }
+
+        let metadata = std::fs::metadata(path).map_err(|_| {
+            AppError::Credentials(format!(
+                "config at {} contains inline api_key values but its permissions could not be checked; fix permissions or move keys to environment variables",
+                path.display()
+            ))
+        })?;
+        if inline_key_permission_decision(metadata.mode()) == InlineKeyPermissionDecision::Tighten {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|_| {
+                AppError::Credentials(format!(
+                    "config at {} contains inline api_key values but is group/other-readable and could not be tightened to 0600; fix permissions or move keys to environment variables",
+                    path.display()
+                ))
+            })?;
+        }
+        Ok(())
     }
 
     pub fn is_enabled(&self, id: VendorId) -> bool {
@@ -942,6 +990,22 @@ impl Config {
     }
 }
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InlineKeyPermissionDecision {
+    Ok,
+    Tighten,
+}
+
+#[cfg(unix)]
+fn inline_key_permission_decision(mode: u32) -> InlineKeyPermissionDecision {
+    if mode & 0o077 == 0 {
+        InlineKeyPermissionDecision::Ok
+    } else {
+        InlineKeyPermissionDecision::Tighten
+    }
+}
+
 pub fn default_path() -> Option<PathBuf> {
     let proj = directories::ProjectDirs::from("", "", "ai-usagebar")?;
     Some(proj.config_dir().join("config.toml"))
@@ -1020,6 +1084,9 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     fn write_toml(s: &str) -> NamedTempFile {
         let mut f = NamedTempFile::new().unwrap();
@@ -1108,6 +1175,51 @@ enabled = false
     fn malformed_toml_returns_error() {
         let f = write_toml("this is not = = valid");
         assert!(Config::load_from(f.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_from_tightens_world_readable_config_with_inline_api_key() {
+        let file = write_toml("[zai]\napi_key = \"test-inline-key\"\n");
+        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        Config::load_from(file.path()).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(file.path()).unwrap().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_from_leaves_world_readable_config_without_inline_api_keys_unchanged() {
+        let file = write_toml("[zai]\napi_key_env = \"TEST_ZAI_API_KEY\"\n");
+        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        Config::load_from(file.path()).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(file.path()).unwrap().mode() & 0o777,
+            0o644
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inline_key_permission_decision_requires_tightening_for_group_or_other_bits() {
+        assert_eq!(
+            inline_key_permission_decision(0o600),
+            InlineKeyPermissionDecision::Ok
+        );
+        assert_eq!(
+            inline_key_permission_decision(0o640),
+            InlineKeyPermissionDecision::Tighten
+        );
+        assert_eq!(
+            inline_key_permission_decision(0o604),
+            InlineKeyPermissionDecision::Tighten
+        );
     }
 
     #[test]

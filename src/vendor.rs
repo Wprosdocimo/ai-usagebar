@@ -20,6 +20,31 @@ pub const HTTP_CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
 /// misbehaving proxy or a hijacked endpoint.
 pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// Credential-bearing environment variables owned by ai-usagebar vendors.
+/// Subprocesses receive only the entries that belong to their own provider.
+pub(crate) const VENDOR_SECRET_ENV_VARS: &[&str] = &[
+    "ZAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "KIMI_API_KEY",
+    "KILO_API_KEY",
+    "NOVITA_API_KEY",
+    "MINIMAX_API_KEY",
+    "MOONSHOT_API_KEY",
+    "XAI_MANAGEMENT_KEY",
+    "ANTHROPIC_ADMIN_KEY",
+    "XAI_API_KEY",
+    "GROK_API_KEY",
+];
+
+pub(crate) fn vendor_secret_env_vars_to_remove(keep: &[&str]) -> Vec<&'static str> {
+    VENDOR_SECRET_ENV_VARS
+        .iter()
+        .copied()
+        .filter(|var| !keep.contains(var))
+        .collect()
+}
+
 /// Follow ordinary vendor redirects without forwarding non-standard API-key
 /// headers to a different origin. Reqwest strips `Authorization` on sensitive
 /// redirects, but vendors also use headers such as `x-api-key`, which are not
@@ -216,6 +241,35 @@ mod tests {
         assert_eq!(VendorId::Anthropic.display_name(), "Claude");
         assert_eq!(VendorId::Openai.display_name(), "Codex");
         assert_eq!(VendorId::Zai.display_name(), "Z.AI");
+    }
+
+    #[test]
+    fn vendor_secret_env_vars_cover_config_defaults() {
+        let configured_defaults = [
+            "ZAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "KIMI_API_KEY",
+            "KILO_API_KEY",
+            "NOVITA_API_KEY",
+            "MINIMAX_API_KEY",
+            "MOONSHOT_API_KEY",
+            "XAI_MANAGEMENT_KEY",
+            "ANTHROPIC_ADMIN_KEY",
+        ];
+        for name in configured_defaults {
+            assert!(VENDOR_SECRET_ENV_VARS.contains(&name), "missing {name}");
+        }
+    }
+
+    #[test]
+    fn vars_to_remove_preserves_only_requested_grok_credentials() {
+        let removed = vendor_secret_env_vars_to_remove(&["XAI_API_KEY", "GROK_API_KEY"]);
+        assert!(!removed.contains(&"XAI_API_KEY"));
+        assert!(!removed.contains(&"GROK_API_KEY"));
+        assert!(removed.contains(&"ANTHROPIC_ADMIN_KEY"));
+        assert!(removed.contains(&"OPENROUTER_API_KEY"));
+        assert_eq!(removed.len(), VENDOR_SECRET_ENV_VARS.len() - 2);
     }
 
     #[tokio::test]

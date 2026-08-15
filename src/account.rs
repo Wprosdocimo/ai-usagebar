@@ -918,10 +918,13 @@ enum LoginOutcome {
 }
 
 fn login_claude_account(account_dir: &Path) -> LoginOutcome {
-    match std::process::Command::new("claude")
-        .env("CLAUDE_CONFIG_DIR", account_dir)
-        .status()
-    {
+    let mut command = std::process::Command::new("claude");
+    command.env("CLAUDE_CONFIG_DIR", account_dir);
+    for var in crate::vendor::vendor_secret_env_vars_to_remove(&[]) {
+        command.env_remove(var);
+    }
+
+    match command.status() {
         Ok(status) if status.success() => LoginOutcome::Ok,
         Ok(status) => LoginOutcome::Failed(status.code().unwrap_or(-1)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => LoginOutcome::NotFound,

@@ -432,7 +432,7 @@ pub async fn refresh_one(client: &Client, config: &Config, tab: &TabId) -> TabSt
                 fetched_at,
             }))
         }
-        Err(e) => TabState::Error(crate::display::sanitize_untrusted_field(&e.to_string())),
+        Err(e) => TabState::Error(crate::display::sanitize_untrusted_field(&e.user_message())),
     }
 }
 

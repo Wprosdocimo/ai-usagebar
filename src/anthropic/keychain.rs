@@ -6,10 +6,10 @@
 //! password item in the login Keychain (service `Claude Code-credentials`), so
 //! the file never exists and a naive read fails with an I/O error.
 //!
-//! We shell out to the built-in `security(1)` tool rather than pulling in a
-//! macOS-only crate (`security-framework`) — it keeps the dependency tree and
-//! the Linux build untouched, and mirrors the project's "read what the CLI
-//! already wrote" philosophy.
+//! Reads use the built-in `security(1)` tool, while normal writes use the
+//! macOS-native `security-framework` API so credential JSON is never exposed
+//! through process arguments. The dependency is macOS-gated, keeping Linux
+//! builds untouched.
 //!
 //! A `CLAUDE_CONFIG_DIR`-scoped login (`CLAUDE_CONFIG_DIR=<dir> claude`, the
 //! mechanism `accounts_dir` documents) also lands in the Keychain rather than
@@ -132,13 +132,11 @@ fn read_raw_service(service: &str) -> Result<Option<String>> {
 
 /// Persist updated credentials JSON back to the *same* Keychain item, so the
 /// widget and Claude Code keep sharing a single source of truth (mirroring how
-/// they share one file on Linux). `-U` updates the item in place if it exists.
+/// they share one file on Linux).
 ///
-/// Note: the JSON is passed as a `security` argument and is therefore briefly
-/// visible in this process's argv (e.g. to `ps`) on the user's own machine.
-/// `security` offers no stdin path for the password, and this runs only on the
-/// rare proactive token refresh, so we accept the local-only exposure of a
-/// secret that already lives in this user's Keychain.
+/// A native write requires the same account selector used by the read path.
+/// Fail closed if `$USER` is unavailable rather than falling back to the
+/// `security(1)` argv form and exposing the OAuth JSON to process inspection.
 pub fn write_raw(json: &str) -> Result<()> {
     write_raw_service(SERVICE, json)
 }
@@ -163,34 +161,26 @@ pub fn delete_raw_for(config_dir: &Path) -> Result<()> {
 }
 
 fn write_raw_service(service: &str, json: &str) -> Result<()> {
-    let mut cmd = Command::new("/usr/bin/security");
-    cmd.args(["add-generic-password", "-U", "-s", service]);
     // Must mirror `read_raw`'s selection exactly, or an update can create a
-    // second item the read will never find.
+    // second item the read will never find. The native API updates by this
+    // exact (service, account) pair without exposing the secret in argv.
     if let Some(acct) = account() {
-        cmd.args(["-a", &acct]);
+        return security_framework::passwords::set_generic_password(
+            service,
+            &acct,
+            json.as_bytes(),
+        )
+        .map_err(|e| {
+            AppError::Credentials(format!(
+                "failed to update the Claude credentials in the macOS Keychain: {e}"
+            ))
+        });
     }
-    cmd.args(["-w", json]);
 
-    let out = cmd
-        .output()
-        .map_err(|e| AppError::Other(format!("could not run `security`: {e}")))?;
-
-    if out.status.success() {
-        return Ok(());
-    }
-    let detail = String::from_utf8_lossy(&out.stderr);
-    let detail = detail.trim();
-    Err(AppError::Credentials(format!(
-        "failed to update the Claude credentials in the macOS Keychain \
-         (security exited {}): {}",
-        out.status.code().unwrap_or(-1),
-        if detail.is_empty() {
-            "no detail"
-        } else {
-            detail
-        }
-    )))
+    Err(AppError::Credentials(
+        "cannot safely update the Claude credentials in the macOS Keychain because USER is unset"
+            .into(),
+    ))
 }
 
 fn delete_raw_service(service: &str) -> Result<()> {
