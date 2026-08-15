@@ -38,11 +38,13 @@ omarchy plugin remove akitaonrails.ai-usagebar
 
 ## Controls
 
-- Bar: left-click opens the panel; right-click launches
-  `ai-usagebar-tui`; middle-click or the mouse wheel switches provider.
-- Panel: `h`/`l` or Left/Right switches provider, `j`/`k` or Up/Down scrolls,
-  `r`, Enter, or Space refreshes, `s` or the gear opens settings, Tab moves to
-  the neighboring bar panel, and Esc closes.
+- Bar: left-click opens the native Quattro usage panel; right-click
+  intentionally launches `ai-usagebar-tui` in a terminal; middle-click or the
+  mouse wheel switches provider. Right-click is not the settings shortcut.
+- Panel: click the gear or press `s` to open the native QML settings page.
+  `h`/`l` or Left/Right switches provider, `j`/`k` or Up/Down scrolls, `r`,
+  Enter, or Space refreshes, Tab moves to the neighboring bar panel, and Esc
+  closes.
 - Shell: `omarchy-shell shell summon akitaonrails.ai-usagebar '{}'` opens the
   panel and `omarchy-shell shell hide akitaonrails.ai-usagebar` closes it.
 
