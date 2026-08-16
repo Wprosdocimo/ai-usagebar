@@ -110,6 +110,27 @@ Each release is also published at
 
 ### Added
 
+- **KDE Plasma 6 plasmoid** (`kde-plasmoid/`). A native panel widget, the KDE
+  counterpart to the GNOME extension: Waybar cannot dock into a Plasma panel, so
+  this ships as a KPackage plasmoid drawing with Plasma/Kirigami components.
+
+  It is a thin consumer of `ai-usagebar usage --json` and keeps no vendor list
+  of its own — every entry the binary reports becomes a tab in the popup, with
+  its canonical name and its plan or its error, so adding a vendor to the CLI
+  needs no change here. Severity and the absolute `reset_at` come from the
+  report too, so the four frontends agree about what counts as critical and the
+  countdowns tick locally between fetches.
+
+  The popup follows the native Omarchy panel's layout so the two read the same,
+  while sizing off `Kirigami.Units` and colouring off `Kirigami.Theme` — the
+  widget follows whatever Plasma colour scheme the user runs, and the five One
+  Dark colours remain available for anyone who turns that off.
+
+  Vendor selection is **per applet instance**: one report covers everything, so
+  switching is a client-side re-pick, and the widget never reads
+  `~/.cache/ai-usagebar/active_vendor`, which belongs to Waybar's
+  `--cycle-next`. Two instances can track two vendors without colliding.
+
 - **SuperGrok subscription vendor** (`--vendor supergrok`, `[supergrok]`,
   opt-in). Shows the current weekly or monthly included-credit usage, reset,
   tier, and prepaid balance from the official Grok Build CLI's `x.ai/billing`

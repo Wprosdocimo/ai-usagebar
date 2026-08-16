@@ -12,6 +12,11 @@ makedepends=('cargo' 'git' 'nasm')
 optdepends=(
     'waybar: status bar that hosts the widget'
     'libnotify: desktop notifications on hard auth failures'
+    # No plasma-desktop/plasma5support entries: this package ships the CLI, not
+    # the KDE plasmoid, so neither would enable anything in what it installs.
+    # The plasmoid is installed from a checkout (kde-plasmoid/install.sh, or
+    # `make install-plasmoid PREFIX=/usr`), exactly like the GNOME extension,
+    # which is likewise absent here. See kde-plasmoid/README.md.
 )
 # LTO is disabled because ring's C/asm objects (used by reqwest's rustls
 # backend) don't ship LTO bitcode and Arch's default `-flto=auto` in CFLAGS
