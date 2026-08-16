@@ -319,6 +319,15 @@ privileges, and does not overwrite user configuration.
 Cursor is not available in the GNOME extension yet. On GNOME, use
 `ai-usagebar --vendor cursor` or open the TUI.
 
+## Community integrations
+
+External projects built on `ai-usagebar usage --json`. They live in their own
+repositories and are maintained by their authors, not here.
+
+- [AI Usage for Noctalia](https://github.com/noctalia-dev/community-plugins/tree/main/ai-usagebar)
+  — bar widget and panel for the Noctalia v5 shell, installable from its
+  plugin browser as `felipeartur/ai-usagebar`.
+
 ## Waybar config
 
 ### Single module, scroll-to-cycle (recommended)
