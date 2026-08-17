@@ -10,7 +10,10 @@
         "Version": "0.1.0",
         "Authors": [
             {
-                "Name": "AkitaOnRails",
+                "Name": "AkitaOnRails"
+            },
+            {
+                "Name": "Anrry Petrin",
                 "Email": "anrry.petrin@hotmail.com"
             }
         ],

@@ -3,14 +3,17 @@
     "KPlugin": {
         "Id": "io.github.akitaonrails.ai-usagebar",
         "Name": "AI Usage Bar",
-        "Description": "AI plan usage (Claude, OpenAI, Z.AI, OpenRouter, DeepSeek, Antigravity) in the Plasma panel",
+        "Description": "AI plan usage in the Plasma panel",
         "Icon": "utilities-system-monitor",
         "Category": "System Information",
         "License": "MIT",
         "Version": "0.1.0",
         "Authors": [
             {
-                "Name": "AkitaOnRails",
+                "Name": "AkitaOnRails"
+            },
+            {
+                "Name": "Anrry Petrin",
                 "Email": "anrry.petrin@hotmail.com"
             }
         ],

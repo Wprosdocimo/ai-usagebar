@@ -33,13 +33,11 @@ When cutting a new version (patch, minor, or major):
    make test                                   # cargo test + the desktop JS gate
    cargo clippy --all-targets -- -D warnings   # clean
    cargo machete                               # no unused deps
-   node omarchy/model.test.mjs                 # Quattro report/UI model
    omarchy plugin validate .                   # plugin manifest + entry points
    ```
-   `make test` rather than `cargo test`: the desktop gate is what enforces the
-   byte-identity of `marker-logic.js` and its `kde-plasmoid` copy. Tagging after
-   a bare `cargo test` ships the drift. If `kde-plasmoid/` changed, also bump
-   `KPlugin.Version` in `kde-plasmoid/package/metadata.json` — it is versioned
+   `make test` rather than `cargo test`: it also runs the GNOME, KDE, and
+   Omarchy frontend contract suites. If `kde-plasmoid/` changed, also bump
+   `KPlugin.Version` in `kde-plasmoid/package/metadata.json`; it is versioned
    independently of `Cargo.toml`, like the GNOME `metadata.json`.
 7. **Commit, tag, push**:
    ```
@@ -195,20 +193,15 @@ vendor's response shape drifts:
   Quickshell panel, pure report model, and Node contract tests
 - `src/tooltip.rs` — shared Pango bordered-box renderer (used by
   every vendor's tooltip)
-- `gnome-extension/marker-logic.js` — **canonical** pure format-contract
-  helpers. `kde-plasmoid/package/contents/code/marker-logic.mjs` is a
-  byte-identical copy (neither dir can symlink the other: GNOME ships as a zip
-  to extensions.gnome.org, KPackage needs the file under `contents/`). Edit the
-  canonical file, then re-copy; `kde-plasmoid/plasmoid-logic.test.mjs` fails the
-  build if they diverge. Two QML-engine rules apply to both files and are
-  asserted there: no ES2019 optional catch binding (V4 rejects it) and no
-  Unicode property escapes (V4 evaluates `\p{L}` to *false* silently).
+- `gnome-extension/marker-logic.js` — pure GNOME formatting helpers and their
+  own Node contract tests.
 - `kde-plasmoid/` — KDE Plasma 6 plasmoid (KPackage). Vendor selection is
-  per applet instance via KConfigXT; it always passes `--vendor` explicitly and
-  deliberately does **not** read `~/.cache/ai-usagebar/active_vendor`, which
-  belongs to Waybar's `--cycle-next`. Popup work must be tested with
-  `plasmawindowed`, not `plasmoidviewer` — the latter never instantiates the
-  full representation.
+  per applet instance via KConfigXT. Its single `usage --json` request omits
+  `--vendor`; selection happens client-side, so it never reads
+  `~/.cache/ai-usagebar/active_vendor`. The pure report adapter lives in
+  `package/contents/code/plasmoid-logic.mjs` and is not a copy of the GNOME
+  helpers. Test popup work with `plasmawindowed`, not `plasmoidviewer`; the
+  latter never instantiates the full representation.
 - `packaging/aur/PKGBUILD` — source-build AUR pkg
 - `packaging/aur/PKGBUILD-bin` — prebuilt-binary AUR pkg (multi-arch)
 - `.github/workflows/release.yml` — tag-driven release (x86_64 + aarch64)

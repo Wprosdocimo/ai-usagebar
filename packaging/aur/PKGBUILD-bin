@@ -12,10 +12,6 @@ depends=('gcc-libs')
 optdepends=(
     'waybar: status bar that hosts the widget'
     'libnotify: desktop notifications on hard auth failures'
-    # No plasma-desktop/plasma5support entries — see PKGBUILD. This variant
-    # could not ship the plasmoid even if we wanted it to: its source is the
-    # released binary tarball, which carries only the two binaries, the config
-    # example, README and LICENSE.
 )
 provides=("$_pkgname=$pkgver")
 # Conflict with both the source variant AND its auto-generated debug split.

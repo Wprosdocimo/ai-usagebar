@@ -1,9 +1,8 @@
 # AI Usage Bar — KDE Plasma 6 plasmoid
 
-A native Plasma panel widget for [`ai-usagebar`](../README.md). It puts the
-**5-hour session** and **weekly** usage bars in the panel, with a click popup
-listing every quota window, model-scoped rows, and the two-pool layout that
-Google Antigravity needs.
+A native Plasma panel widget for [`ai-usagebar`](../README.md). It puts up to
+two usage values in the panel, with a click popup listing every quota window,
+model-scoped rows, and the two-pool layout that Google Antigravity needs.
 
 This is the KDE counterpart to the project's Waybar widget and its
 [GNOME extension](../gnome-extension/README.md): Waybar is Wayland-bar-specific
@@ -36,6 +35,7 @@ One caveat worth knowing before you put a vendor in the scroll ring:
 - Plasma 6 (developed against 6.6, `X-Plasma-API-Minimum-Version` is `6.0`)
 - `ai-usagebar` on `PATH`, or its full path set in the widget settings
 - `plasma5support` (ships with Plasma; provides the executable data engine)
+- GNU coreutils `timeout` (standard on Plasma Linux distributions)
 
 > **plasmashell does not inherit your shell's `PATH`.** A `cargo install` into
 > `~/.cargo/bin` is typically invisible to the widget. Either install to a
@@ -45,6 +45,7 @@ One caveat worth knowing before you put a vendor in the scroll ring:
 ## Install (dev)
 
 ```sh
+cd kde-plasmoid
 ./install.sh
 # then: right-click the panel → "Add or Manage Widgets…" → search "AI Usage"
 ```
@@ -63,7 +64,7 @@ kpackagetool6 --type Plasma/Applet --upgrade ./package   # on re-runs
 ## Install (system)
 
 ```sh
-make install install-plasmoid PREFIX=/usr
+sudo make install install-plasmoid PREFIX=/usr
 ```
 
 `PREFIX=/usr` is not optional for a system install: KPackage only scans
@@ -75,8 +76,8 @@ never appears in the chooser.
 
 Right-click the widget → *Configure*. One page: which vendors are in the scroll
 ring (each listed with its plan or its error, straight from the report), the
-current vendor, refresh interval, left-click action, the display toggles, bar
-width, panel pools, and the five severity colours.
+current vendor, refresh interval, command timeout, left-click action, compact
+percentage and bar toggles, bar width, and the five severity colours.
 
 The GNOME prefs window has a second "Vendors" page listing per-vendor login
 status. There is no equivalent page here because the report already carries
