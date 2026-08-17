@@ -1,0 +1,212 @@
+//! Nous Research normalization and renderer helpers.
+//!
+//! This module does not depend on the shared `VendorSnapshot` enum.  The
+//! coordinator can adapt this display-safe snapshot later without moving OAuth
+//! credentials or raw account payloads across the shared boundary.
+
+use std::collections::HashMap;
+
+use chrono::{DateTime, Utc};
+
+use super::types::AccountSnapshot;
+
+pub const DISPLAY_NAME: &str = "Nous Research";
+pub const VENDOR_SHORT: &str = "nrs";
+pub const DEFAULT_FORMAT: &str = "{nous_pct}% · {nous_renewal}";
+pub const NEUTRAL_UNAVAILABLE: &str = "—";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NousSnapshot {
+    pub plan: Option<String>,
+    pub tier: Option<i64>,
+    pub monthly_credits: Option<f64>,
+    pub credits_remaining: Option<f64>,
+    pub rollover_credits: Option<f64>,
+    pub current_period_end: Option<DateTime<Utc>>,
+    pub usage_pct: Option<f64>,
+}
+
+pub fn normalize(account: &AccountSnapshot) -> NousSnapshot {
+    NousSnapshot {
+        plan: account.plan.as_deref().map(sanitize_text),
+        tier: account.tier,
+        monthly_credits: account.monthly_credits,
+        credits_remaining: account.credits_remaining,
+        rollover_credits: account.rollover_credits,
+        current_period_end: account.current_period_end,
+        usage_pct: account.usage_percent().filter(|value| value.is_finite()),
+    }
+}
+
+pub fn build_placeholders(
+    snapshot: &NousSnapshot,
+    now: DateTime<Utc>,
+) -> HashMap<&'static str, String> {
+    let percentage = snapshot
+        .usage_pct
+        .map(|value| value.round().clamp(0.0, 100.0).to_string())
+        .unwrap_or_else(|| NEUTRAL_UNAVAILABLE.into());
+    let renewal = crate::countdown::format(snapshot.current_period_end, now);
+    let plan = snapshot
+        .plan
+        .clone()
+        .unwrap_or_else(|| NEUTRAL_UNAVAILABLE.into());
+    let monthly = format_credit(snapshot.monthly_credits);
+    let remaining = format_credit(snapshot.credits_remaining);
+    let rollover = format_credit(snapshot.rollover_credits);
+    let mut values = HashMap::new();
+    values.insert("vendor", DISPLAY_NAME.into());
+    values.insert("vendor_short", VENDOR_SHORT.into());
+    values.insert("plan", plan.clone());
+    values.insert("nous_plan", plan);
+    values.insert("session_pct", percentage.clone());
+    values.insert("weekly_pct", percentage.clone());
+    values.insert("nous_pct", percentage);
+    values.insert("session_reset", renewal.clone());
+    values.insert("weekly_reset", renewal.clone());
+    values.insert("nous_renewal", renewal);
+    values.insert("nous_credits_remaining", remaining);
+    values.insert("nous_monthly_credits", monthly);
+    values.insert("nous_rollover_credits", rollover);
+    values
+}
+
+pub fn render_compact(snapshot: &NousSnapshot, format: Option<&str>, now: DateTime<Utc>) -> String {
+    let values = build_placeholders(snapshot, now);
+    if format.is_none() && snapshot.usage_pct.is_none() {
+        return values
+            .get("nous_renewal")
+            .cloned()
+            .unwrap_or_else(|| NEUTRAL_UNAVAILABLE.into());
+    }
+    let template = format.unwrap_or(DEFAULT_FORMAT);
+    crate::format::substitute(template, &values)
+}
+
+pub fn render_tooltip(snapshot: &NousSnapshot, now: DateTime<Utc>) -> String {
+    let values = build_placeholders(snapshot, now);
+    let mut lines = vec![DISPLAY_NAME.to_string()];
+    if let Some(plan) = snapshot.plan.as_deref() {
+        lines.push(format!("Plan: {}", escape_text(plan)));
+    }
+    if let Some(pct) = snapshot.usage_pct {
+        lines.push(format!("Usage: {:.0}%", pct.round().clamp(0.0, 100.0)));
+    }
+    if let Some(remaining) = snapshot.credits_remaining {
+        lines.push(format!(
+            "Credits remaining: {}",
+            format_credit(Some(remaining))
+        ));
+    }
+    if let Some(monthly) = snapshot.monthly_credits {
+        lines.push(format!("Monthly credits: {}", format_credit(Some(monthly))));
+    }
+    if let Some(rollover) = snapshot.rollover_credits {
+        lines.push(format!(
+            "Rollover credits: {}",
+            format_credit(Some(rollover))
+        ));
+    }
+    lines.push(format!("Renews: {}", values["nous_renewal"]));
+    lines.join("\n")
+}
+
+fn format_credit(value: Option<f64>) -> String {
+    let Some(value) = value.filter(|value| value.is_finite()) else {
+        return NEUTRAL_UNAVAILABLE.into();
+    };
+    if value.fract() == 0.0 {
+        format!("{value:.0}")
+    } else {
+        let mut text = format!("{value:.6}");
+        while text.ends_with('0') {
+            text.pop();
+        }
+        text
+    }
+}
+
+fn sanitize_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control())
+        .take(256)
+        .collect()
+}
+
+fn escape_text(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{TimeZone, Utc};
+    use serde_json::json;
+
+    use super::*;
+    use crate::nous::types::parse_account;
+
+    fn snapshot() -> NousSnapshot {
+        normalize(
+            &parse_account(&json!({
+                "plan": "Pro",
+                "monthly_credits": 1000.0,
+                "credits_remaining": 760.0,
+                "rollover_credits": 40.0,
+                "period_end": "2026-09-01T00:00:00Z"
+            }))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn nous_identity_and_placeholders_are_exact() {
+        let snap = snapshot();
+        let now = Utc.with_ymd_and_hms(2026, 8, 16, 12, 0, 0).unwrap();
+        let values = build_placeholders(&snap, now);
+        assert_eq!(DISPLAY_NAME, "Nous Research");
+        assert_eq!(VENDOR_SHORT, "nrs");
+        assert_eq!(values["vendor"], "Nous Research");
+        assert_eq!(values["vendor_short"], "nrs");
+        assert_eq!(values["plan"], "Pro");
+        assert_eq!(values["nous_plan"], "Pro");
+        assert_eq!(values["nous_pct"], "24");
+        assert_eq!(values["session_pct"], "24");
+        assert_eq!(values["weekly_pct"], "24");
+        assert_eq!(values["nous_monthly_credits"], "1000");
+        assert_eq!(values["nous_credits_remaining"], "760");
+        assert_eq!(values["nous_rollover_credits"], "40");
+    }
+
+    #[test]
+    fn default_format_omits_missing_percentage_instead_of_fabricating_zero() {
+        let snap = normalize(
+            &parse_account(&json!({"plan":"Free", "period_end":"2026-09-01T00:00:00Z"})).unwrap(),
+        );
+        let now = Utc.with_ymd_and_hms(2026, 8, 16, 12, 0, 0).unwrap();
+        let rendered = render_compact(&snap, None, now);
+        assert!(!rendered.contains("0%"));
+        assert!(!rendered.contains('%'));
+        assert!(rendered.contains("15d 12h"));
+        assert_eq!(
+            build_placeholders(&snap, now)["nous_pct"],
+            NEUTRAL_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn unavailable_metrics_use_neutral_value_and_plan_text_is_sanitized() {
+        let snap = normalize(
+            &parse_account(&json!({"plan":"<Pro>&\"", "monthly_credits": 100.0})).unwrap(),
+        );
+        let now = Utc.with_ymd_and_hms(2026, 8, 16, 12, 0, 0).unwrap();
+        let values = build_placeholders(&snap, now);
+        assert_eq!(values["nous_credits_remaining"], NEUTRAL_UNAVAILABLE);
+        let tooltip = render_tooltip(&snap, now);
+        assert!(!tooltip.contains("<Pro>"));
+        assert!(tooltip.contains("&lt;Pro&gt;"));
+    }
+}

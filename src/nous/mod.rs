@@ -1,45 +1,19 @@
 //! Nous Research OAuth and subscription usage integration.
+//!
+//! This module is intentionally self-contained.  Shared vendor/config/widget
+//! integration can consume these APIs later without importing credential
+//! storage or OAuth secrets into the shared snapshot boundary.
 
-pub mod types {
-    use serde_json::Value;
+pub mod cli;
+pub mod credentials;
+pub mod fetch;
+pub mod oauth;
+pub mod types;
+pub mod vendor;
 
-    #[derive(Debug)]
-    pub struct DeviceCode {
-        pub device_code: String,
-        pub user_code: String,
-        pub verification_uri: String,
-        pub expires_in: u64,
-        pub interval: u64,
-    }
-
-    #[derive(Debug)]
-    pub struct TokenResponse {
-        pub access_token: String,
-        pub refresh_token: String,
-        pub expires_in: u64,
-    }
-
-    #[derive(Debug)]
-    pub struct AccountSnapshot {
-        pub plan: Option<String>,
-        pub monthly_credits: Option<f64>,
-        pub credits_remaining: Option<f64>,
-        pub rollover_credits: Option<f64>,
-        pub serialized_snapshot: String,
-    }
-
-    pub fn parse_device_code(_: &Value) -> Result<DeviceCode, String> {
-        Err("Nous device-code parser is not implemented".into())
-    }
-
-    pub fn parse_token(_: &Value) -> Result<TokenResponse, String> {
-        Err("Nous token parser is not implemented".into())
-    }
-
-    pub fn parse_account(_: &Value) -> Result<AccountSnapshot, String> {
-        Err("Nous account parser is not implemented".into())
-    }
-}
+pub use types::{
+    AccountSnapshot, DeviceCode, TokenResponse, parse_account, parse_device_code, parse_token,
+};
 
 #[cfg(test)]
 mod tests {
@@ -84,5 +58,59 @@ mod tests {
         assert_eq!(parsed.rollover_credits, Some(40.0));
         assert!(!parsed.serialized_snapshot.contains("internal-user"));
         assert!(!parsed.serialized_snapshot.contains("internal-org"));
+    }
+
+    #[test]
+    fn device_code_requires_the_complete_verification_uri() {
+        let mut value = fixture(include_str!("../../tests/fixtures/nous/device-code.json"));
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("verification_uri_complete");
+        assert!(parse_device_code(&value).is_err());
+    }
+
+    #[test]
+    fn additive_device_code_fields_are_ignored() {
+        let mut value = fixture(include_str!("../../tests/fixtures/nous/device-code.json"));
+        value["future_field"] = serde_json::json!({"ignored": true});
+        assert!(parse_device_code(&value).is_ok());
+    }
+
+    #[test]
+    fn empty_or_expired_token_credentials_are_rejected() {
+        for (field, value) in [("access_token", ""), ("refresh_token", "")] {
+            let mut payload = fixture(include_str!("../../tests/fixtures/nous/token-success.json"));
+            payload[field] = serde_json::json!(value);
+            assert!(parse_token(&payload).is_err(), "{field} must be non-empty");
+        }
+        let mut payload = fixture(include_str!("../../tests/fixtures/nous/token-success.json"));
+        payload["expires_in"] = serde_json::json!(0);
+        assert!(parse_token(&payload).is_err());
+    }
+
+    #[test]
+    fn invalid_account_credits_and_period_are_rejected() {
+        let mut negative = fixture(include_str!("../../tests/fixtures/nous/account.json"));
+        negative["credits_remaining"] = serde_json::json!(-1.0);
+        assert!(parse_account(&negative).is_err());
+
+        let mut non_finite = fixture(include_str!("../../tests/fixtures/nous/account.json"));
+        non_finite["monthly_credits"] = serde_json::json!("NaN");
+        assert!(parse_account(&non_finite).is_err());
+
+        let mut bad_period = fixture(include_str!("../../tests/fixtures/nous/account.json"));
+        bad_period["period_end"] = serde_json::json!("not-a-timestamp");
+        assert!(parse_account(&bad_period).is_err());
+    }
+
+    #[test]
+    fn absent_optional_account_metrics_stay_unavailable() {
+        let value = serde_json::json!({"plan": "Free", "future": "allowed"});
+        let parsed = parse_account(&value).expect("optional metrics may be absent");
+        assert_eq!(parsed.plan.as_deref(), Some("Free"));
+        assert_eq!(parsed.monthly_credits, None);
+        assert_eq!(parsed.credits_remaining, None);
+        assert_eq!(parsed.rollover_credits, None);
     }
 }
