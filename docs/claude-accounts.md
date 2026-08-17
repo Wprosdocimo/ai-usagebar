@@ -75,6 +75,11 @@ original `~/.cache/ai-usagebar/anthropic/` path.
 An unknown label fails with a list of valid labels. The TUI shows the default
 Claude tab followed by one tab for each named account.
 
+If a CLI account and a saved Desktop profile share a label, aggregate views
+such as the TUI and `usage --json` use the Desktop profile to avoid refreshing
+the same rotating token from two stores. Direct widget commands are explicit:
+add `--desktop` alongside `--account` when you want the Desktop profile.
+
 ## Discover accounts from a directory
 
 Point `accounts_dir` at a directory whose immediate children are Claude Code
