@@ -9,6 +9,22 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- **Aggregate views now source a Claude label shared by a CLI account and a
+  Desktop profile only from Desktop.** The same account in two stores means two
+  of them refreshing one rotating refresh token — each refresh invalidates the
+  other's copy — and the CLI copy can even refresh to a stale/wrong identity
+  that still authenticates but reports another account's (often zero) usage. The
+  symptom: a heavily-used account showing 0% while its Desktop token returns the
+  real number. The previous guard only dropped a CLI entry whose credential was
+  *empty* (a half-finished `account add`), which cannot catch a token that
+  authenticates but is misattributed. On a label collision the app-maintained
+  Desktop token now always wins, which both avoids the rotation war and stops
+  the silent misattribution. A CLI account with no Desktop profile of the same
+  name is unaffected. Direct widget commands remain explicit: add `--desktop`
+  when selecting the Desktop profile with `--account`.
+
 ## [1.0.3] — 2026-08-15
 
 ### Security
