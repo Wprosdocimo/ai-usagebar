@@ -327,6 +327,10 @@ repositories and are maintained by their authors, not here.
 - [cosmic-applet-ai-usage](https://github.com/jacksonsieben/cosmic-applet-ai-usage)
   — panel applet for the COSMIC desktop.
 
+- [AI Usage for Noctalia](https://github.com/noctalia-dev/community-plugins/tree/main/ai-usagebar)
+  — bar widget and panel for the Noctalia v5 shell, installable from its
+  plugin browser as `felipeartur/ai-usagebar`.
+
 ## Waybar config
 
 ### Single module, scroll-to-cycle (recommended)
