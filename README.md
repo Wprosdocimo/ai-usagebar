@@ -319,6 +319,14 @@ privileges, and does not overwrite user configuration.
 Cursor is not available in the GNOME extension yet. On GNOME, use
 `ai-usagebar --vendor cursor` or open the TUI.
 
+## Community integrations
+
+External projects built on `ai-usagebar usage --json`. They live in their own
+repositories and are maintained by their authors, not here.
+
+- [cosmic-applet-ai-usage](https://github.com/jacksonsieben/cosmic-applet-ai-usage)
+  — panel applet for the COSMIC desktop.
+
 ## Waybar config
 
 ### Single module, scroll-to-cycle (recommended)
