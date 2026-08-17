@@ -9,6 +9,14 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- **KDE Plasma 6 plasmoid** (`kde-plasmoid/`). The native panel widget renders
+  every provider returned by `ai-usagebar usage --json`, follows the active
+  Plasma colour scheme, and keeps provider selection per applet instance. It
+  includes a popup, live reset countdowns, configurable compact bars, and Qt 6
+  and Node regression suites.
+
 ### Fixed
 
 - **Aggregate views now source a Claude label shared by a CLI account and a

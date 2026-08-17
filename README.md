@@ -22,8 +22,8 @@ codebase.
   60 seconds. Its navigation can use a sidebar, navbar, or no vendor box.
 - An optional Claude Code context view reads recent local session usage without
   scanning entire histories.
-- Native integrations are available for Omarchy, GNOME Shell, and the macOS
-  menu bar.
+- Native integrations are available for Omarchy, GNOME Shell, KDE Plasma 6, and
+  the macOS menu bar.
 - One bar item can cycle through enabled providers. `[ui] primary` controls the
   initial provider in both the widget and TUI.
 - Atomic caches and file locking prevent duplicate requests from multi-monitor
@@ -39,6 +39,7 @@ codebase.
 - [Claude accounts](docs/claude-accounts.md)
 - [Format placeholders](docs/format-placeholders.md)
 - [Provider endpoints and live tests](docs/vendor-endpoints.md)
+- [KDE Plasma 6 plasmoid](kde-plasmoid/README.md)
 
 ## Install
 
@@ -309,12 +310,13 @@ The plugin depends only on the `ai-usagebar` executable. It runs the fixed
 only after a right-click. It installs no service, asks for no elevated
 privileges, and does not overwrite user configuration.
 
-### GNOME and macOS
+### GNOME, KDE and macOS
 
 | Integration | Supported providers | Notes |
 |---|---|---|
 | [macOS menu bar](macos/README.md) | Claude, Codex, Z.AI, OpenRouter, DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok (xAI), Anthropic API, Cursor, Google Antigravity | Thirteen providers. |
 | [GNOME Shell](gnome-extension/README.md) | Claude, Codex, Z.AI, OpenRouter, DeepSeek, Google Antigravity | Antigravity's two quota pools appear as grouped rows. |
+| [KDE Plasma 6](kde-plasmoid/README.md) | Whatever `usage --json` reports | Provider tabs in the popup; vendor is per applet instance. |
 
 Cursor is not available in the GNOME extension yet. On GNOME, use
 `ai-usagebar --vendor cursor` or open the TUI.
@@ -361,6 +363,9 @@ and provider-specific field.
 
 `signal: 13` lets the scroll commands refresh the bar through `SIGRTMIN+13`
 instead of waiting for the next interval.
+
+The [KDE plasmoid](kde-plasmoid/README.md) has the same gesture in its own
+settings and never reads or writes the state file this section relies on.
 
 If a tray expander follows `custom/aibar`, the usage text may sit too close to
 its icon. Add right padding in Waybar CSS:

@@ -30,12 +30,15 @@ When cutting a new version (patch, minor, or major):
    The committed files keep `sha256sums = SKIP`; CI pins the real hashes later.
 6. **Run gate before tagging**:
    ```
-   cargo test                                  # 200+ tests must pass
+   make test                                   # cargo test + the desktop JS gate
    cargo clippy --all-targets -- -D warnings   # clean
    cargo machete                               # no unused deps
-   node omarchy/model.test.mjs                 # Quattro report/UI model
    omarchy plugin validate .                   # plugin manifest + entry points
    ```
+   `make test` rather than `cargo test`: it also runs the GNOME, KDE, and
+   Omarchy frontend contract suites. If `kde-plasmoid/` changed, also bump
+   `KPlugin.Version` in `kde-plasmoid/package/metadata.json`; it is versioned
+   independently of `Cargo.toml`, like the GNOME `metadata.json`.
 7. **Commit, tag, push**:
    ```
    git commit -m "vX.Y.Z — …"
@@ -190,6 +193,15 @@ vendor's response shape drifts:
   Quickshell panel, pure report model, and Node contract tests
 - `src/tooltip.rs` — shared Pango bordered-box renderer (used by
   every vendor's tooltip)
+- `gnome-extension/marker-logic.js` — pure GNOME formatting helpers and their
+  own Node contract tests.
+- `kde-plasmoid/` — KDE Plasma 6 plasmoid (KPackage). Vendor selection is
+  per applet instance via KConfigXT. Its single `usage --json` request omits
+  `--vendor`; selection happens client-side, so it never reads
+  `~/.cache/ai-usagebar/active_vendor`. The pure report adapter lives in
+  `package/contents/code/plasmoid-logic.mjs` and is not a copy of the GNOME
+  helpers. Test popup work with `plasmawindowed`, not `plasmoidviewer`; the
+  latter never instantiates the full representation.
 - `packaging/aur/PKGBUILD` — source-build AUR pkg
 - `packaging/aur/PKGBUILD-bin` — prebuilt-binary AUR pkg (multi-arch)
 - `.github/workflows/release.yml` — tag-driven release (x86_64 + aarch64)
