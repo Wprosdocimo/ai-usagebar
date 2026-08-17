@@ -17,6 +17,7 @@ Column {
   readonly property color dim: Qt.darker(foreground, 1.45)
 
   property var snapshot: ({ primary_choices: [], keys: [] })
+  property var keyEntries: []
   property string selectedPrimary: ""
   property string stateStdout: ""
   property string stateStderr: ""
@@ -43,6 +44,16 @@ Column {
 
   function safe(value) { return Model.autoTextSafe(value) }
 
+  function orderedKeys(keys) {
+    var entries = Array.isArray(keys) ? keys.slice() : []
+    entries.sort(function(a, b) {
+      if (a.id === "opencode-go") return -1
+      if (b.id === "opencode-go") return 1
+      return 0
+    })
+    return entries
+  }
+
   function load() {
     if (stateProcess.running || applyProcess.running) return
     loading = true
@@ -62,6 +73,7 @@ Column {
         ? "This installed ai-usagebar binary predates native settings. Update the package, or use the terminal settings fallback."
         : detail
       snapshot = ({ primary_choices: [], keys: [] })
+      keyEntries = []
       selectedPrimary = ""
       return
     }
@@ -69,10 +81,12 @@ Column {
     if (!parsed.ok) {
       errorText = parsed.error
       snapshot = ({ primary_choices: [], keys: [] })
+      keyEntries = []
       selectedPrimary = ""
       return
     }
     snapshot = parsed
+    keyEntries = orderedKeys(parsed.keys)
     selectedPrimary = parsed.primary
   }
 
@@ -296,7 +310,7 @@ Column {
     }
     Text {
       width: parent.width
-      text: "Nous Research uses OAuth. Login opens in a terminal so the verification code and browser flow stay outside the panel."
+      text: "Nous Research uses OAuth. Login opens in a terminal. Leave the terminal open until login completes, then return here and press Refresh."
       textFormat: Text.PlainText
       color: root.dim
       font.family: root.fontFamily
@@ -345,7 +359,7 @@ Column {
 
     Repeater {
       id: keyRepeater
-      model: root.snapshot.keys
+      model: root.keyEntries
 
       BorderSurface {
         id: keyCard
