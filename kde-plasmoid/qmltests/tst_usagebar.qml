@@ -10,6 +10,7 @@
 import QtQuick
 import QtTest
 import "../package/contents/ui" as Ui
+import "../package/contents/code/plasmoid-logic.mjs" as Logic
 
 TestCase {
     id: root
@@ -101,5 +102,28 @@ TestCase {
         bar.pct = 50; bar.severity = "nonsense";
         compare(String(parts().fill.color), "#98c379", "falls back to the low band");
         bar.severity = "low";
+    }
+
+    // Exercise the pure module under QML's V4 engine, not just Node's V8.
+    // These are the security-sensitive paths that consume provider text and
+    // build the executable-engine command.
+    function test_07_logic_security_contract() {
+        compare(Logic.safeText("<img src='https://example.invalid/x'>\u202eevil"),
+                "‹img src='https://example.invalid/x'›evil");
+        compare(Logic.timeoutSeconds(0), 60, "the process bound cannot be disabled");
+        compare(Logic.timeoutSeconds(null), 600, "missing config uses the safe default");
+
+        var command = Logic.buildCommand("/opt/my apps/ai-usagebar", 600);
+        verify(command.indexOf("'timeout' '-k' '5' '600'") === 0,
+               "the timeout wrapper leads the quoted command");
+        verify(command.indexOf("'/opt/my apps/ai-usagebar'") !== -1,
+               "a binary path with spaces remains one argument");
+
+        var report = Logic.parseReport(JSON.stringify({entries: [{
+            id: "hostile", display_name: "<b>provider</b>", status: "ready",
+            sections: [],
+        }]}));
+        compare(report.entries[0].label, "‹b›provider‹/b›",
+                "provider markup remains visible but inert");
     }
 }
