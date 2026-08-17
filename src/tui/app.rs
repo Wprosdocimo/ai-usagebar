@@ -91,9 +91,9 @@ pub fn tabs_from_config(config: &Config) -> Vec<TabId> {
     build_tabs(config, &[])
 }
 
-/// The production tab list: configured accounts plus every saved Claude Desktop
-/// profile that has usable credentials. Desktop discovery is best-effort and
-/// macOS-only; anywhere else this equals [`tabs_from_config`].
+/// The production aggregate-view tab list: configured accounts plus every saved
+/// Claude Desktop profile that has usable credentials. Desktop discovery is
+/// best-effort and macOS-only; anywhere else this equals [`tabs_from_config`].
 pub fn tabs_with_desktop(config: &Config) -> Vec<TabId> {
     build_tabs(config, &desktop_profile_labels(config))
 }
@@ -102,14 +102,14 @@ pub fn tabs_with_desktop(config: &Config) -> Vec<TabId> {
 /// and unit-testable. Desktop accounts follow the CLI accounts and count toward
 /// "Anthropic has accounts" for the default-tab suppression.
 ///
-/// A label present in both a `[[anthropic.accounts]]` CLI entry and a Desktop
-/// profile is sourced from **Desktop**, and the CLI entry is dropped. The same
-/// account in two stores means two of them refreshing one rotating refresh
-/// token — each rotation invalidates the other's copy — and the CLI copy can
-/// even refresh to a stale/wrong identity that still authenticates but reports
-/// another account's (often zero) usage, which no credential-health check can
-/// catch. The app-maintained Desktop token is the one source that avoids both
-/// the rotation war and that silent misattribution.
+/// In aggregate views, a label present in both a `[[anthropic.accounts]]` CLI
+/// entry and a Desktop profile is sourced from **Desktop**, and the CLI entry is
+/// dropped. The same account in two stores means two of them refreshing one
+/// rotating refresh token — each rotation invalidates the other's copy — and
+/// the CLI copy can even refresh to a stale/wrong identity that still
+/// authenticates but reports another account's (often zero) usage, which no
+/// credential-health check can catch. The app-maintained Desktop token is the
+/// one source that avoids both the rotation war and that silent misattribution.
 fn build_tabs(config: &Config, desktop_labels: &[String]) -> Vec<TabId> {
     let desktop_set: HashSet<&str> = desktop_labels.iter().map(String::as_str).collect();
     let mut tabs = Vec::new();
