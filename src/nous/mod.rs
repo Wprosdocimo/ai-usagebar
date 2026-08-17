@@ -81,6 +81,33 @@ mod tests {
     }
 
     #[test]
+    fn nested_portal_account_payload_is_normalized_for_display() {
+        let value = serde_json::json!({
+            "user": {"email": "hidden@example.test"},
+            "organisation": {"id": "internal-org"},
+            "subscription": {
+                "plan": "Plus",
+                "monthly_credits": "22",
+                "credits_remaining": "17.5",
+                "rollover_credits": 2.0,
+                "current_period_end": "2026-09-01T00:00:00Z"
+            },
+            "paid_service_access": {"allowed": true}
+        });
+        let parsed = parse_account(&value).expect("nested Portal account must parse");
+        assert_eq!(parsed.plan.as_deref(), Some("Plus"));
+        assert_eq!(parsed.monthly_credits, Some(22.0));
+        assert_eq!(parsed.credits_remaining, Some(17.5));
+        assert_eq!(parsed.rollover_credits, Some(2.0));
+        assert_eq!(
+            parsed.current_period_end.unwrap().to_rfc3339(),
+            "2026-09-01T00:00:00+00:00"
+        );
+        assert!(!parsed.serialized_snapshot.contains("hidden@example.test"));
+        assert!(!parsed.serialized_snapshot.contains("internal-org"));
+    }
+
+    #[test]
     fn device_code_requires_the_complete_verification_uri() {
         let mut value = fixture(include_str!("../../tests/fixtures/nous/device-code.json"));
         value

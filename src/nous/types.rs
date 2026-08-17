@@ -153,13 +153,32 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
         return Err("account response is an error envelope".into());
     }
 
-    let plan = optional_nonempty_string(object, &["plan", "plan_name", "planName"])?;
+    let mut sources = Vec::with_capacity(3);
+    if let Some(subscription) = object.get("subscription").and_then(Value::as_object) {
+        sources.push(subscription);
+    }
+    if let Some(access) = object.get("paid_service_access").and_then(Value::as_object) {
+        sources.push(access);
+    }
+    sources.push(object);
+
+    let plan = optional_nonempty_string(&sources, &["plan", "plan_name", "planName"])?;
     let tier =
-        optional_nonnegative_i64(object, &["tier", "subscription_tier", "subscriptionTier"])?;
-    let monthly_credits = optional_credit(object, &["monthly_credits", "monthlyCredits"])?;
-    let credits_remaining = optional_credit(object, &["credits_remaining", "creditsRemaining"])?;
+        optional_nonnegative_i64(&sources, &["tier", "subscription_tier", "subscriptionTier"])?;
+    let monthly_credits = optional_credit(&sources, &["monthly_credits", "monthlyCredits"])?;
+    let credits_remaining = optional_credit(
+        &sources,
+        &[
+            "credits_remaining",
+            "creditsRemaining",
+            "subscription_credits_remaining",
+            "subscriptionCreditsRemaining",
+            "total_usable_credits",
+            "totalUsableCredits",
+        ],
+    )?;
     let rollover_credits = optional_credit(
-        object,
+        &sources,
         &[
             "rollover_credits",
             "rolloverCredits",
@@ -168,7 +187,7 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
         ],
     )?;
     let current_period_end = optional_timestamp(
-        object,
+        &sources,
         &[
             "period_end",
             "current_period_end",
@@ -179,13 +198,20 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
     )?;
 
     // A payload containing only an internal ID or an unrelated error/status is
-    // not an account contract.  A known field with JSON null still counts: the
-    // server explicitly reported that metric as unavailable.
+    // not an account contract. Nested subscription/access objects are valid
+    // account envelopes even when their optional metrics are unavailable.
     let has_known_field = [
         &["plan", "plan_name", "planName"][..],
         &["tier", "subscription_tier", "subscriptionTier"][..],
         &["monthly_credits", "monthlyCredits"][..],
-        &["credits_remaining", "creditsRemaining"][..],
+        &[
+            "credits_remaining",
+            "creditsRemaining",
+            "subscription_credits_remaining",
+            "subscriptionCreditsRemaining",
+            "total_usable_credits",
+            "totalUsableCredits",
+        ][..],
         &[
             "rollover_credits",
             "rolloverCredits",
@@ -202,7 +228,11 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
     ]
     .into_iter()
     .flatten()
-    .any(|key| object.contains_key(*key));
+    .any(|key| sources.iter().any(|source| source.contains_key(*key)))
+        || object.get("subscription").is_some_and(Value::is_object)
+        || object
+            .get("paid_service_access")
+            .is_some_and(Value::is_object);
     if !has_known_field {
         return Err("account response has no supported display fields".into());
     }
@@ -293,15 +323,17 @@ fn required_positive_u64(object: &Map<String, Value>, field: &str) -> Result<u64
     Ok(number)
 }
 
-fn first<'a>(object: &'a Map<String, Value>, fields: &[&str]) -> Option<&'a Value> {
-    fields.iter().find_map(|field| object.get(*field))
+fn first<'a>(objects: &[&'a Map<String, Value>], fields: &[&str]) -> Option<&'a Value> {
+    objects
+        .iter()
+        .find_map(|object| fields.iter().find_map(|field| object.get(*field)))
 }
 
 fn optional_nonempty_string(
-    object: &Map<String, Value>,
+    objects: &[&Map<String, Value>],
     fields: &[&str],
 ) -> Result<Option<String>, String> {
-    let Some(value) = first(object, fields) else {
+    let Some(value) = first(objects, fields) else {
         return Ok(None);
     };
     if value.is_null() {
@@ -317,10 +349,10 @@ fn optional_nonempty_string(
 }
 
 fn optional_nonnegative_i64(
-    object: &Map<String, Value>,
+    objects: &[&Map<String, Value>],
     fields: &[&str],
 ) -> Result<Option<i64>, String> {
-    let Some(value) = first(object, fields) else {
+    let Some(value) = first(objects, fields) else {
         return Ok(None);
     };
     if value.is_null() {
@@ -335,8 +367,11 @@ fn optional_nonnegative_i64(
     Ok(Some(number))
 }
 
-fn optional_credit(object: &Map<String, Value>, fields: &[&str]) -> Result<Option<f64>, String> {
-    let Some(value) = first(object, fields) else {
+fn optional_credit(
+    objects: &[&Map<String, Value>],
+    fields: &[&str],
+) -> Result<Option<f64>, String> {
+    let Some(value) = first(objects, fields) else {
         return Ok(None);
     };
     if value.is_null() {
@@ -359,10 +394,10 @@ fn optional_credit(object: &Map<String, Value>, fields: &[&str]) -> Result<Optio
 }
 
 fn optional_timestamp(
-    object: &Map<String, Value>,
+    objects: &[&Map<String, Value>],
     fields: &[&str],
 ) -> Result<Option<DateTime<Utc>>, String> {
-    let Some(value) = first(object, fields) else {
+    let Some(value) = first(objects, fields) else {
         return Ok(None);
     };
     if value.is_null() {
