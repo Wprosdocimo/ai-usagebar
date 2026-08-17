@@ -33,6 +33,7 @@ ColumnLayout {
             Layout.fillWidth: true
             elide: Text.ElideRight
             text: item.row ? (item.row.label || "") : ""
+            textFormat: Text.PlainText
         }
 
         PlasmaComponents.Label {
@@ -47,6 +48,7 @@ ColumnLayout {
                     return item.row.percent === null ? item.row.value : item.row.percent + "%";
                 return item.row.value || "";
             }
+            textFormat: Text.PlainText
         }
     }
 
@@ -69,6 +71,7 @@ ColumnLayout {
         font: Kirigami.Theme.smallFont
         opacity: 0.6
         text: item.detail
+        textFormat: Text.PlainText
     }
 
     PlasmaComponents.Label {
@@ -77,6 +80,7 @@ ColumnLayout {
         font: Kirigami.Theme.smallFont
         opacity: 0.6
         text: item.resetText
+        textFormat: Text.PlainText
     }
 
     // A `block` section carries free-form lines rather than a percentage.
@@ -92,6 +96,7 @@ ColumnLayout {
             font: Kirigami.Theme.smallFont
             opacity: 0.6
             text: modelData
+            textFormat: Text.PlainText
         }
     }
 }

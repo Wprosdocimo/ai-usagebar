@@ -13,17 +13,13 @@ KCM.SimpleKCM {
     id: page
 
     property alias cfg_interval: intervalSpin.value
+    property alias cfg_commandTimeout: commandTimeoutSpin.value
     property alias cfg_binaryPath: binaryField.text
     property alias cfg_terminalCommand: terminalField.text
     property alias cfg_useThemeColors: themeColorsCheck.checked
     property alias cfg_showBars: showBarsCheck.checked
     property alias cfg_barWidth: barWidthSpin.value
-    property alias cfg_showSession: showSessionCheck.checked
-    property alias cfg_showWeekly: showWeeklyCheck.checked
-    property alias cfg_showExtra: showExtraCheck.checked
     property alias cfg_showPercent: showPercentCheck.checked
-    property alias cfg_panelAutoThreshold: thresholdSpin.value
-    property string cfg_panelPools: "both"
     property alias cfg_colorLow: lowSwatch.hex
     property alias cfg_colorMid: midSwatch.hex
     property alias cfg_colorHigh: highSwatch.hex
@@ -37,7 +33,7 @@ KCM.SimpleKCM {
 
     // Which vendors exist and whether they currently work. Sourced from
     // `ai-usagebar usage --json`, which reports every entry enabled in
-    // config.toml plus its plan or its error — so you can see that OpenAI has no
+    // config.toml plus its plan or its error — so you can see that Codex has no
     // credentials *before* putting it in the scroll ring.
     property var vendorList: []
     property bool probing: true
@@ -55,8 +51,8 @@ KCM.SimpleKCM {
     }
 
     Component.onCompleted: {
-        const bin = Logic.shellQuote(page.cfg_binaryPath || Logic.DEFAULT_BINARY);
-        prober.connectSource(bin + " usage --json");
+        prober.connectSource(Logic.buildCommand(
+            page.cfg_binaryPath, page.cfg_commandTimeout));
     }
 
     // The report owns the canonical display name, so there is no second table
@@ -66,7 +62,7 @@ KCM.SimpleKCM {
         for (const entry of page.vendorList)
             if (entry.id === id)
                 return entry.label;
-        return id;
+        return Logic.safeText(id, 60);
     }
 
     function ringHas(id) {
@@ -95,6 +91,7 @@ KCM.SimpleKCM {
             opacity: 0.7
             wrapMode: Text.WordWrap
             Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+            textFormat: Text.PlainText
         }
 
         Repeater {
@@ -126,6 +123,7 @@ KCM.SimpleKCM {
                     elide: Text.ElideRight
                     Layout.fillWidth: true
                     Layout.maximumWidth: Kirigami.Units.gridUnit * 20
+                    textFormat: Text.PlainText
                 }
             }
         }
@@ -140,7 +138,7 @@ KCM.SimpleKCM {
             delegate: QQC2.ItemDelegate {
                 required property var modelData
                 width: currentVendorCombo.width
-                text: modelData.label
+                text: page.labelFor(modelData)
                 highlighted: currentVendorCombo.highlightedIndex === index
             }
         }
@@ -157,6 +155,14 @@ KCM.SimpleKCM {
             from: 30
             to: 3600
             stepSize: 30
+        }
+
+        QQC2.SpinBox {
+            id: commandTimeoutSpin
+            Kirigami.FormData.label: i18n("Command timeout (s):")
+            from: 60
+            to: 3600
+            stepSize: 60
         }
 
         QQC2.ComboBox {
@@ -176,23 +182,8 @@ KCM.SimpleKCM {
         Item { Kirigami.FormData.isSection: true }
 
         QQC2.CheckBox {
-            id: showSessionCheck
-            Kirigami.FormData.label: i18n("Display:")
-            text: i18n("Show the 5h (session) bar")
-        }
-
-        QQC2.CheckBox {
-            id: showWeeklyCheck
-            text: i18n("Show the weekly bar")
-        }
-
-        QQC2.CheckBox {
-            id: showExtraCheck
-            text: i18n("Show the extra-usage bar ($)")
-        }
-
-        QQC2.CheckBox {
             id: showPercentCheck
+            Kirigami.FormData.label: i18n("Display:")
             text: i18n("Show percentage/value")
         }
 
@@ -212,29 +203,6 @@ KCM.SimpleKCM {
             from: 4
             to: 20
             enabled: showBarsCheck.checked
-        }
-
-        QQC2.ComboBox {
-            id: poolsCombo
-            Kirigami.FormData.label: i18n("Panel pools:")
-            model: [i18n("Both"), i18n("First only"), i18n("Second only"), i18n("Automatic")]
-            property var ids: ["both", "primary", "secondary", "auto"]
-            currentIndex: Math.max(0, ids.indexOf(page.cfg_panelPools))
-            onActivated: page.cfg_panelPools = ids[currentIndex]
-        }
-
-        QQC2.Label {
-            text: i18n("for vendors with two independent pools (e.g. Antigravity)")
-            font: Kirigami.Theme.smallFont
-            opacity: 0.7
-        }
-
-        QQC2.SpinBox {
-            id: thresholdSpin
-            Kirigami.FormData.label: i18n("Automatic-mode threshold (%):")
-            from: 50
-            to: 100
-            enabled: page.cfg_panelPools === "auto"
         }
 
         Item { Kirigami.FormData.isSection: true }
@@ -270,9 +238,10 @@ KCM.SimpleKCM {
         }
 
         QQC2.Label {
-            text: i18n("usadas quando \"Seguir o esquema de cores do Plasma\" está desligado")
+            text: i18n("Used when \"Follow the Plasma colour scheme\" is off")
             font: Kirigami.Theme.smallFont
             opacity: 0.7
+            textFormat: Text.PlainText
         }
 
         Item { Kirigami.FormData.isSection: true }
@@ -287,6 +256,7 @@ KCM.SimpleKCM {
             text: i18n("plasmashell does not inherit your shell PATH, so a cargo\ninstall may need the full path here.")
             font: Kirigami.Theme.smallFont
             opacity: 0.7
+            textFormat: Text.PlainText
         }
     }
 }

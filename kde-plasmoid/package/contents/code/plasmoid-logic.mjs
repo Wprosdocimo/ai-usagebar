@@ -17,6 +17,9 @@
 //     *silently* rather than throwing.
 
 export const DEFAULT_BINARY = 'ai-usagebar';
+export const DEFAULT_TIMEOUT_SECS = 600;
+export const MIN_TIMEOUT_SECS = 60;
+export const MAX_TIMEOUT_SECS = 3600;
 
 // The executable data engine hands QML no handle on the child process, so the
 // applet cannot kill a hung binary: disconnectSource only stops us listening,
@@ -42,13 +45,19 @@ export function shellQuote(value) {
 // --vendor and never reads ~/.cache/ai-usagebar/active_vendor — that file
 // belongs to the Waybar module's --cycle-next. Which vendor this instance
 // shows is decided here, client side, from its own KConfigXT value.
+export function timeoutSeconds(value) {
+    if (value === null || value === undefined || String(value).trim() === '')
+        return DEFAULT_TIMEOUT_SECS;
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds))
+        return DEFAULT_TIMEOUT_SECS;
+    return Math.max(MIN_TIMEOUT_SECS, Math.min(MAX_TIMEOUT_SECS, Math.round(seconds)));
+}
+
 export function buildArgv(binary, timeoutSecs) {
     const bin = String(binary ?? '').trim() || DEFAULT_BINARY;
     const call = [bin, 'usage', '--json'];
-    const secs = Number(timeoutSecs);
-    if (!Number.isFinite(secs) || secs <= 0)
-        return call;
-    return ['timeout', '-k', String(TIMEOUT_KILL_GRACE_SECS), String(Math.round(secs))]
+    return ['timeout', '-k', String(TIMEOUT_KILL_GRACE_SECS), String(timeoutSeconds(timeoutSecs))]
         .concat(call);
 }
 
@@ -77,8 +86,16 @@ export function buildTuiCommand(terminalCommand, tui = 'ai-usagebar-tui') {
 // The report
 // ---------------------------------------------------------------------------
 
-function text(value, maxLength = 400) {
-    const s = String(value ?? '');
+export function safeText(value, maxLength = 400) {
+    // Report fields ultimately come from remote provider responses. QML Labels
+    // default to AutoText, where an HTML-looking value can become rich text and
+    // load an inline image. The views also opt into Text.PlainText, but remove
+    // markup delimiters and display-control characters here as defence in depth
+    // for controls (buttons and check boxes) that expose no textFormat property.
+    const s = String(value ?? '')
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, '')
+        .replace(/</g, '‹')
+        .replace(/>/g, '›');
     return s.length > maxLength ? s.slice(0, maxLength) : s;
 }
 
@@ -121,40 +138,46 @@ function normalizeSection(raw) {
         const percent = finitePercent(raw.percent);
         return {
             type: 'metric',
-            label: text(raw.label, 120),
-            value: text(raw.value, 40),
+            label: safeText(raw.label, 120),
+            value: safeText(raw.value, 40),
             percent: percent,
-            detail: text(raw.detail, 400),
-            resetAt: text(raw.reset_at, 64),
+            detail: safeText(raw.detail, 400),
+            resetAt: safeText(raw.reset_at, 64),
             severity: severityOf(percent, raw.severity),
         };
     }
     if (type === 'block') {
-        const body = Array.isArray(raw.body) ? raw.body.map(line => text(line, 200)) : [];
-        return {type: 'block', label: text(raw.label, 120), body: body};
+        const body = Array.isArray(raw.body)
+            ? raw.body.slice(0, 128).map(line => safeText(line, 200)) : [];
+        return {type: 'block', label: safeText(raw.label, 120), body: body};
     }
     // Unknown types are carried as plain text rather than dropped: a future
     // section kind should degrade to something readable, not vanish.
-    return {type: 'text', label: text(raw && raw.label, 120), value: text(raw && raw.value, 200)};
+    return {
+        type: 'text',
+        label: safeText(raw && raw.label, 120),
+        value: safeText(raw && raw.value, 200),
+    };
 }
 
 function normalizeEntry(raw) {
     if (!raw || typeof raw !== 'object')
         return null;
-    const id = text(raw.id, 60).trim();
+    const id = safeText(raw.id, 60).trim();
     if (!id)
         return null;
-    const sections = Array.isArray(raw.sections) ? raw.sections.map(normalizeSection) : [];
+    const sections = Array.isArray(raw.sections)
+        ? raw.sections.slice(0, 128).map(normalizeSection) : [];
     return {
         id: id,
         // display_name is the canonical label the Rust core owns. Falling back
         // to the raw id keeps a slug visible rather than an empty tab.
-        label: text(raw.display_name, 60).trim() || text(raw.name, 60).trim() || id,
-        plan: text(raw.plan, 80),
-        status: text(raw.status, 24) || 'ready',
+        label: safeText(raw.display_name, 60).trim() || safeText(raw.name, 60).trim() || id,
+        plan: safeText(raw.plan, 80),
+        status: safeText(raw.status, 24) || 'ready',
         stale: raw.stale === true,
-        error: text(raw.error, 500),
-        fetchedAt: text(raw.fetched_at, 64),
+        error: safeText(raw.error, 500),
+        fetchedAt: safeText(raw.fetched_at, 64),
         sections: sections,
     };
 }
@@ -177,8 +200,8 @@ export function parseReport(stdout) {
     return {
         ok: true,
         raw: raw,
-        entries: parsed.entries.map(normalizeEntry).filter(Boolean),
-        primary: text(parsed.primary, 60).trim(),
+        entries: parsed.entries.slice(0, 64).map(normalizeEntry).filter(Boolean),
+        primary: safeText(parsed.primary, 60).trim(),
     };
 }
 
@@ -325,7 +348,7 @@ export function shortLabel(label) {
 // The panel renders a live countdown from reset_at instead, so that fragment
 // would be both stale and duplicated. Mirrors omarchy/Model.js metricDetail.
 export function metricDetail(row) {
-    let detail = text(row && row.detail, 1000);
+    let detail = safeText(row && row.detail, 1000);
     if (!row || !row.resetAt)
         return detail.trim();
     detail = detail.replace(/^Resets in [^·]+\s*(?:·\s*)?/i, '');
@@ -374,7 +397,7 @@ export function updatedAgeMs(fetchedAt, nowMs) {
 }
 
 export function errorMessage(value) {
-    const message = text(value, 500).trim();
+    const message = safeText(value, 500).trim();
     return message === '' ? 'The usage command failed without an error message.' : message;
 }
 
@@ -400,5 +423,5 @@ export function paletteFromTheme(theme) {
 // change queue a second in-flight command: the source name IS the command, so
 // two of them would race to paint the same panel.
 export function shouldStartFetch(pendingCommand, nextCommand) {
-    return String(pendingCommand ?? '') !== String(nextCommand ?? '');
+    return String(pendingCommand ?? '') === '' && String(nextCommand ?? '') !== '';
 }

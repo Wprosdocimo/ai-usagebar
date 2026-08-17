@@ -98,7 +98,9 @@ PlasmoidItem {
         check("buildArgv wraps in timeout when given one",
               Logic.buildArgv("b", 60).slice(0, 4), ["timeout", "-k", "5", "60"]);
         check("buildArgv asks for the whole report",
-              Logic.buildArgv("b", 0), ["b", "usage", "--json"]);
+              Logic.buildArgv("b", 0).slice(-3), ["b", "usage", "--json"]);
+        check("buildArgv never disables its process bound",
+              Logic.buildArgv("b", 0).slice(0, 4), ["timeout", "-k", "5", "60"]);
 
         console.log(failures === 0 ? "MJS PROBE OK" : "MJS PROBE FAILED (" + failures + ")");
 

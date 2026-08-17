@@ -15,7 +15,7 @@ fi
 
 echo "› Linking $DEST → $SRC"
 mkdir -p "$(dirname "$DEST")"
-rm -rf "$DEST"
+rm -rf -- "$DEST"
 ln -s "$SRC" "$DEST"
 
 # plasmashell inherits the session PATH, not your interactive shell's, so a

@@ -10,10 +10,10 @@
   <kcfgfile name=""/>
 
   <group name="General">
-    <!-- The vendor shown right now. This applet always passes the vendor
-         explicitly on the command line and never reads
-         ~/.cache/ai-usagebar/active_vendor, so scrolling one instance cannot
-         move another (or a running Waybar).
+    <!-- The vendor shown right now. The aggregate command omits a vendor and
+         this applet selects an entry client-side, so it never reads
+         ~/.cache/ai-usagebar/active_vendor. Scrolling one instance cannot move
+         another instance or a running Waybar.
          NB: an XML comment may not contain a double hyphen, so option names
          are written without their leading dashes throughout this file. -->
     <entry name="vendor" type="String">
@@ -28,42 +28,21 @@
       <default>anthropic</default>
     </entry>
 
-    <!-- 30s matches the GNOME extension and the macOS app. The binary caches
-         for 60s, so most ticks are served from cache rather than the network. -->
+    <!-- One report covers every configured provider. The binary cache handles
+         shorter provider TTLs between these aggregate refreshes. -->
     <entry name="interval" type="Int">
       <default>300</default>
       <min>30</min>
       <max>3600</max>
     </entry>
 
-    <!-- Display toggles, names and defaults shared with the GNOME extension
-         and the macOS app so the three panels can be configured alike. -->
-    <entry name="showSession" type="Bool">
-      <default>true</default>
-    </entry>
-
-    <entry name="showWeekly" type="Bool">
-      <default>true</default>
-    </entry>
-
-    <entry name="showExtra" type="Bool">
-      <default>false</default>
-    </entry>
-
-    <entry name="showPercent" type="Bool">
-      <default>true</default>
-    </entry>
-
-    <!-- Vendors with two independent quota pools (Antigravity). both | primary
-         | secondary | auto -->
-    <entry name="panelPools" type="String">
-      <default>both</default>
-    </entry>
-
-    <entry name="panelAutoThreshold" type="Int">
-      <default>95</default>
-      <min>50</min>
-      <max>100</max>
+    <!-- Aggregate reports may contact several providers sequentially. Keep the
+         process bound configurable, but never short enough to disable the
+         wrapper or kill a normal multi-provider run. -->
+    <entry name="commandTimeout" type="Int">
+      <default>600</default>
+      <min>60</min>
+      <max>3600</max>
     </entry>
 
     <!-- plasmashell's PATH is the session's, not your interactive shell's, so
@@ -113,6 +92,10 @@
     </entry>
 
     <entry name="showBars" type="Bool">
+      <default>true</default>
+    </entry>
+
+    <entry name="showPercent" type="Bool">
       <default>true</default>
     </entry>
 

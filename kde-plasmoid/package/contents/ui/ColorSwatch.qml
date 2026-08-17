@@ -31,6 +31,7 @@ RowLayout {
 
     QQC2.Label {
         text: swatch.hex
+        textFormat: Text.PlainText
         font: Kirigami.Theme.fixedWidthFont
         opacity: 0.8
     }

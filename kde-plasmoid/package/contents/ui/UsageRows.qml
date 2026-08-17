@@ -23,6 +23,7 @@ ColumnLayout {
         level: 4
         elide: Text.ElideRight
         text: rows.entry ? rows.entry.label : i18n("AI Usage Bar")
+        textFormat: Text.PlainText
     }
 
     PlasmaComponents.Label {
@@ -32,6 +33,7 @@ ColumnLayout {
         font: Kirigami.Theme.smallFont
         opacity: 0.7
         text: rows.entry ? rows.entry.plan : ""
+        textFormat: Text.PlainText
     }
 
     PlasmaComponents.Label {
@@ -42,6 +44,7 @@ ColumnLayout {
         color: rows.applet.statusIsUrgent()
             ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
         text: rows.status
+        textFormat: Text.PlainText
     }
 
     Repeater {
@@ -65,5 +68,6 @@ ColumnLayout {
         font: Kirigami.Theme.smallFont
         opacity: 0.6
         text: rows.applet.updatedText()
+        textFormat: Text.PlainText
     }
 }

@@ -23,10 +23,11 @@ PlasmoidItem {
     // time, which is what makes a slow refresh interval acceptable at all.
     property double nowMs: 0
 
-    // GNOME uses 60s, macOS 45s. 60 here: the binary's own HTTP timeout is 30s
-    // per vendor, so this leaves headroom for a retry without ever being the
-    // thing that gives up first.
-    readonly property int fetchTimeoutSecs: 60
+    // A report fetch can visit several providers sequentially, each with its
+    // own network timeout. Keep this configurable and bounded rather than
+    // killing a healthy multi-provider report after one minute.
+    readonly property int fetchTimeoutSecs: Logic.timeoutSeconds(
+        Plasmoid.configuration.commandTimeout)
 
     // The floor the settings actually offer: config/main.xml declares <min>30</min>
     // and the spinbox steps from 30. One report covers every configured vendor,
@@ -37,9 +38,7 @@ PlasmoidItem {
     readonly property string vendor: Plasmoid.configuration.vendor
     readonly property var entry: Logic.entryFor(root.report, root.vendor)
     readonly property var tabs: Logic.vendorTabs(root.report, root.vendor)
-    readonly property var compactCells: Logic.panelCells(root.entry, {
-        max: Plasmoid.configuration.showWeekly ? 2 : 1,
-    })
+    readonly property var compactCells: Logic.panelCells(root.entry, {max: 2})
     readonly property bool showBars: Plasmoid.configuration.showBars
 
     // The user's own five colours, defaulting to One Dark exactly as in
@@ -153,7 +152,7 @@ PlasmoidItem {
             // connected, re-running on the engine's own interval. Disconnecting
             // here turns every connectSource into a strict one-shot.
             disconnectSource(sourceName);
-            if (sourceName !== root.currentCommand())
+            if (sourceName !== root.pendingCommand)
                 return;
             root.pendingCommand = "";
             watchdog.stop();
@@ -234,7 +233,8 @@ PlasmoidItem {
             const headline = exitCode !== 0
                 ? (stderr.trim() ? i18n("ai-usagebar failed") : i18n("ai-usagebar exited with %1", exitCode))
                 : i18n("invalid output");
-            const detail = (exitCode !== 0 ? stderr.trim() : parsed.raw) || "";
+            const detail = Logic.safeText(
+                (exitCode !== 0 ? stderr.trim() : parsed.raw) || "", 300);
             root.failure = detail ? headline + "\n" + detail.substring(0, 300) : headline;
             return;
         }

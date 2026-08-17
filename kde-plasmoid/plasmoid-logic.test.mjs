@@ -5,11 +5,13 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {
-    buildArgv, buildCommand, buildTuiCommand, DEFAULT_BINARY, detailRows, entryFor,
-    errorMessage, EXIT_KILLED, EXIT_TIMED_OUT, formatDuration, headline, isAlarming,
+    buildArgv, buildCommand, buildTuiCommand, DEFAULT_BINARY, DEFAULT_TIMEOUT_SECS,
+    detailRows, entryFor, errorMessage, EXIT_KILLED, EXIT_TIMED_OUT, formatDuration,
+    headline, isAlarming, MAX_TIMEOUT_SECS, MIN_TIMEOUT_SECS,
     metricDetail, nextVendor, paletteFromTheme, panelCells, parseReport,
-    resetRemainingMs, severityColor, severityOf, SEVERITIES, shellQuote, shortLabel,
-    shouldStartFetch, TIMEOUT_KILL_GRACE_SECS, updatedAgeMs, vendorTabs,
+    resetRemainingMs, safeText, severityColor, severityOf, SEVERITIES, shellQuote,
+    shortLabel, shouldStartFetch, TIMEOUT_KILL_GRACE_SECS, timeoutSeconds,
+    updatedAgeMs, vendorTabs,
 } from './package/contents/code/plasmoid-logic.mjs';
 
 const at = rel => fileURLToPath(new URL(rel, import.meta.url));
@@ -61,6 +63,7 @@ for (let i = configXml.indexOf('<!--'); i !== -1; i = configXml.indexOf('<!--', 
 }
 
 const configUi = readFileSync(at('./package/contents/ui/configGeneral.qml'), 'utf8');
+const mainQml = readFileSync(at('./package/contents/ui/main.qml'), 'utf8');
 const entryNames = [...configXml.matchAll(/<entry\s+name="([^"]+)"/g)].map(m => m[1]);
 assert.ok(entryNames.length >= 9, `expected the full schema, found ${entryNames.length} entries`);
 for (const name of entryNames) {
@@ -68,6 +71,36 @@ for (const name of entryNames) {
         `config/main.xml declares "${name}" but no config page has cfg_${name}. ` +
         `Plasma would silently never persist it.`);
 }
+for (const removed of ['showSession', 'showWeekly', 'showExtra',
+    'panelPools', 'panelAutoThreshold']) {
+    assert.ok(!entryNames.includes(removed),
+        `${removed} was a no-op setting and must not return to the schema`);
+}
+
+// All Label/Heading text sinks opt out of AutoText. Report strings may include
+// provider-controlled text; AutoText can treat an <img> tag as rich text and
+// fetch its source when the popup opens.
+for (const rel of [
+    './package/contents/ui/ColorSwatch.qml',
+    './package/contents/ui/CompactRepresentation.qml',
+    './package/contents/ui/FullRepresentation.qml',
+    './package/contents/ui/UsageRow.qml',
+    './package/contents/ui/UsageRows.qml',
+    './package/contents/ui/configGeneral.qml',
+]) {
+    const src = readFileSync(at(rel), 'utf8');
+    const labels = (src.match(/(?:Kirigami\.Heading|PlasmaComponents\.Label|QQC2\.Label)\s*\{/g) || []).length;
+    const plain = (src.match(/textFormat:\s*Text\.PlainText/g) || []).length;
+    assert.equal(plain, labels, `${rel} must make every Label/Heading plain text`);
+}
+assert.match(configUi, /prober\.connectSource\(Logic\.buildCommand\(/,
+    'the settings probe must use the same bounded, shell-quoted command builder');
+assert.match(configUi, /text:\s*page\.labelFor\(modelData\)/,
+    'the current-vendor delegate must label its string model through labelFor');
+assert.match(mainQml, /sourceName\s*!==\s*root\.pendingCommand/,
+    'a completed command must be matched to the exact in-flight command');
+assert.match(mainQml, /Logic\.panelCells\(root\.entry, \{max: 2\}\)/,
+    'the compact view must not pretend a removed weekly toggle selects metrics');
 
 // The Vendors page was removed when the report started carrying per-vendor
 // status; config.qml must not still point at the deleted file, which Plasma
@@ -126,6 +159,28 @@ assert.equal(parseReport('not json').raw, 'not json', 'the original output is ke
 // An entry with no id cannot be selected or tabbed to, so it is dropped rather
 // than rendered as a nameless row.
 assert.equal(parseReport(JSON.stringify({entries: [{plan: 'x'}]})).entries.length, 0);
+
+// Provider-controlled strings cannot turn into QML rich text, preserve terminal
+// controls, or use bidi overrides to disguise what the panel displays.
+const hostile = parseReport(JSON.stringify({entries: [{
+    id: 'hostile', display_name: '<img src="https://example.invalid/pixel">\u202eevil',
+    plan: '<b>plan</b>', status: 'error', error: '\u001b[31mboom',
+    sections: [{type: 'block', label: '<i>credits</i>', body: ['<img src="x">']}],
+}]}));
+const hostileText = JSON.stringify(hostile.entries[0]);
+assert.ok(!/[<>\u001b\u202e]/.test(hostileText),
+    'report normalization must remove rich-text delimiters and display controls');
+assert.match(hostile.entries[0].label, /‹img src=/,
+    'hostile markup is shown as inert text rather than silently discarded');
+
+const oversized = parseReport(JSON.stringify({entries: Array.from({length: 80}, (_, i) => ({
+    id: `v${i}`, sections: Array.from({length: 160}, () => ({
+        type: 'block', body: Array.from({length: 160}, () => 'x'),
+    })),
+}))}));
+assert.equal(oversized.entries.length, 64, 'entry rendering is bounded');
+assert.equal(oversized.entries[0].sections.length, 128, 'section rendering is bounded');
+assert.equal(oversized.entries[0].sections[0].body.length, 128, 'block rendering is bounded');
 
 // ---------------------------------------------------------------------------
 // severity
@@ -258,6 +313,7 @@ assert.equal(updatedAgeMs('not a date', NOW), null);
 
 assert.equal(errorMessage(''), 'The usage command failed without an error message.');
 assert.equal(errorMessage('  boom  '), 'boom');
+assert.equal(safeText('<b>x</b>\u202e'), '‹b›x‹/b›');
 
 // ---------------------------------------------------------------------------
 // the scroll ring
@@ -291,9 +347,6 @@ assert.equal(shellQuote(null), `''`);
 // One call covers every vendor, so --vendor never appears: the applet picks its
 // entry client side and never reads the shared active_vendor file, which
 // belongs to the Waybar module's --cycle-next.
-assert.deepEqual(buildArgv('/usr/bin/ai-usagebar', 0), ['/usr/bin/ai-usagebar', 'usage', '--json']);
-assert.deepEqual(buildArgv('', 0), [DEFAULT_BINARY, 'usage', '--json']);
-assert.deepEqual(buildArgv(null, 0), [DEFAULT_BINARY, 'usage', '--json']);
 for (const args of [buildArgv('', 0), buildArgv('b', 60)])
     assert.equal(args.indexOf('--vendor'), -1,
         'the plasmoid must never pass --vendor: that path reads the shared ' +
@@ -303,11 +356,18 @@ for (const args of [buildArgv('', 0), buildArgv('b', 60)])
 // child, so this is the only thing that actually bounds it.
 assert.deepEqual(buildArgv('b', 60),
     ['timeout', '-k', String(TIMEOUT_KILL_GRACE_SECS), '60', 'b', 'usage', '--json']);
-for (const bad of [0, -1, null, undefined, NaN, 'soon', Infinity])
-    assert.deepEqual(buildArgv('b', bad), ['b', 'usage', '--json'],
-        `a non-positive or non-finite timeout (${String(bad)}) must not wrap the call`);
-assert.deepEqual(buildArgv('b', 45.6).slice(0, 4), ['timeout', '-k', '5', '46'],
-    'seconds must reach timeout(1) as an integer');
+assert.equal(timeoutSeconds(null), DEFAULT_TIMEOUT_SECS);
+assert.equal(timeoutSeconds(undefined), DEFAULT_TIMEOUT_SECS);
+assert.equal(timeoutSeconds('soon'), DEFAULT_TIMEOUT_SECS);
+assert.equal(timeoutSeconds(0), MIN_TIMEOUT_SECS);
+assert.equal(timeoutSeconds(45.6), MIN_TIMEOUT_SECS);
+assert.equal(timeoutSeconds(600), 600);
+assert.equal(timeoutSeconds(9999), MAX_TIMEOUT_SECS);
+for (const bad of [0, -1, null, undefined, NaN, 'soon', Infinity]) {
+    const args = buildArgv('b', bad);
+    assert.equal(args[0], 'timeout', `timeout remains mandatory for ${String(bad)}`);
+    assert.deepEqual(args.slice(-3), ['b', 'usage', '--json']);
+}
 assert.equal(EXIT_TIMED_OUT, 124);
 assert.equal(EXIT_KILLED, 137);
 
@@ -327,6 +387,9 @@ assert.equal(buildTuiCommand('  '), buildTuiCommand(''), 'blank means "no custom
 
 assert.equal(shouldStartFetch('', 'cmd'), true);
 assert.equal(shouldStartFetch('cmd', 'cmd'), false, 'never queue a second identical fetch');
+assert.equal(shouldStartFetch('old', 'new'), false,
+    'a config change must not start a second command while one is in flight');
+assert.equal(shouldStartFetch('', ''), false, 'an empty command is never executable');
 
 // ---------------------------------------------------------------------------
 // theme

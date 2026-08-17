@@ -71,6 +71,7 @@ Item {
                     level: 3
                     elide: Text.ElideRight
                     text: full.entry ? full.entry.label : i18n("AI Usage Bar")
+                    textFormat: Text.PlainText
                 }
 
                 PlasmaComponents.Label {
@@ -85,6 +86,7 @@ Item {
                         const plan = full.entry.plan;
                         return full.entry.stale ? i18n("%1 · cached", plan) : plan;
                     }
+                    textFormat: Text.PlainText
                 }
             }
 
@@ -155,6 +157,7 @@ Item {
                 wrapMode: Text.WordWrap
                 font: Kirigami.Theme.smallFont
                 text: full.status
+                textFormat: Text.PlainText
             }
         }
 
@@ -171,6 +174,7 @@ Item {
             font: Kirigami.Theme.smallFont
             opacity: 0.6
             text: i18n("USAGE & BALANCE")
+            textFormat: Text.PlainText
         }
 
         Repeater {
@@ -195,6 +199,7 @@ Item {
             wrapMode: Text.WordWrap
             opacity: 0.6
             text: i18n("No configured provider reported usage.")
+            textFormat: Text.PlainText
         }
 
         // --- footer ---------------------------------------------------------
@@ -206,6 +211,7 @@ Item {
             font: Kirigami.Theme.smallFont
             opacity: 0.6
             text: full.applet.updatedText()
+            textFormat: Text.PlainText
         }
     }
 }
