@@ -92,12 +92,18 @@ mod tests {
                 "rollover_credits": 2.0,
                 "current_period_end": "2026-09-01T00:00:00Z"
             },
-            "paid_service_access": {"allowed": true}
+            "paid_service_access": {
+                "allowed": true,
+                "purchased_credits_remaining": "5.25",
+                "total_usable_credits": "22.75"
+            }
         });
         let parsed = parse_account(&value).expect("nested Portal account must parse");
         assert_eq!(parsed.plan.as_deref(), Some("Plus"));
         assert_eq!(parsed.monthly_credits, Some(22.0));
         assert_eq!(parsed.credits_remaining, Some(17.5));
+        assert_eq!(parsed.purchased_credits_remaining, Some(5.25));
+        assert_eq!(parsed.total_usable_credits, Some(22.75));
         assert_eq!(parsed.rollover_credits, Some(2.0));
         assert_eq!(
             parsed.current_period_end.unwrap().to_rfc3339(),

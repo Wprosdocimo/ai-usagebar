@@ -21,6 +21,8 @@ pub struct NousSnapshot {
     pub tier: Option<i64>,
     pub monthly_credits: Option<f64>,
     pub credits_remaining: Option<f64>,
+    pub purchased_credits_remaining: Option<f64>,
+    pub total_usable_credits: Option<f64>,
     pub rollover_credits: Option<f64>,
     pub current_period_end: Option<DateTime<Utc>>,
     pub usage_pct: Option<f64>,
@@ -34,6 +36,8 @@ pub fn normalize(account: &AccountSnapshot) -> NousSnapshot {
         tier: account.tier,
         monthly_credits: account.monthly_credits,
         credits_remaining: account.credits_remaining,
+        purchased_credits_remaining: account.purchased_credits_remaining,
+        total_usable_credits: account.total_usable_credits,
         rollover_credits: account.rollover_credits,
         current_period_end: account.current_period_end,
         usage_pct: account.usage_percent().filter(|value| value.is_finite()),
@@ -66,6 +70,8 @@ pub fn build_placeholders(
         .unwrap_or_else(|| NEUTRAL_UNAVAILABLE.into());
     let monthly = format_credit(snapshot.monthly_credits);
     let remaining = format_credit(snapshot.credits_remaining);
+    let purchased = format_credit(snapshot.purchased_credits_remaining);
+    let total_usable = format_credit(snapshot.total_usable_credits);
     let rollover = format_credit(snapshot.rollover_credits);
     let mut values = HashMap::new();
     values.insert("vendor", DISPLAY_NAME.into());
@@ -80,6 +86,9 @@ pub fn build_placeholders(
     values.insert("nous_renewal", renewal);
     values.insert("nous_credits_remaining", remaining);
     values.insert("nous_monthly_credits", monthly);
+    values.insert("nous_purchased_credits_remaining", purchased.clone());
+    values.insert("nous_top_up_credits_remaining", purchased);
+    values.insert("nous_total_usable_credits", total_usable);
     values.insert("nous_rollover_credits", rollover);
     values
 }
@@ -107,8 +116,20 @@ pub fn render_tooltip(snapshot: &NousSnapshot, now: DateTime<Utc>) -> String {
     }
     if let Some(remaining) = snapshot.credits_remaining {
         lines.push(format!(
-            "Credits remaining: {}",
+            "Subscription credits remaining: {}",
             format_credit(Some(remaining))
+        ));
+    }
+    if let Some(purchased) = snapshot.purchased_credits_remaining {
+        lines.push(format!(
+            "Top-up credits remaining: {}",
+            format_credit(Some(purchased))
+        ));
+    }
+    if let Some(total_usable) = snapshot.total_usable_credits {
+        lines.push(format!(
+            "Total usable credits: {}",
+            format_credit(Some(total_usable))
         ));
     }
     if let Some(monthly) = snapshot.monthly_credits {
@@ -211,6 +232,8 @@ mod tests {
                 "plan": "Pro",
                 "monthly_credits": 1000.0,
                 "credits_remaining": 760.0,
+                "purchased_credits_remaining": 125.5,
+                "total_usable_credits": 885.5,
                 "rollover_credits": 40.0,
                 "period_end": "2026-09-01T00:00:00Z"
             }))
@@ -234,7 +257,20 @@ mod tests {
         assert_eq!(values["weekly_pct"], "24");
         assert_eq!(values["nous_monthly_credits"], "1000");
         assert_eq!(values["nous_credits_remaining"], "760");
+        assert_eq!(values["nous_purchased_credits_remaining"], "125.5");
+        assert_eq!(values["nous_top_up_credits_remaining"], "125.5");
+        assert_eq!(values["nous_total_usable_credits"], "885.5");
         assert_eq!(values["nous_rollover_credits"], "40");
+    }
+
+    #[test]
+    fn tooltip_separates_subscription_top_up_and_total_credits() {
+        let snap = snapshot();
+        let tooltip = render_tooltip(&snap, Utc.with_ymd_and_hms(2026, 8, 16, 12, 0, 0).unwrap());
+        assert!(tooltip.contains("Subscription credits remaining: 760"));
+        assert!(tooltip.contains("Top-up credits remaining: 125.5"));
+        assert!(tooltip.contains("Total usable credits: 885.5"));
+        assert!(tooltip.contains("Usage: 24%"));
     }
 
     #[test]

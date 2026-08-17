@@ -74,6 +74,8 @@ pub struct AccountSnapshot {
     pub tier: Option<i64>,
     pub monthly_credits: Option<f64>,
     pub credits_remaining: Option<f64>,
+    pub purchased_credits_remaining: Option<f64>,
+    pub total_usable_credits: Option<f64>,
     pub rollover_credits: Option<f64>,
     pub current_period_end: Option<DateTime<Utc>>,
     /// A canonical serialization of only the fields above.  This field is kept
@@ -177,6 +179,19 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
             "totalUsableCredits",
         ],
     )?;
+    let purchased_credits_remaining = optional_credit(
+        &sources,
+        &[
+            "purchased_credits_remaining",
+            "purchasedCreditsRemaining",
+            "top_up_credits_remaining",
+            "topUpCreditsRemaining",
+        ],
+    )?;
+    let total_usable_credits = optional_credit(
+        &sources,
+        ["total_usable_credits", "totalUsableCredits"].as_slice(),
+    )?;
     let rollover_credits = optional_credit(
         &sources,
         &[
@@ -213,6 +228,12 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
             "totalUsableCredits",
         ][..],
         &[
+            "purchased_credits_remaining",
+            "purchasedCreditsRemaining",
+            "top_up_credits_remaining",
+            "topUpCreditsRemaining",
+        ][..],
+        &[
             "rollover_credits",
             "rolloverCredits",
             "additional_credits",
@@ -242,6 +263,8 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
         tier,
         monthly_credits,
         credits_remaining,
+        purchased_credits_remaining,
+        total_usable_credits,
         rollover_credits,
         current_period_end,
     };
@@ -253,6 +276,8 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
         tier,
         monthly_credits,
         credits_remaining,
+        purchased_credits_remaining,
+        total_usable_credits,
         rollover_credits,
         current_period_end,
         serialized_snapshot,
@@ -269,6 +294,10 @@ struct SafeAccount {
     monthly_credits: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     credits_remaining: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    purchased_credits_remaining: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_usable_credits: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rollover_credits: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]

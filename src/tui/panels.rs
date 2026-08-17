@@ -745,8 +745,20 @@ fn nous_sections(s: &crate::nous::vendor::NousSnapshot, now: DateTime<Utc>) -> S
     sections.push(Section::Spacer);
     if let Some(remaining) = s.credits_remaining {
         sections.push(Section::Text {
-            label: "Credits".into(),
+            label: "Subscription credits".into(),
             value: format!("{remaining:.2} remaining"),
+        });
+    }
+    if let Some(purchased) = s.purchased_credits_remaining {
+        sections.push(Section::Text {
+            label: "Top-up credits".into(),
+            value: format!("{purchased:.2} remaining"),
+        });
+    }
+    if let Some(total_usable) = s.total_usable_credits {
+        sections.push(Section::Text {
+            label: "Total usable credits".into(),
+            value: format!("{total_usable:.2}"),
         });
     }
     if let Some(period_end) = s.current_period_end {
