@@ -188,7 +188,28 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
             ],
         ),
         VendorSnapshot::Kiro(s) => (s.plan.clone(), vec![pct("credits", s.pct())]),
+        VendorSnapshot::NousResearch(s) => {
+            let cell = s
+                .usage_pct
+                .map(|value| pct("usage", value.round().clamp(0.0, 100.0) as i32))
+                .unwrap_or_else(|| ("—".into(), PaceSeverity::Low));
+            (s.plan.clone().unwrap_or_default(), vec![cell])
+        }
+        VendorSnapshot::OpenCodeGo(s) => {
+            let cells = [
+                ("rolling", s.rolling.as_ref()),
+                ("weekly", s.weekly.as_ref()),
+                ("monthly", s.monthly.as_ref()),
+            ]
+            .into_iter()
+            .filter_map(|(label, window)| {
+                window.map(|window| pct(label, window.percent.round().clamp(0.0, 100.0) as i32))
+            })
+            .collect();
+            ("OpenCode Go".into(), cells)
+        }
     };
+
     for (text, _) in &mut cells {
         *text = crate::display::sanitize_untrusted_field(text);
     }
@@ -231,6 +252,23 @@ pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
         VendorSnapshot::Cursor(s) => (!s.unlimited).then_some(s.total_pct),
         VendorSnapshot::Minimax(s) => Some(s.session.utilization_pct.max(s.weekly.utilization_pct)),
         VendorSnapshot::Kiro(s) => Some(s.pct()),
+        VendorSnapshot::NousResearch(s) => s
+            .usage_pct
+            .map(|value| value.round().clamp(0.0, 100.0) as i32),
+        VendorSnapshot::OpenCodeGo(s) => [
+            s.rolling
+                .as_ref()
+                .map(|window| window.percent.round() as i32),
+            s.weekly
+                .as_ref()
+                .map(|window| window.percent.round() as i32),
+            s.monthly
+                .as_ref()
+                .map(|window| window.percent.round() as i32),
+        ]
+        .into_iter()
+        .flatten()
+        .max(),
         VendorSnapshot::SuperGrok(s) => Some(s.weekly_pct),
         VendorSnapshot::Openrouter(_)
         | VendorSnapshot::Deepseek(_)
@@ -296,6 +334,8 @@ pub(crate) fn sections_with_metadata_for(
                 VendorSnapshot::Cursor(s) => cursor_sections(s, now),
                 VendorSnapshot::Minimax(s) => minimax_sections(s, now, pace_tolerance),
                 VendorSnapshot::Kiro(s) => kiro_sections(s, now),
+                VendorSnapshot::NousResearch(s) => nous_sections(s, now),
+                VendorSnapshot::OpenCodeGo(s) => opencode_go_sections(s, now),
             };
             // Inject the (already-absolute) fetched-at instant into the title
             // row, right-aligned. Pre-snapshotted in app::refresh_one so it
@@ -682,6 +722,74 @@ fn cursor_sections(s: &crate::usage::CursorSnapshot, now: DateTime<Utc>) -> Sect
         value: countdown::format(s.reset_at, now),
     });
     v
+}
+
+fn nous_sections(s: &crate::nous::vendor::NousSnapshot, now: DateTime<Utc>) -> SectionBuilder {
+    let mut sections = SectionBuilder::new(vec![Section::Title {
+        left: "Nous Research".into(),
+        right: None,
+    }]);
+    if let Some(value) = s.usage_pct {
+        let pct = value.round().clamp(0.0, 100.0) as i32;
+        sections.push_metric(
+            Section::Metric {
+                label: "Usage".into(),
+                pct: pct as u16,
+                severity: severity_for(pct),
+                value_label: format!("{pct}%"),
+                footnote: "current period".into(),
+            },
+            s.current_period_end,
+        );
+    }
+    sections.push(Section::Spacer);
+    if let Some(remaining) = s.credits_remaining {
+        sections.push(Section::Text {
+            label: "Credits".into(),
+            value: format!("{remaining:.2} remaining"),
+        });
+    }
+    if let Some(period_end) = s.current_period_end {
+        sections.push(Section::Text {
+            label: "Renews".into(),
+            value: countdown::format(Some(period_end), now),
+        });
+    }
+    sections
+}
+
+fn opencode_go_sections(
+    s: &crate::opencode_go::types::Usage,
+    now: DateTime<Utc>,
+) -> SectionBuilder {
+    let mut sections = SectionBuilder::new(vec![Section::Title {
+        left: "OpenCode Go".into(),
+        right: None,
+    }]);
+    for (label, window) in [
+        ("Rolling", s.rolling.as_ref()),
+        ("Weekly", s.weekly.as_ref()),
+        ("Monthly", s.monthly.as_ref()),
+    ] {
+        if let Some(window) = window {
+            let pct = window.percent.round().clamp(0.0, 100.0) as i32;
+            sections.push_metric(
+                Section::Metric {
+                    label: label.into(),
+                    pct: pct as u16,
+                    severity: severity_for(pct),
+                    value_label: format!("{pct}%"),
+                    footnote: String::new(),
+                },
+                Some(window.resets_at),
+            );
+            sections.push(Section::Text {
+                label: "Resets".into(),
+                value: countdown::format(Some(window.resets_at), now),
+            });
+        }
+    }
+    sections
 }
 
 /// Kiro has a single credit pool, so the panel is a single metric bar plus

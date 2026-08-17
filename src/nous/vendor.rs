@@ -26,6 +26,8 @@ pub struct NousSnapshot {
     pub usage_pct: Option<f64>,
 }
 
+impl Eq for NousSnapshot {}
+
 pub fn normalize(account: &AccountSnapshot) -> NousSnapshot {
     NousSnapshot {
         plan: account.plan.as_deref().map(sanitize_text),
@@ -35,6 +37,17 @@ pub fn normalize(account: &AccountSnapshot) -> NousSnapshot {
         rollover_credits: account.rollover_credits,
         current_period_end: account.current_period_end,
         usage_pct: account.usage_percent().filter(|value| value.is_finite()),
+    }
+}
+
+impl From<super::fetch::FetchOutcome> for crate::vendor::VendorOutcome {
+    fn from(outcome: super::fetch::FetchOutcome) -> Self {
+        Self {
+            snapshot: crate::usage::VendorSnapshot::NousResearch(normalize(&outcome.snapshot)),
+            stale: outcome.stale,
+            last_error: outcome.last_error,
+            cache_age: outcome.cache_age,
+        }
     }
 }
 
@@ -109,6 +122,49 @@ pub fn render_tooltip(snapshot: &NousSnapshot, now: DateTime<Utc>) -> String {
     }
     lines.push(format!("Renews: {}", values["nous_renewal"]));
     lines.join("\n")
+}
+
+pub fn render(
+    outcome: &crate::vendor::VendorOutcome,
+    snapshot: &NousSnapshot,
+    theme: &crate::theme::Theme,
+    opts: &crate::vendor::RenderOpts,
+    now: DateTime<Utc>,
+) -> crate::waybar::WaybarOutput {
+    let severity = crate::pango::severity_for(
+        snapshot
+            .usage_pct
+            .map(|value| value.round().clamp(0.0, 100.0) as i32)
+            .unwrap_or(0),
+    );
+    let mut values = build_placeholders(snapshot, now);
+    for value in values.values_mut() {
+        *value = crate::pango::escape(value);
+    }
+    let template = opts.format.as_deref().unwrap_or(DEFAULT_FORMAT);
+    let mut text = crate::format::substitute(template, &values);
+    if outcome.stale {
+        text.push_str(" ⏸");
+    }
+    let icon = opts
+        .icon
+        .as_deref()
+        .filter(|icon| !icon.is_empty())
+        .map(|icon| format!("{} ", crate::pango::escape(icon)))
+        .unwrap_or_default();
+    let tooltip = opts
+        .tooltip_format
+        .as_deref()
+        .map(|template| crate::format::substitute(template, &values))
+        .unwrap_or_else(|| render_tooltip(snapshot, now));
+    crate::waybar::WaybarOutput {
+        text: crate::pango::color_span(
+            crate::pango::severity_color(severity, theme),
+            &format!("{icon}{text}"),
+        ),
+        tooltip,
+        class: crate::waybar::Class::from(severity),
+    }
 }
 
 fn format_credit(value: Option<f64>) -> String {

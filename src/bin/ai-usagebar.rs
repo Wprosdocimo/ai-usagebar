@@ -1,7 +1,7 @@
 //! Waybar widget binary. The library does all the work — this is just the
 //! tokio bootstrap + clap parse.
 
-use ai_usagebar::widget::cli::{Cli, Command};
+use ai_usagebar::widget::cli::{AuthProvider, Cli, Command, NousAuthAction};
 use ai_usagebar::widget::run::run;
 use clap::Parser;
 
@@ -12,6 +12,19 @@ fn main() {
     }
     if let Some(Command::Settings { action }) = &cli.command {
         std::process::exit(ai_usagebar::tui::settings::run_cli(action));
+    }
+    if let Some(Command::Auth { provider }) = &cli.command {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(_) => std::process::exit(1),
+        };
+        let code = match provider {
+            AuthProvider::Nous { action } => rt.block_on(run_nous_auth(action)),
+        };
+        std::process::exit(code);
     }
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -34,4 +47,69 @@ fn main() {
     }
     let code = rt.block_on(run(cli));
     std::process::exit(code);
+}
+
+async fn run_nous_auth(action: &NousAuthAction) -> i32 {
+    let store = ai_usagebar::nous::credentials::CredentialStore::default();
+    match action {
+        NousAuthAction::Logout => match store.logout() {
+            Ok(()) => {
+                println!("Nous Research logout complete");
+                0
+            }
+            Err(error) => {
+                eprintln!("Nous Research logout failed: {error}");
+                1
+            }
+        },
+        NousAuthAction::Login => {
+            let client = reqwest::Client::new();
+            let endpoints = ai_usagebar::nous::oauth::Endpoints::default();
+            let device =
+                match ai_usagebar::nous::oauth::request_device_code(&client, &endpoints).await {
+                    Ok(device) => device,
+                    Err(error) => {
+                        eprintln!("Nous Research login failed: {error}");
+                        return 1;
+                    }
+                };
+            println!("Open {}", device.verification_uri);
+            println!("Verification code: {}", device.user_code);
+            let opener = ai_usagebar::nous::oauth::SystemBrowserOpener;
+            if !ai_usagebar::nous::oauth::open_verification_url(
+                &device.verification_uri_complete,
+                &opener,
+            ) {
+                eprintln!("Browser opener unavailable; open the URL manually.");
+            }
+            let token =
+                match ai_usagebar::nous::oauth::poll_for_token(&client, &endpoints.token, &device)
+                    .await
+                {
+                    Ok(token) => token,
+                    Err(error) => {
+                        eprintln!("Nous Research login failed: {error}");
+                        return 1;
+                    }
+                };
+            let credential =
+                match ai_usagebar::nous::oauth::credential_from_token(token, chrono::Utc::now()) {
+                    Ok(credential) => credential,
+                    Err(error) => {
+                        eprintln!("Nous Research login failed: {error}");
+                        return 1;
+                    }
+                };
+            match ai_usagebar::nous::oauth::persist_credential(&store, credential) {
+                Ok(()) => {
+                    println!("Nous Research login complete");
+                    0
+                }
+                Err(error) => {
+                    eprintln!("Nous Research login failed: {error}");
+                    1
+                }
+            }
+        }
+    }
 }

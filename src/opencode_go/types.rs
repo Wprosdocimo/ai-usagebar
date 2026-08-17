@@ -17,6 +17,8 @@ pub struct Usage {
     pub monthly: Option<Window>,
 }
 
+impl Eq for Usage {}
+
 pub fn parse_usage(value: &Value) -> Result<Usage, String> {
     let root = value
         .as_object()

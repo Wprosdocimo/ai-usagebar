@@ -112,6 +112,13 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         section: "minimax",
         note: "Token Plan subscription key",
     },
+    KeyVendor {
+        id: VendorId::OpenCodeGo,
+        label: "OpenCode Go",
+        env: "OPENCODE_GO_API_KEY",
+        section: "opencode-go",
+        note: "usage quota",
+    },
 ];
 
 /// Read the inline `api_key` currently in config for a given section, so the
@@ -128,6 +135,7 @@ fn config_inline_key<'a>(cfg: &'a Config, section: &str) -> Option<&'a str> {
         "moonshot" => cfg.moonshot.api_key.as_deref(),
         "grok" => cfg.grok.api_key.as_deref(),
         "minimax" => cfg.minimax.api_key.as_deref(),
+        "opencode-go" => cfg.opencode_go.api_key.as_deref(),
         _ => None,
     }
 }
@@ -622,6 +630,7 @@ fn configured_key_env<'a>(cfg: &'a Config, section: &str, fallback: &'a str) -> 
         "moonshot" => &cfg.moonshot.api_key_env,
         "grok" => &cfg.grok.api_key_env,
         "minimax" => &cfg.minimax.api_key_env,
+        "opencode-go" => &cfg.opencode_go.api_key_env,
         _ => fallback,
     }
 }

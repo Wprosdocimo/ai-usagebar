@@ -41,6 +41,17 @@ impl From<FetchOutcome> for LocalVendorOutcome {
     }
 }
 
+impl From<FetchOutcome> for VendorOutcome {
+    fn from(outcome: FetchOutcome) -> Self {
+        Self {
+            snapshot: crate::usage::VendorSnapshot::OpenCodeGo(outcome.snapshot),
+            stale: outcome.stale,
+            last_error: outcome.last_error,
+            cache_age: outcome.cache_age,
+        }
+    }
+}
+
 /// Projection seam for the future shared `VendorSnapshot::OpenCodeGo` variant.
 pub fn project_fetch_outcome(outcome: &FetchOutcome) -> LocalVendorOutcome {
     LocalVendorOutcome {

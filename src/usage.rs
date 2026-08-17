@@ -354,6 +354,8 @@ pub enum VendorSnapshot {
     Cursor(CursorSnapshot),
     Minimax(MinimaxSnapshot),
     Kiro(KiroSnapshot),
+    NousResearch(crate::nous::vendor::NousSnapshot),
+    OpenCodeGo(crate::opencode_go::types::Usage),
 }
 
 /// Google Antigravity 2.0 / CLI snapshot. The API groups models into Gemini

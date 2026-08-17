@@ -685,6 +685,44 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 crate::kiro::fetch_snapshot(client, &db_path, &cache, DEFAULT_TTL).await?;
             Ok(outcome.into())
         }
+        VendorId::NousResearch => {
+            let store = crate::nous::credentials::CredentialStore::default();
+            let endpoints = crate::nous::fetch::Endpoints::default();
+            let account = crate::nous::fetch::fetch_account_with_refresh(
+                client,
+                &store,
+                &endpoints,
+                Utc::now(),
+            )
+            .await
+            .map_err(|error| crate::error::AppError::Credentials(error.to_string()))?;
+            Ok(crate::vendor::VendorOutcome {
+                snapshot: crate::usage::VendorSnapshot::NousResearch(
+                    crate::nous::vendor::normalize(&account),
+                ),
+                stale: false,
+                last_error: None,
+                cache_age: Some(Duration::ZERO),
+            })
+        }
+        VendorId::OpenCodeGo => {
+            let api_key = crate::config::resolve_api_key(
+                "OpenCode Go",
+                &config.opencode_go.api_key_env,
+                config.opencode_go.api_key.as_deref(),
+            )?;
+            let cache = crate::cache::Cache::for_vendor("opencode-go")?;
+            let endpoints = crate::opencode_go::fetch::Endpoints::default();
+            let outcome = crate::opencode_go::fetch::fetch_snapshot(
+                client,
+                &api_key,
+                &cache,
+                &endpoints,
+                DEFAULT_TTL,
+            )
+            .await?;
+            Ok(outcome.into())
+        }
     }
 }
 

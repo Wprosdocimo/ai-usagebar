@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use thiserror::Error;
 
-use super::credentials::{CredentialStore, NousCredential};
+use super::credentials::{CredentialDocument, CredentialStore, NousCredential};
 use super::types::{DeviceCode, TokenResponse, parse_device_code, parse_token};
 
 pub const CLIENT_ID: &str = "hermes-cli";
@@ -77,32 +77,18 @@ impl BrowserOpener for SystemBrowserOpener {
     fn open(&self, url: &str) -> std::io::Result<()> {
         #[cfg(target_os = "linux")]
         {
-            let status = Command::new("xdg-open").arg(url).status()?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(std::io::Error::other("browser opener failed"))
-            }
+            let _child = Command::new("xdg-open").arg(url).spawn()?;
+            Ok(())
         }
         #[cfg(target_os = "macos")]
         {
-            let status = Command::new("open").arg(url).status()?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(std::io::Error::other("browser opener failed"))
-            }
+            let _child = Command::new("open").arg(url).spawn()?;
+            Ok(())
         }
         #[cfg(target_os = "windows")]
         {
-            let status = Command::new("cmd")
-                .args(["/C", "start", "", url])
-                .status()?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(std::io::Error::other("browser opener failed"))
-            }
+            let _child = Command::new("cmd").args(["/C", "start", "", url]).spawn()?;
+            Ok(())
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
@@ -305,6 +291,35 @@ pub async fn refresh_if_needed(
         .map_err(|_| OAuthError::Credentials)?;
     drop(lock);
     Ok(replacement)
+}
+
+pub fn credential_from_token(
+    token: TokenResponse,
+    now: DateTime<Utc>,
+) -> Result<NousCredential, OAuthError> {
+    let credential = NousCredential {
+        client_id: CLIENT_ID.into(),
+        access_token: token.access_token,
+        refresh_token: token.refresh_token,
+        expires_at: now + chrono::Duration::seconds(token.expires_in as i64),
+    };
+    credential.validate().map_err(|_| OAuthError::Schema)?;
+    Ok(credential)
+}
+
+pub fn persist_credential(
+    store: &CredentialStore,
+    credential: NousCredential,
+) -> Result<(), OAuthError> {
+    let lock = store.acquire_lock().map_err(|_| OAuthError::Credentials)?;
+    let mut document = store
+        .read_unlocked()
+        .map_err(|_| OAuthError::Credentials)?
+        .unwrap_or_else(|| CredentialDocument::new(None));
+    document.nous = Some(credential);
+    store
+        .write_locked(&lock, &document)
+        .map_err(|_| OAuthError::Credentials)
 }
 
 fn is_safe_https_url(url: &str) -> bool {
