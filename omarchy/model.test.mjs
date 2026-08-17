@@ -35,6 +35,12 @@ assert.match(settingsViewSource, /command:\s*\["ai-usagebar",\s*"settings",\s*"s
 assert.match(settingsViewSource, /command:\s*\["ai-usagebar",\s*"settings",\s*"apply"\]/);
 assert.match(settingsViewSource, /stdinEnabled:\s*true/);
 assert.match(settingsViewSource, /write\(root\.pendingPayload\s*\+\s*"\\n"\)/);
+assert.match(settingsViewSource, /signal\s+nousLoginRequested\(\)/);
+assert.match(settingsViewSource, /Log in with Nous Research/);
+assert.match(settingsViewSource, /nousLoginRequested\(\)/);
+assert.match(panelSource, /function\s+openNousLogin\s*\(/);
+assert.match(panelSource, /ai-usagebar auth nous login/);
+assert.match(panelSource, /onNousLoginRequested/);
 assert.doesNotMatch(settingsViewSource, /command:\s*\[[^\]]*(?:api.?key|secret|pendingPayload)/i);
 
 const raw = JSON.stringify({primary: 'openai', entries: [
