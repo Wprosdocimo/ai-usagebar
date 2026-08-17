@@ -49,6 +49,26 @@ mod tests {
     }
 
     #[test]
+    fn portal_token_response_accepts_string_ttl_and_omitted_token_type() {
+        let mut value = fixture(include_str!("../../tests/fixtures/nous/token-success.json"));
+        value.as_object_mut().unwrap().remove("token_type");
+        value["expires_in"] = serde_json::json!("3600");
+        let parsed = parse_token(&value).expect("portal token response must parse");
+        assert_eq!(parsed.token_type, "Bearer");
+        assert_eq!(parsed.expires_in, 3600);
+    }
+
+    #[test]
+    fn portal_device_response_accepts_string_ttl_and_interval() {
+        let mut value = fixture(include_str!("../../tests/fixtures/nous/device-code.json"));
+        value["expires_in"] = serde_json::json!("900");
+        value["interval"] = serde_json::json!("5");
+        let parsed = parse_device_code(&value).expect("portal device response must parse");
+        assert_eq!(parsed.expires_in, 900);
+        assert_eq!(parsed.interval, 5);
+    }
+
+    #[test]
     fn official_account_fixture_keeps_internal_identifiers_out_of_snapshot() {
         let value = fixture(include_str!("../../tests/fixtures/nous/account.json"));
         let parsed = parse_account(&value).expect("official account fixture must parse");

@@ -129,7 +129,10 @@ pub fn parse_token(value: &Value) -> Result<TokenResponse, String> {
     let object = object(value, "token response")?;
     let access_token = required_nonempty_string(object, "access_token")?;
     let refresh_token = required_nonempty_string(object, "refresh_token")?;
-    let token_type = required_nonempty_string(object, "token_type")?;
+    let token_type = match object.get("token_type") {
+        Some(_) => required_nonempty_string(object, "token_type")?,
+        None => "Bearer".to_string(),
+    };
     if !token_type.eq_ignore_ascii_case("bearer") {
         return Err("token response has unsupported token_type".into());
     }
@@ -278,9 +281,12 @@ fn required_positive_u64(object: &Map<String, Value>, field: &str) -> Result<u64
     let value = object
         .get(field)
         .ok_or_else(|| format!("missing required field `{field}`"))?;
-    let number = value
-        .as_u64()
-        .ok_or_else(|| format!("field `{field}` must be a positive integer"))?;
+    let number = match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| format!("field `{field}` must be a positive integer"))?;
     if number == 0 {
         return Err(format!("field `{field}` must be positive"));
     }

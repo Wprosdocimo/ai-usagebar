@@ -227,7 +227,7 @@ function errorMessage(value) {
 
 function settingsId(value) {
   var id = cleanText(value, 80).trim()
-  if (!/^[a-z0-9_]+$/.test(id)
+  if (!/^[a-z0-9_-]+$/.test(id)
       || id === "__proto__" || id === "constructor" || id === "prototype") return ""
   return id
 }

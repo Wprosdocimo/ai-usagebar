@@ -142,6 +142,17 @@ assert.equal(settings.primary_choices[0].label, 'Claude');
 assert.equal(settings.primary_choices[1].label, 'Codex');
 assert.equal(settings.keys[0].inline_configured, true);
 assert.equal(settings.keys[0].environment, 'KIMI_API_KEY');
+const opencodeSettings = model.parseSettingsSnapshot(JSON.stringify({
+  schema_version: 1,
+  primary: 'opencode-go',
+  primary_choices: [{id: 'opencode-go', label: 'OpenCode Go'}],
+  keys: [{id: 'opencode-go', label: 'OpenCode Go', environment: 'OPENCODE_GO_API_KEY',
+    note: 'usage quota', configured: false, inline_configured: false, environment_configured: false}]
+}));
+assert.equal(opencodeSettings.ok, true);
+assert.equal(opencodeSettings.primary, 'opencode-go');
+assert.equal(opencodeSettings.keys[0].id, 'opencode-go');
+assert.equal(opencodeSettings.keys[0].environment, 'OPENCODE_GO_API_KEY');
 assert.equal(model.parseSettingsSnapshot('{').ok, false);
 assert.equal(model.parseSettingsSnapshot(JSON.stringify({schema_version: 2, primary_choices: [], keys: []})).ok, false);
 const noEnabled = model.parseSettingsSnapshot(JSON.stringify({
