@@ -9,6 +9,15 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- Z.AI now exposes pace and elapsed-time placeholders
+  (`{zai_session_elapsed}`, `{zai_session_pace}`, `{zai_weekly_elapsed}`,
+  `{zai_weekly_pace}`, `{zai_mcp_elapsed}`, `{zai_mcp_pace}`, and their
+  `_pace_indicator` variants), plus the cross-vendor `{session_elapsed}` /
+  `{weekly_elapsed}` aliases — the macOS menu bar's pace marker now renders
+  for Z.AI the same way it already does for Claude and Codex.
+
 ## [1.2.0] — 2026-08-18
 
 ### Added
