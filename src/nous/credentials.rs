@@ -130,27 +130,11 @@ impl CredentialDocument {
         Ok(())
     }
 
-    /// Insert an unrelated top-level value for future providers.  Values are
-    /// never included in this type's `Debug` output.
-    pub fn insert_other(&mut self, key: impl Into<String>, value: serde_json::Value) {
+    /// Test seam for proving that writes preserve unrelated future entries.
+    #[cfg(test)]
+    fn insert_other(&mut self, key: impl Into<String>, value: serde_json::Value) {
         self.other.insert(key.into(), value);
     }
-
-    pub fn other(&self) -> &BTreeMap<String, serde_json::Value> {
-        &self.other
-    }
-}
-
-/// Safe, non-secret status returned by administrative callers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CredentialStatus {
-    pub schema_version: u32,
-    pub provider: &'static str,
-    pub logged_in: bool,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub has_refresh_token: bool,
-    pub permissions_safe: bool,
-    pub reauthentication_required: bool,
 }
 
 /// Injectable current-owner lookup.  The trait keeps the UID source separate
@@ -166,11 +150,9 @@ impl OwnerIdProvider for ProcessOwner {
     fn current_uid(&self) -> io::Result<u32> {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
-            // On Linux procfs reports the effective owner for this process.
-            // Keeping this lookup behind the trait avoids requiring a direct
-            // libc dependency in this isolated module.
-            fs::metadata("/proc/self").map(|metadata| metadata.uid())
+            // Unlike `/proc/self`, this is available on every supported Unix,
+            // including macOS, without introducing an unsafe FFI call here.
+            Ok(rustix::process::geteuid().as_raw())
         }
         #[cfg(not(unix))]
         {
@@ -234,13 +216,7 @@ impl CredentialStore {
         ensure_private_parent(self.parent(), &self.owner)?;
         let path = self.lock_path();
         reject_symlink(&path)?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .mode(CREDENTIALS_FILE_MODE)
-            .open(&path)
-            .map_err(|source| io_at(&path, source))?;
+        let file = open_private_lock_file(&path).map_err(|source| io_at(&path, source))?;
         validate_file_metadata(&path, &file, &self.owner)?;
         file.lock_exclusive()
             .map_err(|source| CredentialError::Lock {
@@ -297,43 +273,6 @@ impl CredentialStore {
         Ok(())
     }
 
-    pub fn status(&self) -> Result<CredentialStatus> {
-        let _lock = self.acquire_lock()?;
-        let Some(document) = self.read_unlocked()? else {
-            return Ok(CredentialStatus {
-                schema_version: CREDENTIAL_STORE_VERSION,
-                provider: "nous",
-                logged_in: false,
-                expires_at: None,
-                has_refresh_token: false,
-                permissions_safe: true,
-                reauthentication_required: false,
-            });
-        };
-        let Some(credential) = document.nous else {
-            return Ok(CredentialStatus {
-                schema_version: CREDENTIAL_STORE_VERSION,
-                provider: "nous",
-                logged_in: false,
-                expires_at: None,
-                has_refresh_token: false,
-                permissions_safe: true,
-                reauthentication_required: false,
-            });
-        };
-        let reauthentication_required =
-            credential.expires_at <= Utc::now() && credential.refresh_token.trim().is_empty();
-        Ok(CredentialStatus {
-            schema_version: CREDENTIAL_STORE_VERSION,
-            provider: "nous",
-            logged_in: true,
-            expires_at: Some(credential.expires_at),
-            has_refresh_token: !credential.refresh_token.is_empty(),
-            permissions_safe: true,
-            reauthentication_required,
-        })
-    }
-
     pub fn read_unlocked(&self) -> Result<Option<CredentialDocument>> {
         reject_symlink(&self.path)?;
         let metadata = match fs::symlink_metadata(&self.path) {
@@ -383,8 +322,9 @@ impl CredentialStore {
         // Recheck immediately before replacing the destination.  The caller
         // holds the sibling lock; a symlink is never intentionally replaced.
         reject_symlink(&self.path)?;
-        let temporary_path = temporary.into_temp_path();
-        fs::rename(&temporary_path, &self.path).map_err(|source| io_at(&self.path, source))?;
+        temporary
+            .persist(&self.path)
+            .map_err(|error| io_at(&self.path, error.error))?;
         sync_parent(self.parent())?;
 
         let metadata =
@@ -425,42 +365,9 @@ impl Default for CredentialStore {
 }
 
 pub fn default_credentials_path() -> PathBuf {
-    match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(config_home) if !config_home.is_empty() => {
-            return PathBuf::from(config_home)
-                .join("ai-usagebar")
-                .join(DEFAULT_CREDENTIALS_FILE);
-        }
-        _ => {}
-    }
-    match std::env::var_os("HOME") {
-        Some(home) if !home.is_empty() => {
-            return PathBuf::from(home)
-                .join(".config")
-                .join("ai-usagebar")
-                .join(DEFAULT_CREDENTIALS_FILE);
-        }
-        _ => {}
-    }
-    directories::BaseDirs::new()
-        .map(|dirs| {
-            dirs.config_dir()
-                .join("ai-usagebar")
-                .join(DEFAULT_CREDENTIALS_FILE)
-        })
+    directories::ProjectDirs::from("", "", "ai-usagebar")
+        .map(|project| project.config_dir().join(DEFAULT_CREDENTIALS_FILE))
         .unwrap_or_else(|| PathBuf::from(".config/ai-usagebar/credentials.json"))
-}
-
-pub fn read_from(path: impl AsRef<Path>) -> Result<Option<CredentialDocument>> {
-    CredentialStore::at(path.as_ref()).read()
-}
-
-pub fn write_to(path: impl AsRef<Path>, document: &CredentialDocument) -> Result<()> {
-    CredentialStore::at(path.as_ref()).write(document)
-}
-
-pub fn logout_from(path: impl AsRef<Path>) -> Result<()> {
-    CredentialStore::at(path.as_ref()).logout()
 }
 
 fn ensure_private_parent(path: &Path, owner: &Arc<dyn OwnerIdProvider>) -> Result<()> {
@@ -476,24 +383,38 @@ fn ensure_private_parent(path: &Path, owner: &Arc<dyn OwnerIdProvider>) -> Resul
         });
     }
     validate_owner(path, &metadata, owner)?;
-    let mode = file_mode(&metadata);
-    if created {
-        set_private_permissions_path(path, CREDENTIALS_DIR_MODE)
-            .map_err(|source| io_at(path, source))?;
-        let after = fs::symlink_metadata(path).map_err(|source| io_at(path, source))?;
-        if file_mode(&after) != CREDENTIALS_DIR_MODE {
+    #[cfg(unix)]
+    {
+        let mode = file_mode(&metadata);
+        if created {
+            set_private_permissions_path(path, CREDENTIALS_DIR_MODE)
+                .map_err(|source| io_at(path, source))?;
+            let after = fs::symlink_metadata(path).map_err(|source| io_at(path, source))?;
+            if file_mode(&after) != CREDENTIALS_DIR_MODE {
+                return Err(CredentialError::Unsafe {
+                    path: path.to_path_buf(),
+                    reason: "new credential parent must be mode 0700",
+                });
+            }
+        } else if mode & 0o022 != 0 {
+            // `~/.config/ai-usagebar` predates this credential store and is
+            // normally 0755. A current-user-owned, non-writable parent is safe
+            // with the credential and lock files themselves fixed at 0600.
             return Err(CredentialError::Unsafe {
                 path: path.to_path_buf(),
-                reason: "credential parent must be mode 0700",
+                reason: "credential parent must not be group- or world-writable",
             });
         }
-    } else if mode != CREDENTIALS_DIR_MODE {
-        return Err(CredentialError::Unsafe {
-            path: path.to_path_buf(),
-            reason: "credential parent must be mode 0700",
-        });
     }
     Ok(())
+}
+
+fn open_private_lock_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    options.mode(CREDENTIALS_FILE_MODE);
+    options.open(path)
 }
 
 fn validate_metadata(
@@ -514,11 +435,14 @@ fn validate_metadata(
         });
     }
     validate_owner(path, metadata, owner)?;
-    if file_mode(metadata) != CREDENTIALS_FILE_MODE {
-        return Err(CredentialError::Unsafe {
-            path: path.to_path_buf(),
-            reason: "credential file must be mode 0600",
-        });
+    #[cfg(unix)]
+    {
+        if file_mode(metadata) != CREDENTIALS_FILE_MODE {
+            return Err(CredentialError::Unsafe {
+                path: path.to_path_buf(),
+                reason: "credential file must be mode 0600",
+            });
+        }
     }
     Ok(())
 }
@@ -609,9 +533,17 @@ fn set_private_permissions_path(path: &Path, mode: u32) -> io::Result<()> {
 }
 
 fn sync_parent(parent: &Path) -> Result<()> {
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|source| io_at(parent, source))
+    #[cfg(unix)]
+    {
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|source| io_at(parent, source))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        Ok(())
+    }
 }
 
 fn io_at(path: impl Into<PathBuf>, source: io::Error) -> CredentialError {
@@ -621,7 +553,7 @@ fn io_at(path: impl Into<PathBuf>, source: io::Error) -> CredentialError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -776,17 +708,44 @@ mod tests {
     }
 
     #[test]
-    fn existing_permissive_parent_is_rejected_without_chmodifying_it() {
+    fn existing_owner_directory_with_standard_config_mode_is_accepted() {
         let root = TempDir::new().unwrap();
         let parent = root.path().join("config");
         fs::create_dir(&parent).unwrap();
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
         let store = CredentialStore::at(parent.join("credentials.json"));
 
-        assert!(store.write(&document()).is_err());
+        store.write(&document()).unwrap();
         assert_eq!(
             fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
             0o755
+        );
+        assert!(store.read().unwrap().unwrap().nous.is_some());
+    }
+
+    #[test]
+    fn group_or_world_writable_parent_is_rejected_without_chmodifying_it() {
+        let root = TempDir::new().unwrap();
+        let parent = root.path().join("config");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o770)).unwrap();
+        let store = CredentialStore::at(parent.join("credentials.json"));
+
+        assert!(store.write(&document()).is_err());
+        assert_eq!(
+            fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+            0o770
+        );
+    }
+
+    #[test]
+    fn process_owner_matches_files_created_by_the_effective_user() {
+        use std::os::unix::fs::MetadataExt;
+
+        let file = tempfile::tempfile().unwrap();
+        assert_eq!(
+            ProcessOwner.current_uid().unwrap(),
+            file.metadata().unwrap().uid()
         );
     }
 
@@ -795,5 +754,36 @@ mod tests {
         let output = format!("{:?}", credential());
         assert!(!output.contains("test-access-token"));
         assert!(!output.contains("test-refresh-token"));
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+mod non_unix_tests {
+    use chrono::{TimeZone, Utc};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn document(access_token: &str) -> CredentialDocument {
+        CredentialDocument::new(Some(NousCredential {
+            client_id: "hermes-cli".into(),
+            access_token: access_token.into(),
+            refresh_token: "test-refresh-token".into(),
+            expires_at: Utc.with_ymd_and_hms(2026, 8, 16, 12, 0, 0).unwrap(),
+        }))
+    }
+
+    #[test]
+    fn credential_store_writes_replaces_reads_and_logs_out() {
+        let root = TempDir::new().unwrap();
+        let store = CredentialStore::at(root.path().join("config").join("credentials.json"));
+
+        store.write(&document("first-access-token")).unwrap();
+        store.write(&document("second-access-token")).unwrap();
+        let stored = store.read().unwrap().unwrap().nous.unwrap();
+        assert_eq!(stored.access_token, "second-access-token");
+
+        store.logout().unwrap();
+        assert!(store.read().unwrap().is_none());
     }
 }

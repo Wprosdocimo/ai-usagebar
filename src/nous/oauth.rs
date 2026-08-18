@@ -13,7 +13,6 @@ use super::types::{DeviceCode, TokenResponse, parse_device_code, parse_token};
 
 pub const CLIENT_ID: &str = "hermes-cli";
 pub const SCOPE: &str = "inference:invoke";
-pub const PORTAL_BASE_URL: &str = "https://portal.nousresearch.com";
 pub const DEVICE_CODE_URL: &str = "https://portal.nousresearch.com/api/oauth/device/code";
 pub const TOKEN_URL: &str = "https://portal.nousresearch.com/api/oauth/token";
 pub const REFRESH_SKEW_SECONDS: i64 = 120;
@@ -87,7 +86,9 @@ impl BrowserOpener for SystemBrowserOpener {
         }
         #[cfg(target_os = "windows")]
         {
-            let _child = Command::new("cmd").args(["/C", "start", "", url]).spawn()?;
+            // Keep the remotely supplied URL out of `cmd.exe`; metacharacters
+            // such as `&` and `%` are data to Explorer, not shell syntax.
+            let _child = Command::new("explorer.exe").arg(url).spawn()?;
             Ok(())
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -105,7 +106,7 @@ impl BrowserOpener for SystemBrowserOpener {
 /// sanitized verification URL separately, so a missing desktop opener is not a
 /// failed authorization.
 pub fn open_verification_url(url: &str, opener: &dyn BrowserOpener) -> bool {
-    if !is_safe_https_url(url) {
+    if !is_safe_portal_url(url) {
         return false;
     }
     opener.open(url).is_ok()
@@ -123,12 +124,12 @@ pub async fn request_device_code(
         .await
         .map_err(|_| OAuthError::Transport)?;
     let status = response.status();
-    let body = crate::vendor::read_body_capped(response, crate::vendor::MAX_BODY_BYTES)
-        .await
-        .map_err(|_| OAuthError::Transport)?;
     if !status.is_success() {
         return Err(OAuthError::HttpStatus(status.as_u16()));
     }
+    let body = crate::vendor::read_body_capped(response, crate::vendor::MAX_BODY_BYTES)
+        .await
+        .map_err(|_| OAuthError::Transport)?;
     let value: Value = serde_json::from_slice(&body).map_err(|_| OAuthError::Schema)?;
     parse_device_code(&value).map_err(|_| OAuthError::Schema)
 }
@@ -227,30 +228,33 @@ pub async fn refresh_access_token(
         .post(endpoint)
         .header("content-type", "application/x-www-form-urlencoded")
         .header("x-nous-refresh-token", refresh_token)
-        .form(&[("grant_type", "refresh_token"), ("client_id", CLIENT_ID)])
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", CLIENT_ID),
+            ("refresh_token", refresh_token),
+        ])
         .send()
         .await
         .map_err(|_| OAuthError::Transport)?;
     let status = response.status();
-    let body = crate::vendor::read_body_capped(response, crate::vendor::MAX_BODY_BYTES)
-        .await
-        .map_err(|_| OAuthError::Transport)?;
-    let value: Value = serde_json::from_slice(&body).map_err(|_| OAuthError::Schema)?;
     if !status.is_success() {
-        let code = value.get("error").and_then(Value::as_str).unwrap_or("");
-        if matches!(
-            code,
-            "invalid_grant" | "invalid_token" | "refresh_token_reused"
-        ) {
+        // Portal uses 400 for an expired, revoked, reused, or otherwise invalid
+        // refresh grant. All require a clean login; no body text is surfaced.
+        if status.as_u16() == 400 {
             return Err(OAuthError::RefreshTokenRejected);
         }
         return Err(OAuthError::HttpStatus(status.as_u16()));
     }
+    let body = crate::vendor::read_body_capped(response, crate::vendor::MAX_BODY_BYTES)
+        .await
+        .map_err(|_| OAuthError::Transport)?;
+    let value: Value = serde_json::from_slice(&body).map_err(|_| OAuthError::Schema)?;
     parse_token(&value).map_err(|_| OAuthError::Schema)
 }
 
 pub fn needs_refresh(now: DateTime<Utc>, expires_at: DateTime<Utc>) -> bool {
-    expires_at <= now + chrono::Duration::seconds(REFRESH_SKEW_SECONDS)
+    now.checked_add_signed(chrono::Duration::seconds(REFRESH_SKEW_SECONDS))
+        .is_none_or(|threshold| expires_at <= threshold)
 }
 
 /// Lock, re-read, refresh at most once, and persist the complete rotated pair
@@ -276,7 +280,7 @@ pub async fn refresh_if_needed(
         return Ok(current);
     }
     let token = refresh_access_token(client, endpoint, &current.refresh_token).await?;
-    let expires_at = now + chrono::Duration::seconds(token.expires_in as i64);
+    let expires_at = token_expiration(now, token.expires_in)?;
     let replacement = NousCredential {
         client_id: CLIENT_ID.into(),
         access_token: token.access_token,
@@ -301,7 +305,7 @@ pub fn credential_from_token(
         client_id: CLIENT_ID.into(),
         access_token: token.access_token,
         refresh_token: token.refresh_token,
-        expires_at: now + chrono::Duration::seconds(token.expires_in as i64),
+        expires_at: token_expiration(now, token.expires_in)?,
     };
     credential.validate().map_err(|_| OAuthError::Schema)?;
     Ok(credential)
@@ -322,10 +326,21 @@ pub fn persist_credential(
         .map_err(|_| OAuthError::Credentials)
 }
 
-fn is_safe_https_url(url: &str) -> bool {
-    url.starts_with("https://")
-        && url.len() > "https://".len()
-        && !url.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+fn token_expiration(now: DateTime<Utc>, expires_in: u64) -> Result<DateTime<Utc>, OAuthError> {
+    let seconds = i64::try_from(expires_in).map_err(|_| OAuthError::Schema)?;
+    now.checked_add_signed(chrono::Duration::seconds(seconds))
+        .ok_or(OAuthError::Schema)
+}
+
+fn is_safe_portal_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    parsed.scheme() == "https"
+        && parsed.host_str() == Some("portal.nousresearch.com")
+        && parsed.port_or_known_default() == Some(443)
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
 }
 
 impl fmt::Display for PollState {
@@ -432,7 +447,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_request_uses_header_and_exact_form_without_secret_in_url() {
+    async fn refresh_request_uses_header_and_required_form_without_secret_in_url() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/token")
@@ -444,6 +459,10 @@ mod tests {
             .match_body(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("grant_type".into(), "refresh_token".into()),
                 mockito::Matcher::UrlEncoded("client_id".into(), "hermes-cli".into()),
+                mockito::Matcher::UrlEncoded(
+                    "refresh_token".into(),
+                    "test-old-refresh".into(),
+                ),
             ]))
             .with_status(200)
             .with_body(r#"{"access_token":"test-new-access","refresh_token":"test-new-refresh","token_type":"Bearer","expires_in":3600}"#)
@@ -474,5 +493,67 @@ mod tests {
         ));
         let error = OAuthError::HttpStatus(401);
         assert!(!format!("{error:?}").contains("test-access-token"));
+    }
+
+    #[test]
+    fn browser_opener_accepts_only_the_production_portal_origin() {
+        use std::cell::Cell;
+
+        struct RecordingBrowser(Cell<usize>);
+        impl BrowserOpener for RecordingBrowser {
+            fn open(&self, _url: &str) -> std::io::Result<()> {
+                self.0.set(self.0.get() + 1);
+                Ok(())
+            }
+        }
+
+        let browser = RecordingBrowser(Cell::new(0));
+        assert!(open_verification_url(
+            "https://portal.nousresearch.com/device?user_code=TEST",
+            &browser
+        ));
+        for unsafe_url in [
+            "https://portal.nousresearch.com.evil.test/device",
+            "https://evil.test/device&calc.exe",
+            "http://portal.nousresearch.com/device",
+            "https://user@portal.nousresearch.com/device",
+        ] {
+            assert!(!open_verification_url(unsafe_url, &browser));
+        }
+        assert_eq!(browser.0.get(), 1, "rejected URLs must never reach the OS");
+    }
+
+    #[test]
+    fn token_expiration_rejects_overflow_instead_of_wrapping_or_panicking() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 16, 12, 0, 0).unwrap();
+        assert_eq!(
+            token_expiration(now, 3600).unwrap(),
+            now + ChronoDuration::hours(1)
+        );
+        assert_eq!(token_expiration(now, u64::MAX), Err(OAuthError::Schema));
+        assert_eq!(
+            token_expiration(DateTime::<Utc>::MAX_UTC, 1),
+            Err(OAuthError::Schema)
+        );
+    }
+
+    #[tokio::test]
+    async fn any_bad_refresh_grant_requires_a_clean_login() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/token")
+            .with_status(400)
+            .with_body("non-json error body that must not affect classification")
+            .create_async()
+            .await;
+
+        let error = refresh_access_token(
+            &reqwest::Client::new(),
+            &format!("{}/token", server.url()),
+            "test-old-refresh",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, OAuthError::RefreshTokenRejected);
     }
 }

@@ -1,4 +1,7 @@
+use std::fmt::Write as _;
 use std::time::Duration;
+
+use sha2::{Digest, Sha256};
 
 use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
 use crate::error::{AUTH_FAILURE_MESSAGE, AppError, Result};
@@ -42,9 +45,10 @@ pub async fn fetch_snapshot(
 ) -> Result<FetchOutcome> {
     cache.ensure_dir()?;
     let _lock = acquire_lock_async(&cache.lock_path(), LOCK_TIMEOUT).await?;
+    let target = target_key(endpoints, api_key);
 
     if let Some(bytes) = cache.fresh_payload(ttl)?
-        && let Ok(snapshot) = parse_payload(&bytes)
+        && let Ok(snapshot) = parse_cache(&bytes, &target)
     {
         return Ok(FetchOutcome {
             snapshot,
@@ -55,7 +59,11 @@ pub async fn fetch_snapshot(
     }
 
     match fetch_live(client, &endpoints.usage, api_key).await {
-        Ok((body, snapshot)) => {
+        Ok(snapshot) => {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "target": target,
+                "response": usage_repr(&snapshot),
+            }))?;
             cache.write_payload(&body)?;
             Ok(FetchOutcome {
                 snapshot,
@@ -64,7 +72,7 @@ pub async fn fetch_snapshot(
                 cache_age: Some(Duration::ZERO),
             })
         }
-        Err(error @ AppError::Transport(_)) => fallback_or_error(cache, None, error),
+        Err(error @ AppError::Transport(_)) => fallback_or_error(cache, None, &target, error),
         Err(AppError::Http { status, .. }) => {
             let message = status_message(status).to_string();
             cache.mark_stale();
@@ -72,6 +80,7 @@ pub async fn fetch_snapshot(
             fallback_or_error(
                 cache,
                 Some((status, message.clone())),
+                &target,
                 AppError::Http {
                     status,
                     body: message,
@@ -82,17 +91,18 @@ pub async fn fetch_snapshot(
             let message = SCHEMA_ERROR.to_string();
             cache.mark_stale();
             cache.write_last_error(0, &message);
-            fallback_or_error(cache, Some((0, message.clone())), AppError::Schema(message))
+            fallback_or_error(
+                cache,
+                Some((0, message.clone())),
+                &target,
+                AppError::Schema(message),
+            )
         }
-        Err(error) => fallback_or_error(cache, None, error),
+        Err(error) => fallback_or_error(cache, None, &target, error),
     }
 }
 
-async fn fetch_live(
-    client: &reqwest::Client,
-    url: &str,
-    api_key: &str,
-) -> Result<(Vec<u8>, Usage)> {
+async fn fetch_live(client: &reqwest::Client, url: &str, api_key: &str) -> Result<Usage> {
     let response = tokio::time::timeout(
         HTTP_TIMEOUT,
         client
@@ -114,7 +124,40 @@ async fn fetch_live(
     }
 
     let snapshot = parse_payload(&body)?;
-    Ok((body, snapshot))
+    Ok(snapshot)
+}
+
+/// Stable, non-secret identity for the endpoint and account selected by the
+/// API key. The usage endpoint resolves the key to a user/workspace, so cache
+/// reuse must fail closed when either input changes.
+fn target_key(endpoints: &Endpoints, api_key: &str) -> String {
+    let digest = Sha256::digest(api_key.as_bytes());
+    let mut fingerprint = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(fingerprint, "{byte:02x}");
+    }
+    format!("{}|key:{fingerprint}", endpoints.usage)
+}
+
+fn usage_repr(usage: &Usage) -> serde_json::Value {
+    let window = |window: &super::types::Window| {
+        serde_json::json!({
+            "status": window.status,
+            "percent": window.percent,
+            "resetsAt": window.resets_at.to_rfc3339(),
+        })
+    };
+    let mut windows = serde_json::Map::new();
+    for (name, value) in [
+        ("rolling", usage.rolling.as_ref()),
+        ("weekly", usage.weekly.as_ref()),
+        ("monthly", usage.monthly.as_ref()),
+    ] {
+        if let Some(value) = value {
+            windows.insert(name.into(), window(value));
+        }
+    }
+    serde_json::json!({ "usage": windows })
 }
 
 fn parse_payload(body: &[u8]) -> Result<Usage> {
@@ -135,9 +178,10 @@ fn status_message(status: u16) -> &'static str {
 fn fallback_or_error(
     cache: &Cache,
     last_error: Option<(u16, String)>,
+    target: &str,
     error: AppError,
 ) -> Result<FetchOutcome> {
-    if let Some(snapshot) = cached_outcome(cache, last_error)? {
+    if let Some(snapshot) = cached_outcome(cache, last_error, target)? {
         return Ok(snapshot);
     }
     Err(error)
@@ -146,11 +190,12 @@ fn fallback_or_error(
 fn cached_outcome(
     cache: &Cache,
     last_error: Option<(u16, String)>,
+    target: &str,
 ) -> Result<Option<FetchOutcome>> {
     let Some(body) = cache.fallback_payload(MAX_STALE)? else {
         return Ok(None);
     };
-    let Ok(snapshot) = parse_payload(&body) else {
+    let Ok(snapshot) = parse_cache(&body, target) else {
         return Ok(None);
     };
     Ok(Some(FetchOutcome {
@@ -159,6 +204,20 @@ fn cached_outcome(
         last_error: last_error.or_else(|| cache.read_last_error()),
         cache_age: cache.payload_age(),
     }))
+}
+
+fn parse_cache(body: &[u8], target: &str) -> Result<Usage> {
+    let value: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|_| AppError::Schema("OpenCode Go cache is invalid".into()))?;
+    if value.get("target").and_then(serde_json::Value::as_str) != Some(target) {
+        return Err(AppError::Schema(
+            "OpenCode Go cache belongs to a different account".into(),
+        ));
+    }
+    let response = value
+        .get("response")
+        .ok_or_else(|| AppError::Schema("OpenCode Go cache is missing its response".into()))?;
+    parse_usage(response).map_err(|_| AppError::Schema("OpenCode Go cache is invalid".into()))
 }
 
 #[cfg(test)]
@@ -308,5 +367,99 @@ mod tests {
             assert!(!rendered.contains("body-secret"));
             assert!(!rendered.contains("test-key"));
         }
+    }
+
+    #[tokio::test]
+    async fn changing_api_keys_never_reuses_another_accounts_fresh_cache() {
+        let mut server = mockito::Server::new_async().await;
+        let first = server
+            .mock("GET", "/usage")
+            .match_header("authorization", "Bearer first-key")
+            .with_status(200)
+            .with_body(GOOD_BODY)
+            .expect(1)
+            .create_async()
+            .await;
+        let second_body = GOOD_BODY.replace("12.3", "91.2");
+        let second = server
+            .mock("GET", "/usage")
+            .match_header("authorization", "Bearer second-key")
+            .with_status(200)
+            .with_body(second_body)
+            .expect(1)
+            .create_async()
+            .await;
+        let (_dir, cache) = cache_fixture();
+        let endpoints = Endpoints {
+            usage: format!("{}/usage", server.url()),
+        };
+
+        fetch_snapshot(
+            &reqwest::Client::new(),
+            "first-key",
+            &cache,
+            &endpoints,
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+        let second_output = fetch_snapshot(
+            &reqwest::Client::new(),
+            "second-key",
+            &cache,
+            &endpoints,
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(second_output.snapshot.rolling.unwrap().percent, 91.2);
+        let persisted = String::from_utf8(cache.maybe_payload().unwrap().unwrap()).unwrap();
+        assert!(!persisted.contains("first-key"));
+        assert!(!persisted.contains("second-key"));
+        first.assert_async().await;
+        second.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn changing_api_keys_rejects_another_accounts_stale_fallback() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/usage")
+            .match_header("authorization", "Bearer first-key")
+            .with_status(200)
+            .with_body(GOOD_BODY)
+            .create_async()
+            .await;
+        server
+            .mock("GET", "/usage")
+            .match_header("authorization", "Bearer second-key")
+            .with_status(503)
+            .create_async()
+            .await;
+        let (_dir, cache) = cache_fixture();
+        let endpoints = Endpoints {
+            usage: format!("{}/usage", server.url()),
+        };
+        fetch_snapshot(
+            &reqwest::Client::new(),
+            "first-key",
+            &cache,
+            &endpoints,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+
+        let error = fetch_snapshot(
+            &reqwest::Client::new(),
+            "second-key",
+            &cache,
+            &endpoints,
+            Duration::ZERO,
+        )
+        .await
+        .expect_err("a cache for another endpoint/account must not be served");
+        assert!(matches!(error, AppError::Http { status: 503, .. }));
     }
 }

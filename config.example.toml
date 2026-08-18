@@ -273,8 +273,9 @@ enabled = false
 #   Windows: %APPDATA%\kiro-cli\data.sqlite3
 # db_path = "/home/you/.local/share/kiro-cli/data.sqlite3"
 
-# Nous Research — OAuth Device Flow. Authentication is kept in the separate
-# ~/.config/ai-usagebar/credentials.json store (directory 0700, file 0600).
+# Nous Research — OAuth Device Flow. Authentication is kept in ai-usagebar's
+# separate platform config directory (~/.config/ai-usagebar/credentials.json on
+# Linux). New directories are 0700 and credential/lock files are 0600 on Unix.
 # Run `ai-usagebar auth nous login`; logout removes only the Nous entry.
 [nous]
 enabled = false

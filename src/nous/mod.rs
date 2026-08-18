@@ -1,10 +1,8 @@
 //! Nous Research OAuth and subscription usage integration.
 //!
-//! This module is intentionally self-contained.  Shared vendor/config/widget
-//! integration can consume these APIs later without importing credential
-//! storage or OAuth secrets into the shared snapshot boundary.
+//! Credential storage and OAuth secrets stay inside this module. Shared UI
+//! integration receives only the display-safe [`AccountSnapshot`].
 
-pub mod cli;
 pub mod credentials;
 pub mod fetch;
 pub mod oauth;
@@ -76,8 +74,9 @@ mod tests {
         assert_eq!(parsed.monthly_credits, Some(1000.0));
         assert_eq!(parsed.credits_remaining, Some(760.0));
         assert_eq!(parsed.rollover_credits, Some(40.0));
-        assert!(!parsed.serialized_snapshot.contains("internal-user"));
-        assert!(!parsed.serialized_snapshot.contains("internal-org"));
+        let debug = format!("{parsed:?}");
+        assert!(!debug.contains("internal-user"));
+        assert!(!debug.contains("internal-org"));
     }
 
     #[test]
@@ -109,8 +108,38 @@ mod tests {
             parsed.current_period_end.unwrap().to_rfc3339(),
             "2026-09-01T00:00:00+00:00"
         );
-        assert!(!parsed.serialized_snapshot.contains("hidden@example.test"));
-        assert!(!parsed.serialized_snapshot.contains("internal-org"));
+        let debug = format!("{parsed:?}");
+        assert!(!debug.contains("hidden@example.test"));
+        assert!(!debug.contains("internal-org"));
+    }
+
+    #[test]
+    fn subscription_percentage_never_uses_top_up_or_total_usable_credits() {
+        let value = serde_json::json!({
+            "subscription": {
+                "plan": "Plus",
+                "monthly_credits": 20.0,
+                "current_period_end": "2026-09-01T00:00:00Z"
+            },
+            "paid_service_access": {
+                "subscription_credits_remaining": 8.0,
+                "purchased_credits_remaining": 12.0,
+                "total_usable_credits": 20.0
+            }
+        });
+        let parsed = parse_account(&value).expect("official nested balances must parse");
+        assert_eq!(parsed.credits_remaining, Some(8.0));
+        assert_eq!(parsed.purchased_credits_remaining, Some(12.0));
+        assert_eq!(parsed.total_usable_credits, Some(20.0));
+        assert_eq!(parsed.usage_percent(), Some(60.0));
+
+        let total_only = parse_account(&serde_json::json!({
+            "subscription": {"monthly_credits": 20.0},
+            "paid_service_access": {"total_usable_credits": 20.0}
+        }))
+        .expect("total usable remains a displayable balance");
+        assert_eq!(total_only.credits_remaining, None);
+        assert_eq!(total_only.usage_percent(), None);
     }
 
     #[test]

@@ -190,7 +190,7 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
         VendorSnapshot::Kiro(s) => (s.plan.clone(), vec![pct("credits", s.pct())]),
         VendorSnapshot::NousResearch(s) => {
             let cell = s
-                .usage_pct
+                .usage_percent()
                 .map(|value| pct("usage", value.round().clamp(0.0, 100.0) as i32))
                 .unwrap_or_else(|| ("—".into(), PaceSeverity::Low));
             (s.plan.clone().unwrap_or_default(), vec![cell])
@@ -253,7 +253,7 @@ pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
         VendorSnapshot::Minimax(s) => Some(s.session.utilization_pct.max(s.weekly.utilization_pct)),
         VendorSnapshot::Kiro(s) => Some(s.pct()),
         VendorSnapshot::NousResearch(s) => s
-            .usage_pct
+            .usage_percent()
             .map(|value| value.round().clamp(0.0, 100.0) as i32),
         VendorSnapshot::OpenCodeGo(s) => [
             s.rolling
@@ -724,12 +724,12 @@ fn cursor_sections(s: &crate::usage::CursorSnapshot, now: DateTime<Utc>) -> Sect
     v
 }
 
-fn nous_sections(s: &crate::nous::vendor::NousSnapshot, now: DateTime<Utc>) -> SectionBuilder {
+fn nous_sections(s: &crate::nous::types::AccountSnapshot, now: DateTime<Utc>) -> SectionBuilder {
     let mut sections = SectionBuilder::new(vec![Section::Title {
         left: "Nous Research".into(),
         right: None,
     }]);
-    if let Some(value) = s.usage_pct {
+    if let Some(value) = s.usage_percent() {
         let pct = value.round().clamp(0.0, 100.0) as i32;
         sections.push_metric(
             Section::Metric {

@@ -1,7 +1,5 @@
 //! Nous account transport and response classification.
 
-use std::time::Duration;
-
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
@@ -44,12 +42,30 @@ pub enum FetchError {
     BodyLimit,
 }
 
-#[derive(Debug, Clone)]
-pub struct FetchOutcome {
-    pub snapshot: AccountSnapshot,
-    pub stale: bool,
-    pub last_error: Option<(u16, String)>,
-    pub cache_age: Option<Duration>,
+impl From<FetchError> for crate::error::AppError {
+    fn from(error: FetchError) -> Self {
+        use crate::error::{AUTH_FAILURE_MESSAGE, AppError};
+        match error {
+            FetchError::Authentication => AppError::Credentials(AUTH_FAILURE_MESSAGE.to_string()),
+            FetchError::RateLimited => AppError::Http {
+                status: 429,
+                body: "Nous Research request was rate limited".into(),
+            },
+            FetchError::Transient | FetchError::Transport => {
+                AppError::Transport("Nous Research request failed".into())
+            }
+            FetchError::Schema => {
+                AppError::Schema("Nous Research account response schema mismatch".into())
+            }
+            FetchError::HttpStatus(status) => AppError::Http {
+                status,
+                body: "Nous Research request failed".into(),
+            },
+            FetchError::BodyLimit => {
+                AppError::Schema("Nous Research response exceeded the body limit".into())
+            }
+        }
+    }
 }
 
 pub async fn fetch_account(
@@ -96,19 +112,6 @@ pub async fn fetch_account_with_refresh(
     fetch_account(client, &credential.access_token, endpoints).await
 }
 
-/// Refresh-only seam for callers that want to perform additional local work
-/// before the account probe.  Rotation is persisted before this returns.
-pub async fn access_credential_for_probe(
-    client: &reqwest::Client,
-    store: &CredentialStore,
-    token_endpoint: &str,
-    now: DateTime<Utc>,
-) -> Result<super::credentials::NousCredential, FetchError> {
-    oauth::refresh_if_needed(client, store, token_endpoint, now)
-        .await
-        .map_err(map_oauth_error)
-}
-
 fn classify_status(status: u16) -> FetchError {
     match status {
         401 | 403 => FetchError::Authentication,
@@ -140,6 +143,22 @@ mod tests {
 
     use super::*;
     use crate::nous::credentials::{CredentialDocument, CredentialStore, NousCredential};
+
+    #[test]
+    fn app_error_projection_preserves_non_auth_failure_classes() {
+        assert!(matches!(
+            crate::error::AppError::from(FetchError::RateLimited),
+            crate::error::AppError::Http { status: 429, .. }
+        ));
+        assert!(matches!(
+            crate::error::AppError::from(FetchError::Transport),
+            crate::error::AppError::Transport(_)
+        ));
+        assert!(matches!(
+            crate::error::AppError::from(FetchError::Schema),
+            crate::error::AppError::Schema(_)
+        ));
+    }
 
     #[tokio::test]
     async fn account_request_uses_exact_path_bearer_and_accept_headers() {

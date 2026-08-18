@@ -13,6 +13,9 @@ const DEVICE_CODE: &str = "device_code";
 const USER_CODE: &str = "user_code";
 const VERIFICATION_URI: &str = "verification_uri";
 const VERIFICATION_URI_COMPLETE: &str = "verification_uri_complete";
+const MAX_OAUTH_FIELD_BYTES: usize = 64 * 1024;
+const MAX_VERIFICATION_URL_BYTES: usize = 8 * 1024;
+const PORTAL_HOST: &str = "portal.nousresearch.com";
 
 /// OAuth device authorization data returned by the portal.
 ///
@@ -78,22 +81,12 @@ pub struct AccountSnapshot {
     pub total_usable_credits: Option<f64>,
     pub rollover_credits: Option<f64>,
     pub current_period_end: Option<DateTime<Utc>>,
-    /// A canonical serialization of only the fields above.  This field is kept
-    /// for the initial contract scaffold and is not the raw response body.
-    pub serialized_snapshot: String,
 }
 
-impl AccountSnapshot {
-    /// Total directly-supported credits, when both components are reported.
-    pub fn total_available_credits(&self) -> Option<f64> {
-        match (self.credits_remaining, self.rollover_credits) {
-            (Some(remaining), Some(rollover)) => Some(remaining + rollover),
-            (Some(remaining), None) => Some(remaining),
-            (None, Some(rollover)) => Some(rollover),
-            (None, None) => None,
-        }
-    }
+// Parsing rejects non-finite credit values, so equality remains reflexive.
+impl Eq for AccountSnapshot {}
 
+impl AccountSnapshot {
     /// Percentage consumed from the monthly allocation, if the response gives
     /// a complete, positive denominator and a non-negative numerator.
     pub fn usage_percent(&self) -> Option<f64> {
@@ -175,8 +168,6 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
             "creditsRemaining",
             "subscription_credits_remaining",
             "subscriptionCreditsRemaining",
-            "total_usable_credits",
-            "totalUsableCredits",
         ],
     )?;
     let purchased_credits_remaining = optional_credit(
@@ -224,9 +215,8 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
             "creditsRemaining",
             "subscription_credits_remaining",
             "subscriptionCreditsRemaining",
-            "total_usable_credits",
-            "totalUsableCredits",
         ][..],
+        &["total_usable_credits", "totalUsableCredits"][..],
         &[
             "purchased_credits_remaining",
             "purchasedCreditsRemaining",
@@ -258,19 +248,6 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
         return Err("account response has no supported display fields".into());
     }
 
-    let safe = SafeAccount {
-        plan: plan.clone(),
-        tier,
-        monthly_credits,
-        credits_remaining,
-        purchased_credits_remaining,
-        total_usable_credits,
-        rollover_credits,
-        current_period_end,
-    };
-    let serialized_snapshot = serde_json::to_string(&safe)
-        .map_err(|_| "account snapshot could not be serialized".to_string())?;
-
     Ok(AccountSnapshot {
         plan,
         tier,
@@ -280,28 +257,7 @@ pub fn parse_account(value: &Value) -> Result<AccountSnapshot, String> {
         total_usable_credits,
         rollover_credits,
         current_period_end,
-        serialized_snapshot,
     })
-}
-
-#[derive(serde::Serialize)]
-struct SafeAccount {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plan: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tier: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    monthly_credits: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    credits_remaining: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    purchased_credits_remaining: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    total_usable_credits: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rollover_credits: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    current_period_end: Option<DateTime<Utc>>,
 }
 
 fn object<'a>(value: &'a Value, name: &str) -> Result<&'a Map<String, Value>, String> {
@@ -317,7 +273,10 @@ fn required_nonempty_string(object: &Map<String, Value>, field: &str) -> Result<
     let text = value
         .as_str()
         .ok_or_else(|| format!("field `{field}` must be a string"))?;
-    if text.trim().is_empty() || text.chars().any(char::is_control) {
+    if text.trim().is_empty()
+        || text.len() > MAX_OAUTH_FIELD_BYTES
+        || text.chars().any(char::is_control)
+    {
         return Err(format!("field `{field}` must be non-empty"));
     }
     Ok(text.to_owned())
@@ -325,11 +284,14 @@ fn required_nonempty_string(object: &Map<String, Value>, field: &str) -> Result<
 
 fn required_https_url(object: &Map<String, Value>, field: &str) -> Result<String, String> {
     let value = required_nonempty_string(object, field)?;
-    if !value.starts_with("https://")
-        || value[8..].is_empty()
-        || value
-            .chars()
-            .any(|ch| ch.is_whitespace() || ch.is_control())
+    let parsed =
+        reqwest::Url::parse(&value).map_err(|_| format!("field `{field}` must be an HTTPS URL"))?;
+    if value.len() > MAX_VERIFICATION_URL_BYTES
+        || parsed.scheme() != "https"
+        || parsed.host_str() != Some(PORTAL_HOST)
+        || parsed.port_or_known_default() != Some(443)
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
     {
         return Err(format!("field `{field}` must be an HTTPS URL"));
     }
@@ -470,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn account_snapshot_only_serializes_safe_fields() {
+    fn account_snapshot_only_retains_display_safe_fields() {
         let value = serde_json::json!({
             "plan": "Pro",
             "user_id": "test-user-id",
@@ -478,8 +440,36 @@ mod tests {
             "monthly_credits": 10.0,
         });
         let snapshot = parse_account(&value).unwrap();
-        assert!(snapshot.serialized_snapshot.contains("Pro"));
-        assert!(!snapshot.serialized_snapshot.contains("test-user-id"));
-        assert!(!snapshot.serialized_snapshot.contains("test-org-id"));
+        let debug = format!("{snapshot:?}");
+        assert!(debug.contains("Pro"));
+        assert!(!debug.contains("test-user-id"));
+        assert!(!debug.contains("test-org-id"));
+    }
+
+    #[test]
+    fn oauth_urls_are_structural_and_secret_fields_are_bounded() {
+        let mut device = serde_json::json!({
+            "device_code": "test-device",
+            "user_code": "TEST",
+            "verification_uri": "https://portal.nousresearch.com/device",
+            "verification_uri_complete": "https://portal.nousresearch.com/device?code=TEST",
+            "expires_in": 900,
+            "interval": 5
+        });
+        assert!(parse_device_code(&device).is_ok());
+
+        device["verification_uri_complete"] =
+            serde_json::json!("https://user@portal.nousresearch.com/device");
+        assert!(parse_device_code(&device).is_err());
+        device["verification_uri_complete"] =
+            serde_json::json!("https://portal.nousresearch.com.evil.test/device");
+        assert!(parse_device_code(&device).is_err());
+
+        let token = serde_json::json!({
+            "access_token": "x".repeat(MAX_OAUTH_FIELD_BYTES + 1),
+            "refresh_token": "test-refresh",
+            "expires_in": 3600
+        });
+        assert!(parse_token(&token).is_err());
     }
 }

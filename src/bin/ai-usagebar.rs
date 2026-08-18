@@ -63,7 +63,17 @@ async fn run_nous_auth(action: &NousAuthAction) -> i32 {
             }
         },
         NousAuthAction::Login => {
-            let client = reqwest::Client::new();
+            let client = match reqwest::Client::builder()
+                .timeout(ai_usagebar::vendor::HTTP_CLIENT_TIMEOUT)
+                .redirect(ai_usagebar::vendor::same_origin_redirect_policy())
+                .build()
+            {
+                Ok(client) => client,
+                Err(_) => {
+                    eprintln!("Nous Research login failed: could not initialize HTTP client");
+                    return 1;
+                }
+            };
             let endpoints = ai_usagebar::nous::oauth::Endpoints::default();
             let device =
                 match ai_usagebar::nous::oauth::request_device_code(&client, &endpoints).await {

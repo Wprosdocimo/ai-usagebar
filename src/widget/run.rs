@@ -176,16 +176,14 @@ async fn nous_output(cli: &Cli) -> Result<WaybarOutput> {
     let endpoints = crate::nous::fetch::Endpoints::default();
     let account =
         crate::nous::fetch::fetch_account_with_refresh(&client, &store, &endpoints, Utc::now())
-            .await
-            .map_err(nous_error_to_app)?;
-    let snapshot = crate::nous::vendor::normalize(&account);
-    let outcome: VendorOutcome = crate::nous::fetch::FetchOutcome {
-        snapshot: account,
+            .await?;
+    let snapshot = account.clone();
+    let outcome = VendorOutcome {
+        snapshot: crate::usage::VendorSnapshot::NousResearch(account),
         stale: false,
         last_error: None,
         cache_age: Some(Duration::ZERO),
-    }
-    .into();
+    };
     let theme = theme_from_cli(cli);
     Ok(crate::nous::vendor::render(
         &outcome,
@@ -194,32 +192,6 @@ async fn nous_output(cli: &Cli) -> Result<WaybarOutput> {
         &RenderOpts::from_cli(cli),
         Utc::now(),
     ))
-}
-
-fn nous_error_to_app(error: crate::nous::fetch::FetchError) -> AppError {
-    use crate::nous::fetch::FetchError;
-    match error {
-        FetchError::Authentication => {
-            AppError::Credentials(crate::error::AUTH_FAILURE_MESSAGE.to_string())
-        }
-        FetchError::RateLimited => AppError::Http {
-            status: 429,
-            body: "Nous Research request was rate limited".into(),
-        },
-        FetchError::Transient | FetchError::Transport => {
-            AppError::Transport("Nous Research request failed".into())
-        }
-        FetchError::Schema => {
-            AppError::Schema("Nous Research account response schema mismatch".into())
-        }
-        FetchError::HttpStatus(status) => AppError::Http {
-            status,
-            body: "Nous Research request failed".into(),
-        },
-        FetchError::BodyLimit => {
-            AppError::Schema("Nous Research response exceeded the body limit".into())
-        }
-    }
 }
 
 async fn opencode_go_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {

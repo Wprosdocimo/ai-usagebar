@@ -43,6 +43,7 @@ dependencies = [
  "ratatui-bubbletea-theme",
  "reqwest",
  "rusqlite",
+ "rustix",
  "security-framework",
  "serde",
  "serde_json",

@@ -141,7 +141,7 @@ come from environment variables or `config.toml`.
 | Google Antigravity | Local Antigravity server | Opt in and keep Antigravity or an interactive `agy` session running. |
 | Cursor | Existing Cursor IDE or `cursor-agent` login | Opt in and sign in once. `cursor-agent` is the headless fallback. |
 | Kiro CLI | Existing kiro-cli login | Opt in and run `kiro-cli login` once. ai-usagebar refreshes the session when needed. |
-| Nous Research | OAuth device flow | Enable `[nous]`, click **Log in with Nous Research** in the Omarchy settings panel, or run `ai-usagebar auth nous login`. Credentials are kept separately in `~/.config/ai-usagebar/credentials.json`. |
+| Nous Research | OAuth device flow | Enable `[nous]`, click **Log in with Nous Research** in the Omarchy settings panel, or run `ai-usagebar auth nous login`. Credentials are kept in ai-usagebar's separate platform config directory (`~/.config/ai-usagebar/credentials.json` on Linux). |
 | OpenCode Go | API key (`OPENCODE_GO_API_KEY` env or `[opencode-go] api_key` in config) | Enable `[opencode-go]`, then enter the key in the Omarchy settings panel or set the environment variable. |
 
 ### Nous credits and OpenCode Go
@@ -154,11 +154,17 @@ total usable credits as separate values.
 
 Nous login is interactive because the device code is authorized in the browser.
 Leave the terminal open until it reports that login completed, then refresh the
-Omarchy panel. The login never reads Hermes Agent credentials.
+Omarchy panel. The login never reads Hermes Agent credentials. On Unix, newly
+created credential directories use mode `0700`, and credential and lock files
+use mode `0600`; an existing current-user-owned config directory also works when
+it is not group- or world-writable. Windows uses the user's platform config
+directory and inherited per-user access controls.
 
 OpenCode Go uses the official usage endpoint and the `percent` field. Its key can
 be entered through the native Settings panel; stored values are sent to the Rust
-settings command over stdin and are never placed in QML command arguments.
+settings command over stdin and are never placed in QML command arguments. Cache
+entries are tied to the endpoint and a one-way key fingerprint, so changing
+accounts cannot reuse another account's fresh or stale usage.
 
 #### Grok: team-scoped vs organization-scoped keys
 

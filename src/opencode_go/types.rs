@@ -32,11 +32,15 @@ pub fn parse_usage(value: &Value) -> Result<Usage, String> {
         .as_object()
         .ok_or_else(|| "OpenCode Go response usage must be an object".to_string())?;
 
-    Ok(Usage {
+    let parsed = Usage {
         rolling: parse_optional_window(usage, "rolling")?,
         weekly: parse_optional_window(usage, "weekly")?,
         monthly: parse_optional_window(usage, "monthly")?,
-    })
+    };
+    if parsed.rolling.is_none() && parsed.weekly.is_none() && parsed.monthly.is_none() {
+        return Err("OpenCode Go response has no supported usage windows".to_string());
+    }
+    Ok(parsed)
 }
 
 fn parse_optional_window(
@@ -58,6 +62,9 @@ fn parse_window(value: &Value, name: &str) -> Result<Window, String> {
         .and_then(Value::as_str)
         .ok_or_else(|| format!("usage.{name}.status must be a string"))?
         .to_string();
+    if !matches!(status.as_str(), "ok" | "rate-limited") {
+        return Err(format!("usage.{name}.status is unsupported"));
+    }
     let percent = object
         .get("percent")
         .and_then(Value::as_f64)
@@ -130,6 +137,7 @@ mod tests {
                 "usage": {"rolling": window(serde_json::json!(1))}
             }),
             serde_json::json!({"usage": null}),
+            serde_json::json!({"usage": {}}),
         ] {
             assert!(
                 parse_usage(&value).is_err(),
@@ -183,5 +191,16 @@ mod tests {
 
         let invalid_window = serde_json::json!({"usage": {"weekly": "not-an-object"}});
         assert!(parse_usage(&invalid_window).is_err());
+
+        let invalid_status = serde_json::json!({
+            "usage": {
+                "rolling": {
+                    "status": "limited",
+                    "percent": 1,
+                    "resetsAt": "2026-08-16T20:00:00Z"
+                }
+            }
+        });
+        assert!(parse_usage(&invalid_status).is_err());
     }
 }

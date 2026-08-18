@@ -19,28 +19,6 @@ pub const DEFAULT_FORMAT: &str = "{ocg_rolling_pct}% · {ocg_rolling_reset}";
 const DEFAULT_PLAN: &str = "OpenCode Go";
 const UNAVAILABLE: &str = "—";
 
-/// Local adapter state until `crate::usage::VendorSnapshot` grows an
-/// OpenCode-Go variant. The fields intentionally mirror `VendorOutcome` so
-/// the eventual shared projection is mechanical.
-#[derive(Debug, Clone)]
-pub struct LocalVendorOutcome {
-    pub snapshot: Usage,
-    pub stale: bool,
-    pub last_error: Option<(u16, String)>,
-    pub cache_age: Option<Duration>,
-}
-
-impl From<FetchOutcome> for LocalVendorOutcome {
-    fn from(outcome: FetchOutcome) -> Self {
-        Self {
-            snapshot: outcome.snapshot,
-            stale: outcome.stale,
-            last_error: outcome.last_error,
-            cache_age: outcome.cache_age,
-        }
-    }
-}
-
 impl From<FetchOutcome> for VendorOutcome {
     fn from(outcome: FetchOutcome) -> Self {
         Self {
@@ -49,16 +27,6 @@ impl From<FetchOutcome> for VendorOutcome {
             last_error: outcome.last_error,
             cache_age: outcome.cache_age,
         }
-    }
-}
-
-/// Projection seam for the future shared `VendorSnapshot::OpenCodeGo` variant.
-pub fn project_fetch_outcome(outcome: &FetchOutcome) -> LocalVendorOutcome {
-    LocalVendorOutcome {
-        snapshot: outcome.snapshot.clone(),
-        stale: outcome.stale,
-        last_error: outcome.last_error.clone(),
-        cache_age: outcome.cache_age,
     }
 }
 
@@ -154,23 +122,6 @@ pub fn render(
     )
 }
 
-pub fn render_local(
-    outcome: &LocalVendorOutcome,
-    theme: &Theme,
-    opts: &RenderOpts,
-    now: DateTime<Utc>,
-) -> WaybarOutput {
-    render_with_meta(
-        &outcome.snapshot,
-        outcome.stale,
-        outcome.last_error.as_ref(),
-        outcome.cache_age,
-        theme,
-        opts,
-        now,
-    )
-}
-
 fn render_with_meta(
     snap: &Usage,
     stale: bool,
@@ -188,7 +139,7 @@ fn render_with_meta(
         text.push_str(" ⏸");
     }
     let icon_prefix = match opts.icon.as_deref() {
-        Some(icon) if !icon.is_empty() => format!("{icon} "),
+        Some(icon) if !icon.is_empty() => format!("{} ", escape(icon)),
         _ => String::new(),
     };
     let bar_text = color_span(severity_color(sev, theme), &format!("{icon_prefix}{text}"));
@@ -310,7 +261,7 @@ mod tests {
                 resets_at: at("2026-08-16T20:00:00Z"),
             }),
             weekly: Some(Window {
-                status: "limited".into(),
+                status: "rate-limited".into(),
                 percent: 45.6,
                 resets_at: at("2026-08-20T00:00:00Z"),
             }),
@@ -332,7 +283,7 @@ mod tests {
         assert_eq!(values["ocg_rolling_pct"], "12.3");
         assert_eq!(values["ocg_rolling_status"], "ok");
         assert_eq!(values["ocg_weekly_pct"], "45.6");
-        assert_eq!(values["ocg_weekly_status"], "limited");
+        assert_eq!(values["ocg_weekly_status"], "rate-limited");
         assert_eq!(values["ocg_monthly_pct"], "78.9");
         assert_eq!(values["ocg_monthly_status"], "ok");
     }

@@ -694,12 +694,9 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &endpoints,
                 Utc::now(),
             )
-            .await
-            .map_err(|error| crate::error::AppError::Credentials(error.to_string()))?;
+            .await?;
             Ok(crate::vendor::VendorOutcome {
-                snapshot: crate::usage::VendorSnapshot::NousResearch(
-                    crate::nous::vendor::normalize(&account),
-                ),
+                snapshot: crate::usage::VendorSnapshot::NousResearch(account),
                 stale: false,
                 last_error: None,
                 cache_age: Some(Duration::ZERO),

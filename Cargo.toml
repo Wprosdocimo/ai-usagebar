@@ -76,6 +76,9 @@ ratatui-bubbletea-theme = "0.2"
 # AUR source build's hermeticity (see CLAUDE.md's release checklist).
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
 
