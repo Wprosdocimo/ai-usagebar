@@ -34,6 +34,7 @@ pub fn build_placeholders(
     // pacing is computable — same contract as the OpenAI renderer.
     let session = window_pacing(snap.session.as_ref(), opts, now);
     let weekly = window_pacing(snap.weekly.as_ref(), opts, now);
+    let mcp = window_pacing(snap.mcp.as_ref(), opts, now);
     placeholders(vec![
         ("icon", "󰚩".to_string()),
         ("vendor_short", "zai".to_string()),
@@ -73,6 +74,9 @@ pub fn build_placeholders(
             "zai_mcp_reset",
             countdown::format(window_reset(&snap.mcp), now),
         ),
+        ("zai_mcp_elapsed", mcp.elapsed),
+        ("zai_mcp_pace", mcp.ratio_pace),
+        ("zai_mcp_pace_indicator", mcp.point_pace),
     ])
 }
 
@@ -338,6 +342,26 @@ mod tests {
     }
 
     #[test]
+    fn mcp_pace_placeholders_follow_usage_vs_elapsed() {
+        // 70% used vs 15d/30d = 50% elapsed → ahead of pace.
+        let now = Utc::now();
+        let snap = ZaiSnapshot {
+            plan: "GLM Coding Pro".into(),
+            session: None,
+            weekly: None,
+            mcp: Some(UsageWindow {
+                utilization_pct: 70,
+                resets_at: Some(now + chrono::Duration::days(15)),
+                window_duration: chrono::Duration::days(30),
+            }),
+        };
+        let values = build_placeholders(&snap, &opts(), now);
+        assert_eq!(values["zai_mcp_elapsed"], "50");
+        assert_eq!(values["zai_mcp_pace"], "↑");
+        assert_eq!(values["zai_mcp_pace_indicator"], "↑");
+    }
+
+    #[test]
     fn elapsed_placeholders_empty_without_window() {
         let snap = ZaiSnapshot {
             plan: "GLM Coding Unknown".into(),
@@ -349,6 +373,8 @@ mod tests {
         assert_eq!(values["session_elapsed"], "");
         assert_eq!(values["weekly_elapsed"], "");
         assert_eq!(values["zai_session_pace"], "");
+        assert_eq!(values["zai_mcp_elapsed"], "");
+        assert_eq!(values["zai_mcp_pace"], "");
     }
 
     #[test]
