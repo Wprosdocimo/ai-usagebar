@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 
 use crate::countdown;
 use crate::format::{placeholders, substitute, updated_at_hm};
-use crate::pacing::PaceSeverity;
+use crate::pacing::{self, PaceSeverity};
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
@@ -30,6 +30,7 @@ pub const DEFAULT_FORMAT: &str = "{minimax_session_pct}% · {minimax_session_res
 
 pub fn build_placeholders(
     snap: &MinimaxSnapshot,
+    opts: &RenderOpts,
     now: DateTime<Utc>,
 ) -> HashMap<&'static str, String> {
     let session_pct = snap.session.utilization_pct;
@@ -45,6 +46,19 @@ pub fn build_placeholders(
             None => "—".to_string(),
         }
     };
+    // Session and weekly always carry a real duration (5h/7d default, or the
+    // API's own start/end span) and a reset timestamp, so pacing is
+    // computable — same contract as the OpenAI and Z.AI renderers.
+    let session = window_pacing(&snap.session, opts, now);
+    let weekly = window_pacing(&snap.weekly, opts, now);
+    let video_pacing = match snap.video_session.as_ref() {
+        Some(w) => window_pacing(w, opts, now),
+        None => WindowPacing {
+            elapsed: "—".to_string(),
+            ratio_pace: "—".to_string(),
+            point_pace: "—".to_string(),
+        },
+    };
 
     placeholders(vec![
         ("icon", "󰚩".to_string()),
@@ -55,16 +69,50 @@ pub fn build_placeholders(
         ("session_reset", session_reset.clone()),
         ("weekly_pct", weekly_pct.to_string()),
         ("weekly_reset", weekly_reset.clone()),
+        ("session_elapsed", session.elapsed.clone()),
+        ("weekly_elapsed", weekly.elapsed.clone()),
         // MiniMax-specific placeholders.
         ("minimax_plan", snap.plan.clone()),
         ("minimax_session_pct", session_pct.to_string()),
         ("minimax_session_reset", session_reset),
         ("minimax_weekly_pct", weekly_pct.to_string()),
         ("minimax_weekly_reset", weekly_reset),
+        ("minimax_session_elapsed", session.elapsed),
+        ("minimax_session_pace", session.ratio_pace),
+        ("minimax_session_pace_indicator", session.point_pace),
+        ("minimax_weekly_elapsed", weekly.elapsed),
+        ("minimax_weekly_pace", weekly.ratio_pace),
+        ("minimax_weekly_pace_indicator", weekly.point_pace),
         ("minimax_video_pct", video(&snap.video_session, true)),
         ("minimax_video_reset", video(&snap.video_session, false)),
+        ("minimax_video_elapsed", video_pacing.elapsed),
+        ("minimax_video_pace", video_pacing.ratio_pace),
+        ("minimax_video_pace_indicator", video_pacing.point_pace),
         ("minimax_video_weekly_pct", video(&snap.video_weekly, true)),
     ])
+}
+
+/// Elapsed fraction and pace glyphs for one window, as ready placeholder
+/// values.
+struct WindowPacing {
+    elapsed: String,
+    ratio_pace: String,
+    point_pace: String,
+}
+
+fn window_pacing(w: &UsageWindow, opts: &RenderOpts, now: DateTime<Utc>) -> WindowPacing {
+    let p = pacing::calc(
+        w.utilization_pct,
+        w.resets_at,
+        now,
+        w.window_duration,
+        opts.pace_tolerance,
+    );
+    WindowPacing {
+        elapsed: p.elapsed_pct.to_string(),
+        ratio_pace: p.ratio_pace.glyph().to_string(),
+        point_pace: p.point_pace.glyph().to_string(),
+    }
 }
 
 /// Worst of the two text-pool windows. The video pool deliberately does not
@@ -90,7 +138,7 @@ pub fn render(
         .format
         .clone()
         .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
-    let values = build_placeholders(snap, now);
+    let values = build_placeholders(snap, opts, now);
     // User formats are Pango markup after Waybar renders them. Escape API
     // strings there, while retaining raw values for the default tooltip (which
     // escapes exactly once at its markup insertion point).
@@ -267,7 +315,7 @@ mod tests {
     /// them MiniMax would render blank rows on the desktop.
     #[test]
     fn exposes_cross_vendor_aliases() {
-        let v = build_placeholders(&snap(), now());
+        let v = build_placeholders(&snap(), &opts(), now());
         assert_eq!(v.get("session_pct").map(String::as_str), Some("31"));
         assert_eq!(v.get("weekly_pct").map(String::as_str), Some("62"));
         assert_eq!(v.get("vendor_short").map(String::as_str), Some("mmx"));
@@ -290,12 +338,42 @@ mod tests {
         let mut s = snap();
         s.video_session = None;
         s.video_weekly = None;
-        let v = build_placeholders(&s, now());
+        let v = build_placeholders(&s, &opts(), now());
         assert_eq!(v.get("minimax_video_pct").map(String::as_str), Some("—"));
         assert_eq!(
             v.get("minimax_video_weekly_pct").map(String::as_str),
             Some("—")
         );
+        assert_eq!(v.get("minimax_video_pace").map(String::as_str), Some("—"));
+    }
+
+    #[test]
+    fn pace_placeholders_follow_usage_vs_elapsed() {
+        // Session: 80% used vs 2h/5h = 60% elapsed → ahead of pace. Weekly:
+        // 15% used vs 3d/7d = 57% elapsed → under pace.
+        let n = now();
+        let mut s = snap();
+        s.session = window(80, 120, chrono::Duration::hours(5));
+        s.weekly = window(15, 3 * 24 * 60, chrono::Duration::days(7));
+        let v = build_placeholders(&s, &opts(), n);
+        assert_eq!(v["minimax_session_elapsed"], "60");
+        assert_eq!(v["minimax_session_pace"], "↑");
+        assert_eq!(v["minimax_session_pace_indicator"], "↑");
+        assert_eq!(v["minimax_weekly_elapsed"], "57");
+        assert_eq!(v["minimax_weekly_pace"], "↓");
+        assert_eq!(v["minimax_weekly_pace_indicator"], "↓");
+    }
+
+    #[test]
+    fn video_pace_follows_usage_vs_elapsed() {
+        // 90% used vs 6h/24h = 75% elapsed → ahead of pace.
+        let n = now();
+        let mut s = snap();
+        s.video_session = Some(window(90, 6 * 60, chrono::Duration::hours(24)));
+        let v = build_placeholders(&s, &opts(), n);
+        assert_eq!(v["minimax_video_elapsed"], "75");
+        assert_eq!(v["minimax_video_pace"], "↑");
+        assert_eq!(v["minimax_video_pace_indicator"], "↑");
     }
 
     #[test]
