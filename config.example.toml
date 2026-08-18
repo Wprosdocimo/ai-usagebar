@@ -10,7 +10,7 @@
 # is selected when the TUI opens. Comment out to default to Anthropic.
 # Valid: anthropic | anthropic_api | openai | zai | openrouter | deepseek
 #        | kimi | kilo | novita | moonshot | grok | supergrok | antigravity
-#        | cursor | minimax | kiro
+#        | cursor | minimax | kiro | nous | opencode-go
 # When unset, the TUI opens on the Overview (all vendors at once); set this to
 # open directly on a vendor's tab instead.
 # primary = "anthropic"
@@ -272,3 +272,17 @@ enabled = false
 #   macOS:   ~/Library/Application Support/kiro-cli/data.sqlite3
 #   Windows: %APPDATA%\kiro-cli\data.sqlite3
 # db_path = "/home/you/.local/share/kiro-cli/data.sqlite3"
+
+# Nous Research — OAuth Device Flow. Authentication is kept in ai-usagebar's
+# separate platform config directory (~/.config/ai-usagebar/credentials.json on
+# Linux). New directories are 0700 and credential/lock files are 0600 on Unix.
+# Run `ai-usagebar auth nous login`; logout removes only the Nous entry.
+[nous]
+enabled = false
+
+# OpenCode Go — usage from /zen/go/v1/usage. Opt in only after exporting the
+# API key under this variable; the key itself is never written to this example.
+[opencode-go]
+enabled = false
+api_key_env = "OPENCODE_GO_API_KEY"
+# api_key = "[REDACTED]"  # optional inline fallback; prefer the environment

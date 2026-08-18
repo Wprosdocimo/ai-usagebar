@@ -157,6 +157,8 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
         Vendor::Cursor => cursor_output(cli, &config).await,
         Vendor::Minimax => minimax_output(cli, &config).await,
         Vendor::Kiro => kiro_output(cli, &config).await,
+        Vendor::NousResearch => nous_output(cli).await,
+        Vendor::OpenCodeGo => opencode_go_output(cli, &config).await,
     }
 }
 
@@ -165,6 +167,66 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
 /// that default to disabled (such as Kimi).
 fn dispatch_is_eligible(cli: &Cli, config: &Config, vendor: Vendor) -> bool {
     cli.has_explicit_vendor() || config.is_enabled(vendor.to_id())
+}
+
+/// Nous Research authenticates with the independent OAuth credential store.
+async fn nous_output(cli: &Cli) -> Result<WaybarOutput> {
+    let client = http_client()?;
+    let store = crate::nous::credentials::CredentialStore::default();
+    let endpoints = crate::nous::fetch::Endpoints::default();
+    let account =
+        crate::nous::fetch::fetch_account_with_refresh(&client, &store, &endpoints, Utc::now())
+            .await?;
+    let snapshot = account.clone();
+    let outcome = VendorOutcome {
+        snapshot: crate::usage::VendorSnapshot::NousResearch(account),
+        stale: false,
+        last_error: None,
+        cache_age: Some(Duration::ZERO),
+    };
+    let theme = theme_from_cli(cli);
+    Ok(crate::nous::vendor::render(
+        &outcome,
+        &snapshot,
+        &theme,
+        &RenderOpts::from_cli(cli),
+        Utc::now(),
+    ))
+}
+
+async fn opencode_go_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
+    let api_key = crate::config::resolve_api_key(
+        "OpenCode Go",
+        &config.opencode_go.api_key_env,
+        config.opencode_go.api_key.as_deref(),
+    )?;
+    let client = http_client()?;
+    let cache = vendor_cache(cli, "opencode-go")?;
+    let endpoints = crate::opencode_go::fetch::Endpoints::default();
+    let outcome = match crate::opencode_go::fetch::fetch_snapshot(
+        &client,
+        &api_key,
+        &cache,
+        &endpoints,
+        DEFAULT_TTL,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) if error.is_transient() => {
+            return Ok(WaybarOutput::loading(cli.icon.as_deref()));
+        }
+        Err(error) => return Err(error),
+    };
+    let snapshot = outcome.snapshot.clone();
+    let vendor_outcome: VendorOutcome = outcome.into();
+    Ok(crate::opencode_go::vendor::render(
+        &vendor_outcome,
+        &snapshot,
+        &theme_from_cli(cli),
+        &RenderOpts::from_cli(cli),
+        Utc::now(),
+    ))
 }
 
 /// Antigravity authenticates through whichever local product is running (the

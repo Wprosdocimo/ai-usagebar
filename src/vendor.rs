@@ -35,6 +35,7 @@ pub(crate) const VENDOR_SECRET_ENV_VARS: &[&str] = &[
     "ANTHROPIC_ADMIN_KEY",
     "XAI_API_KEY",
     "GROK_API_KEY",
+    "OPENCODE_GO_API_KEY",
 ];
 
 pub(crate) fn vendor_secret_env_vars_to_remove(keep: &[&str]) -> Vec<&'static str> {
@@ -123,6 +124,10 @@ pub enum VendorId {
     Cursor,
     Minimax,
     Kiro,
+    #[serde(rename = "nous")]
+    NousResearch,
+    #[serde(rename = "opencode-go")]
+    OpenCodeGo,
 }
 
 impl VendorId {
@@ -144,6 +149,8 @@ impl VendorId {
             VendorId::Cursor => "cursor",
             VendorId::Minimax => "minimax",
             VendorId::Kiro => "kiro",
+            VendorId::NousResearch => "nous",
+            VendorId::OpenCodeGo => "opencode-go",
         }
     }
 
@@ -168,6 +175,8 @@ impl VendorId {
             VendorId::Cursor => "Cursor",
             VendorId::Minimax => "MiniMax",
             VendorId::Kiro => "Kiro",
+            VendorId::NousResearch => "Nous Research",
+            VendorId::OpenCodeGo => "OpenCode Go",
         }
     }
 
@@ -189,6 +198,8 @@ impl VendorId {
             VendorId::Cursor,
             VendorId::Minimax,
             VendorId::Kiro,
+            VendorId::NousResearch,
+            VendorId::OpenCodeGo,
         ]
     }
 }
@@ -241,6 +252,18 @@ mod tests {
         assert_eq!(VendorId::Anthropic.display_name(), "Claude");
         assert_eq!(VendorId::Openai.display_name(), "Codex");
         assert_eq!(VendorId::Zai.display_name(), "Z.AI");
+    }
+
+    #[test]
+    fn new_vendor_contracts_keep_public_names_and_slugs() {
+        assert_eq!(VendorId::NousResearch.slug(), "nous");
+        assert_eq!(VendorId::NousResearch.display_name(), "Nous Research");
+        assert_eq!(VendorId::OpenCodeGo.slug(), "opencode-go");
+        assert_eq!(VendorId::OpenCodeGo.display_name(), "OpenCode Go");
+        assert_eq!(
+            serde_json::to_value(VendorId::OpenCodeGo).unwrap(),
+            serde_json::json!("opencode-go")
+        );
     }
 
     #[test]

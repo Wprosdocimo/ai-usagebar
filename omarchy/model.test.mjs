@@ -35,6 +35,13 @@ assert.match(settingsViewSource, /command:\s*\["ai-usagebar",\s*"settings",\s*"s
 assert.match(settingsViewSource, /command:\s*\["ai-usagebar",\s*"settings",\s*"apply"\]/);
 assert.match(settingsViewSource, /stdinEnabled:\s*true/);
 assert.match(settingsViewSource, /write\(root\.pendingPayload\s*\+\s*"\\n"\)/);
+assert.match(settingsViewSource, /signal\s+nousLoginRequested\(\)/);
+assert.match(settingsViewSource, /Log in with Nous Research/);
+assert.match(settingsViewSource, /Leave the terminal open until login completes/);
+assert.match(settingsViewSource, /model:\s*root\.snapshot\.keys/);
+assert.match(panelSource, /function\s+openNousLogin\s*\(/);
+assert.match(panelSource, /ai-usagebar auth nous login/);
+assert.match(panelSource, /onNousLoginRequested/);
 assert.doesNotMatch(settingsViewSource, /command:\s*\[[^\]]*(?:api.?key|secret|pendingPayload)/i);
 
 const raw = JSON.stringify({primary: 'openai', entries: [
@@ -133,6 +140,17 @@ assert.equal(settings.primary_choices[0].label, 'Claude');
 assert.equal(settings.primary_choices[1].label, 'Codex');
 assert.equal(settings.keys[0].inline_configured, true);
 assert.equal(settings.keys[0].environment, 'KIMI_API_KEY');
+const opencodeSettings = model.parseSettingsSnapshot(JSON.stringify({
+  schema_version: 1,
+  primary: 'opencode-go',
+  primary_choices: [{id: 'opencode-go', label: 'OpenCode Go'}],
+  keys: [{id: 'opencode-go', label: 'OpenCode Go', environment: 'OPENCODE_GO_API_KEY',
+    note: 'usage quota', configured: false, inline_configured: false, environment_configured: false}]
+}));
+assert.equal(opencodeSettings.ok, true);
+assert.equal(opencodeSettings.primary, 'opencode-go');
+assert.equal(opencodeSettings.keys[0].id, 'opencode-go');
+assert.equal(opencodeSettings.keys[0].environment, 'OPENCODE_GO_API_KEY');
 assert.equal(model.parseSettingsSnapshot('{').ok, false);
 assert.equal(model.parseSettingsSnapshot(JSON.stringify({schema_version: 2, primary_choices: [], keys: []})).ok, false);
 const noEnabled = model.parseSettingsSnapshot(JSON.stringify({

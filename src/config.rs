@@ -54,6 +54,9 @@ pub struct Config {
     pub cursor: CursorConfig,
     pub minimax: MinimaxConfig,
     pub kiro: KiroConfig,
+    pub nous: NousConfig,
+    #[serde(rename = "opencode-go")]
+    pub opencode_go: OpenCodeGoConfig,
 }
 
 /// UI / dispatch preferences. Currently just `primary` — which vendor the
@@ -465,6 +468,30 @@ impl Default for OpenAiConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct NousConfig {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OpenCodeGoConfig {
+    pub enabled: bool,
+    pub api_key_env: String,
+    pub api_key: Option<String>,
+}
+
+impl Default for OpenCodeGoConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key_env: "OPENCODE_GO_API_KEY".to_string(),
+            api_key: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ZaiConfig {
@@ -800,9 +827,12 @@ pub fn resolve_api_key(
     } else {
         "fix the invalid `api_key_env` with a valid environment variable name or set `api_key`"
     };
+    let section = match vendor_label {
+        "OpenCode Go" => "opencode-go".to_string(),
+        _ => vendor_label.to_lowercase(),
+    };
     Err(crate::error::AppError::Credentials(format!(
-        "{vendor_label}: no API key. Either {advice} under [{}] in {}.",
-        vendor_label.to_lowercase(),
+        "{vendor_label}: no API key. Either {advice} under [{section}] in {}.",
         config_path_hint()
     )))
 }
@@ -876,6 +906,7 @@ impl Config {
             self.moonshot.api_key.as_deref(),
             self.grok.api_key.as_deref(),
             self.anthropic_api.api_key.as_deref(),
+            self.opencode_go.api_key.as_deref(),
         ]
         .into_iter()
         .any(|key| key.is_some_and(|key| !key.is_empty()))
@@ -922,6 +953,8 @@ impl Config {
             VendorId::Cursor => self.cursor.enabled,
             VendorId::Minimax => self.minimax.enabled,
             VendorId::Kiro => self.kiro.enabled,
+            VendorId::NousResearch => self.nous.enabled,
+            VendorId::OpenCodeGo => self.opencode_go.enabled,
         }
     }
 
@@ -1118,6 +1151,23 @@ mod tests {
             assert!(!c.is_enabled(opt_in), "{opt_in:?}");
         }
         assert_eq!(c.enabled_vendors().len(), 4);
+    }
+
+    #[test]
+    fn new_provider_defaults_are_opt_in_and_use_exact_auth_contracts() {
+        let config = Config::default();
+        assert!(!config.is_enabled(VendorId::NousResearch));
+        assert!(!config.is_enabled(VendorId::OpenCodeGo));
+        assert_eq!(config.opencode_go.api_key_env, "OPENCODE_GO_API_KEY");
+        assert!(config.opencode_go.api_key.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opencode_go_inline_key_is_protected_like_other_api_keys() {
+        let mut config = Config::default();
+        config.opencode_go.api_key = Some("<redacted>".to_string());
+        assert!(config.has_inline_api_keys());
     }
 
     #[test]
@@ -1387,6 +1437,22 @@ enabled = false
             }
             other => panic!("expected Credentials error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_api_key_uses_exact_opencode_go_section_name() {
+        let _g = env_guard();
+        unsafe { std::env::remove_var("OPENCODE_GO_API_KEY") };
+        let err = resolve_api_key("OpenCode Go", "OPENCODE_GO_API_KEY", None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("[opencode-go]"),
+            "wrong section hint: {message}"
+        );
+        assert!(
+            !message.contains("[opencode go]"),
+            "wrong section hint: {message}"
+        );
     }
 
     #[test]

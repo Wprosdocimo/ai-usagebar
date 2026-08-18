@@ -34,6 +34,7 @@ Column {
 
   signal saved()
   signal fallbackRequested()
+  signal nousLoginRequested()
   signal closeRequested()
 
   spacing: Style.space(12)
@@ -276,6 +277,45 @@ Column {
       fontFamily: root.fontFamily
       enabled: !root.saving
       onChanged: function(value) { root.selectedPrimary = value }
+    }
+  }
+
+  Column {
+    visible: !root.loading
+    width: parent.width
+    spacing: Style.space(10)
+
+    PanelSeparator {
+      width: parent.width
+      foreground: root.foreground
+    }
+    PanelSectionHeader {
+      text: "AUTHENTICATION"
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+    }
+    Text {
+      width: parent.width
+      text: "Nous Research uses OAuth. Login opens in a terminal. Leave the terminal open until login completes, then return here and press Refresh."
+      textFormat: Text.PlainText
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+    }
+    Button {
+      width: parent.width
+      text: "Log in with Nous Research"
+      iconText: "󰍂"
+      bordered: true
+      focusable: true
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      enabled: !root.saving
+      onClicked: {
+        root.statusText = "Nous Research login is opening in a terminal."
+        root.nousLoginRequested()
+      }
     }
   }
 

@@ -128,6 +128,11 @@ Panel {
       bar.run("omarchy-launch-floating-terminal-with-presentation ai-usagebar-tui")
   }
 
+  function openNousLogin() {
+    if (bar && typeof bar.run === "function")
+      bar.run("omarchy-launch-floating-terminal-with-presentation ai-usagebar auth nous login")
+  }
+
   function switchPanel(direction) {
     if (bar && typeof bar.switchPanelFrom === "function")
       return bar.switchPanelFrom(barIdentity, direction)
@@ -327,6 +332,7 @@ Panel {
             fontFamily: root.fontFamily
             onSaved: root.startRefresh()
             onFallbackRequested: root.openTerminalSettings()
+            onNousLoginRequested: root.openNousLogin()
             onCloseRequested: root.closeSettings()
           }
 
