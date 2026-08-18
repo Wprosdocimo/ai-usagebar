@@ -9,6 +9,8 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-08-18
+
 ### Added
 
 - Added Nous Research subscription usage through its OAuth device flow and
@@ -27,6 +29,8 @@ Each release is also published at
 
 ### Security
 
+- Updated `h2` to 0.4.16 to bound empty DATA-frame processing
+  (`RUSTSEC-2026-0258`).
 - Nous browser launches no longer pass Portal URLs through the Windows command
   shell, and OAuth traffic uses bounded requests with same-origin redirects.
 - OAuth fields and expiry arithmetic are bounded, and provider-specific error
@@ -1532,7 +1536,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/akitaonrails/ai-usagebar/compare/v1.0.1...v1.0.2
