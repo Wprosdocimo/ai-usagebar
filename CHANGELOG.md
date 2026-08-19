@@ -9,6 +9,12 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- Omarchy's Quattro panel no longer evaluates hidden row components against
+  incompatible report rows, eliminating repeated QML type and string-binding
+  errors without changing the rendered layout.
+
 ## [1.2.0] — 2026-08-18
 
 ### Added
