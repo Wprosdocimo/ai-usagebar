@@ -25,6 +25,7 @@ and Other Models to the weekly slot; both reset with the billing cycle. Kiro
 has one pool, so it maps `kiro_pct` to both percentage slots.
 
 Claude and Codex also provide `*_elapsed`, `*_pace`, and `*_bar` families.
+Z.AI and MiniMax provide elapsed aliases plus provider-specific pace families.
 Antigravity provides elapsed values for all four windows plus
 `{session_model}`, `{weekly_model}`, `{scoped_model}`, and `{extra_model}`.
 Provider-specific families such as `{oai_*}`, `{zai_*}`, and `{or_*}` are empty
@@ -61,8 +62,32 @@ default widget automatically uses weekly values for a weekly-only response.
 ## Z.AI
 
 `{zai_plan}`, `{zai_session_pct}`, `{zai_session_reset}`,
-`{zai_weekly_pct}`, `{zai_weekly_reset}`, `{zai_mcp_pct}`,
-`{zai_mcp_reset}`
+`{zai_session_elapsed}`, `{zai_session_pace}`,
+`{zai_session_pace_indicator}`, `{zai_weekly_pct}`, `{zai_weekly_reset}`,
+`{zai_weekly_elapsed}`, `{zai_weekly_pace}`,
+`{zai_weekly_pace_indicator}`, `{zai_mcp_pct}`, `{zai_mcp_reset}`,
+`{zai_mcp_elapsed}`, `{zai_mcp_pace}`, `{zai_mcp_pace_indicator}`
+
+`{session_elapsed}` and `{weekly_elapsed}` are cross-provider aliases. An
+absent window returns empty values. A present window whose API response omits
+its reset uses the shared neutral pacing values: elapsed `0` and arrow `→`.
+
+## MiniMax
+
+`{minimax_plan}`, `{minimax_session_pct}`, `{minimax_session_reset}`,
+`{minimax_session_elapsed}`, `{minimax_session_pace}`,
+`{minimax_session_pace_indicator}`, `{minimax_weekly_pct}`,
+`{minimax_weekly_reset}`, `{minimax_weekly_elapsed}`,
+`{minimax_weekly_pace}`, `{minimax_weekly_pace_indicator}`,
+`{minimax_video_pct}`, `{minimax_video_reset}`, `{minimax_video_elapsed}`,
+`{minimax_video_pace}`, `{minimax_video_pace_indicator}`,
+`{minimax_video_weekly_pct}`, `{minimax_video_weekly_reset}`,
+`{minimax_video_weekly_elapsed}`, `{minimax_video_weekly_pace}`,
+`{minimax_video_weekly_pace_indicator}`
+
+`{session_elapsed}` and `{weekly_elapsed}` alias the text pool. Optional video
+windows return `—` when absent. As with Z.AI, a present window without a reset
+uses elapsed `0` and the neutral `→` pace marker.
 
 ## OpenRouter
 

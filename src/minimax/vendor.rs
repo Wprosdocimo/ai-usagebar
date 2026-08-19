@@ -28,9 +28,20 @@ pub const POOL_VIDEO: &str = "Video";
 
 pub const DEFAULT_FORMAT: &str = "{minimax_session_pct}% · {minimax_session_reset}";
 
+/// Build placeholders with the historical default pacing tolerance.
+///
+/// Keep this signature stable for library callers. Rendering uses the private
+/// tolerance-aware helper so `--pace-tolerance` still applies.
 pub fn build_placeholders(
     snap: &MinimaxSnapshot,
-    opts: &RenderOpts,
+    now: DateTime<Utc>,
+) -> HashMap<&'static str, String> {
+    build_placeholders_with_tolerance(snap, pacing::DEFAULT_TOLERANCE, now)
+}
+
+fn build_placeholders_with_tolerance(
+    snap: &MinimaxSnapshot,
+    pace_tolerance: u32,
     now: DateTime<Utc>,
 ) -> HashMap<&'static str, String> {
     let session_pct = snap.session.utilization_pct;
@@ -46,19 +57,14 @@ pub fn build_placeholders(
             None => "—".to_string(),
         }
     };
-    // Session and weekly always carry a real duration (5h/7d default, or the
-    // API's own start/end span) and a reset timestamp, so pacing is
-    // computable — same contract as the OpenAI and Z.AI renderers.
-    let session = window_pacing(&snap.session, opts, now);
-    let weekly = window_pacing(&snap.weekly, opts, now);
-    let video_pacing = match snap.video_session.as_ref() {
-        Some(w) => window_pacing(w, opts, now),
-        None => WindowPacing {
-            elapsed: "—".to_string(),
-            ratio_pace: "—".to_string(),
-            point_pace: "—".to_string(),
-        },
-    };
+    // Present windows normally carry resets, but degenerate upstream bounds
+    // are represented without one. `pacing::calc` deliberately returns
+    // neutral 0/arrow values then, matching the existing provider contract.
+    let session = window_pacing(&snap.session, pace_tolerance, now);
+    let weekly = window_pacing(&snap.weekly, pace_tolerance, now);
+    let video_pacing = optional_window_pacing(snap.video_session.as_ref(), pace_tolerance, now);
+    let video_weekly_pacing =
+        optional_window_pacing(snap.video_weekly.as_ref(), pace_tolerance, now);
 
     placeholders(vec![
         ("icon", "󰚩".to_string()),
@@ -89,6 +95,16 @@ pub fn build_placeholders(
         ("minimax_video_pace", video_pacing.ratio_pace),
         ("minimax_video_pace_indicator", video_pacing.point_pace),
         ("minimax_video_weekly_pct", video(&snap.video_weekly, true)),
+        (
+            "minimax_video_weekly_reset",
+            video(&snap.video_weekly, false),
+        ),
+        ("minimax_video_weekly_elapsed", video_weekly_pacing.elapsed),
+        ("minimax_video_weekly_pace", video_weekly_pacing.ratio_pace),
+        (
+            "minimax_video_weekly_pace_indicator",
+            video_weekly_pacing.point_pace,
+        ),
     ])
 }
 
@@ -100,13 +116,33 @@ struct WindowPacing {
     point_pace: String,
 }
 
-fn window_pacing(w: &UsageWindow, opts: &RenderOpts, now: DateTime<Utc>) -> WindowPacing {
+impl WindowPacing {
+    fn unavailable() -> Self {
+        Self {
+            elapsed: "—".to_string(),
+            ratio_pace: "—".to_string(),
+            point_pace: "—".to_string(),
+        }
+    }
+}
+
+fn optional_window_pacing(
+    window: Option<&UsageWindow>,
+    pace_tolerance: u32,
+    now: DateTime<Utc>,
+) -> WindowPacing {
+    window.map_or_else(WindowPacing::unavailable, |window| {
+        window_pacing(window, pace_tolerance, now)
+    })
+}
+
+fn window_pacing(w: &UsageWindow, pace_tolerance: u32, now: DateTime<Utc>) -> WindowPacing {
     let p = pacing::calc(
         w.utilization_pct,
         w.resets_at,
         now,
         w.window_duration,
-        opts.pace_tolerance,
+        pace_tolerance,
     );
     WindowPacing {
         elapsed: p.elapsed_pct.to_string(),
@@ -138,7 +174,7 @@ pub fn render(
         .format
         .clone()
         .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
-    let values = build_placeholders(snap, opts, now);
+    let values = build_placeholders_with_tolerance(snap, opts.pace_tolerance, now);
     // User formats are Pango markup after Waybar renders them. Escape API
     // strings there, while retaining raw values for the default tooltip (which
     // escapes exactly once at its markup insertion point).
@@ -295,6 +331,13 @@ mod tests {
         }
     }
 
+    fn placeholders_at(
+        snap: &MinimaxSnapshot,
+        now: DateTime<Utc>,
+    ) -> HashMap<&'static str, String> {
+        build_placeholders_with_tolerance(snap, opts().pace_tolerance, now)
+    }
+
     fn outcome(s: &MinimaxSnapshot) -> VendorOutcome {
         VendorOutcome {
             snapshot: crate::usage::VendorSnapshot::Minimax(s.clone()),
@@ -315,7 +358,7 @@ mod tests {
     /// them MiniMax would render blank rows on the desktop.
     #[test]
     fn exposes_cross_vendor_aliases() {
-        let v = build_placeholders(&snap(), &opts(), now());
+        let v = placeholders_at(&snap(), now());
         assert_eq!(v.get("session_pct").map(String::as_str), Some("31"));
         assert_eq!(v.get("weekly_pct").map(String::as_str), Some("62"));
         assert_eq!(v.get("vendor_short").map(String::as_str), Some("mmx"));
@@ -338,13 +381,41 @@ mod tests {
         let mut s = snap();
         s.video_session = None;
         s.video_weekly = None;
-        let v = build_placeholders(&s, &opts(), now());
+        let v = placeholders_at(&s, now());
         assert_eq!(v.get("minimax_video_pct").map(String::as_str), Some("—"));
         assert_eq!(
             v.get("minimax_video_weekly_pct").map(String::as_str),
             Some("—")
         );
         assert_eq!(v.get("minimax_video_pace").map(String::as_str), Some("—"));
+        assert_eq!(
+            v.get("minimax_video_weekly_reset").map(String::as_str),
+            Some("—")
+        );
+        assert_eq!(
+            v.get("minimax_video_weekly_pace").map(String::as_str),
+            Some("—")
+        );
+    }
+
+    #[test]
+    fn public_builder_keeps_the_default_tolerance_api() {
+        let snap = snap();
+        assert_eq!(
+            build_placeholders(&snap, now()),
+            build_placeholders_with_tolerance(&snap, pacing::DEFAULT_TOLERANCE, now())
+        );
+    }
+
+    #[test]
+    fn present_window_without_reset_uses_documented_neutral_pacing() {
+        let mut snap = snap();
+        snap.session.resets_at = None;
+        let values = placeholders_at(&snap, now());
+        assert_eq!(values["minimax_session_reset"], "—");
+        assert_eq!(values["minimax_session_elapsed"], "0");
+        assert_eq!(values["minimax_session_pace"], "→");
+        assert_eq!(values["minimax_session_pace_indicator"], "→");
     }
 
     #[test]
@@ -355,7 +426,7 @@ mod tests {
         let mut s = snap();
         s.session = window(80, 120, chrono::Duration::hours(5));
         s.weekly = window(15, 3 * 24 * 60, chrono::Duration::days(7));
-        let v = build_placeholders(&s, &opts(), n);
+        let v = placeholders_at(&s, n);
         assert_eq!(v["minimax_session_elapsed"], "60");
         assert_eq!(v["minimax_session_pace"], "↑");
         assert_eq!(v["minimax_session_pace_indicator"], "↑");
@@ -370,10 +441,22 @@ mod tests {
         let n = now();
         let mut s = snap();
         s.video_session = Some(window(90, 6 * 60, chrono::Duration::hours(24)));
-        let v = build_placeholders(&s, &opts(), n);
+        let v = placeholders_at(&s, n);
         assert_eq!(v["minimax_video_elapsed"], "75");
         assert_eq!(v["minimax_video_pace"], "↑");
         assert_eq!(v["minimax_video_pace_indicator"], "↑");
+    }
+
+    #[test]
+    fn video_weekly_exposes_the_complete_pacing_family() {
+        let n = now();
+        let mut s = snap();
+        s.video_weekly = Some(window(90, 3 * 24 * 60, chrono::Duration::days(7)));
+        let v = placeholders_at(&s, n);
+        assert_ne!(v["minimax_video_weekly_reset"], "—");
+        assert_eq!(v["minimax_video_weekly_elapsed"], "57");
+        assert_eq!(v["minimax_video_weekly_pace"], "↑");
+        assert_eq!(v["minimax_video_weekly_pace_indicator"], "↑");
     }
 
     #[test]

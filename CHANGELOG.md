@@ -16,10 +16,12 @@ Each release is also published at
   `{zai_weekly_pace}`, `{zai_mcp_elapsed}`, `{zai_mcp_pace}`,
   `{minimax_session_elapsed}`, `{minimax_session_pace}`,
   `{minimax_weekly_elapsed}`, `{minimax_weekly_pace}`,
-  `{minimax_video_elapsed}`, `{minimax_video_pace}`, and their
-  `_pace_indicator` variants), plus the cross-vendor `{session_elapsed}` /
-  `{weekly_elapsed}` aliases — the macOS menu bar's pace marker now renders
-  for both vendors the same way it already does for Claude and Codex.
+  `{minimax_video_elapsed}`, `{minimax_video_pace}`,
+  `{minimax_video_weekly_reset}`, `{minimax_video_weekly_elapsed}`,
+  `{minimax_video_weekly_pace}`, and their `_pace_indicator` variants), plus
+  the cross-vendor `{session_elapsed}` / `{weekly_elapsed}` aliases — the macOS
+  menu bar's pace marker now renders for both vendors the same way it already
+  does for Claude and Codex.
 
 ### Fixed
 
