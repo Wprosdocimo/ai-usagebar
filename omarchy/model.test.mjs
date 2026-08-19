@@ -119,6 +119,24 @@ assert.equal(model.providerName({id: 'anthropic', display_name: 'Claude · <b>wo
 assert.equal(model.providerName({id: 'openai', name: 'openai'}), 'openai');
 assert.equal(model.errorMessage(''), 'The usage command failed without an error message.');
 
+// A missing ai-usagebar binary must be reported as such, with the install
+// command, instead of surfacing the helper's raw "not found" text or leaving
+// the widget silently stuck on its loading state.
+assert.match(model.launchErrorMessage(127, 'env: ai-usagebar: No such file or directory'),
+  /ai-usagebar is not installed/);
+assert.match(model.launchErrorMessage(127, ''), /omarchy pkg aur add ai-usagebar-bin/);
+// Every other failure keeps the existing behaviour.
+assert.equal(model.launchErrorMessage(1, 'boom'), 'boom');
+assert.equal(model.launchErrorMessage(0, ''), 'The usage command failed without an error message.');
+
+// The usage command must stay behind a helper that can emit exit 127 when the
+// binary is absent, without opening a shell-injection boundary.
+assert.match(panelSource,
+  /command:\s*\["\/usr\/bin\/env",\s*"ai-usagebar",\s*"usage",\s*"--json"\]/);
+assert.doesNotMatch(panelSource, /command:\s*\["(?:\/usr\/bin\/)?(?:ba)?sh"/);
+assert.match(panelSource, /onExited:\s*function\(exitCode\)/);
+assert.match(panelSource, /Model\.launchErrorMessage\(/);
+
 const settingsRaw = JSON.stringify({
   schema_version: 1,
   primary: 'openai',

@@ -31,6 +31,7 @@ Panel {
   property string commandStderr: ""
   property string commandStdout: ""
   property bool loading: true
+  property int lastExitCode: 0
   property bool refreshQueued: false
   property double lastSuccessfulMs: 0
   property double nowMs: Date.now()
@@ -100,7 +101,9 @@ Panel {
       syncSelection()
     } else {
       var detail = commandStderr.trim()
-      loadError = detail !== "" ? Model.errorMessage(detail) : parsed.error
+      loadError = lastExitCode === 127
+        ? Model.launchErrorMessage(lastExitCode, detail)
+        : (detail !== "" ? Model.errorMessage(detail) : parsed.error)
     }
     loading = false
     if (refreshQueued) Qt.callLater(startRefresh)
@@ -209,7 +212,9 @@ Panel {
   Process {
     id: usageProcess
     running: false
-    command: ["ai-usagebar", "usage", "--json"]
+    // /usr/bin/env always starts on Omarchy and reports a missing ai-usagebar
+    // as exit 127. Keep the command as structured argv: no shell is needed.
+    command: ["/usr/bin/env", "ai-usagebar", "usage", "--json"]
 
     stdout: StdioCollector {
       waitForEnd: true
@@ -223,7 +228,8 @@ Panel {
       onStreamFinished: root.commandStderr = text
     }
 
-    onExited: {
+    onExited: function(exitCode) {
+      root.lastExitCode = exitCode
       // Let both waitForEnd collectors publish their buffers first.
       Qt.callLater(function() { root.finishRefresh() })
     }
@@ -439,22 +445,27 @@ Panel {
                 required property var modelData
                 width: usageSection.width
 
+                // `visible` alone is not enough: QML evaluates the bindings of
+                // hidden items too, so every row used to be handed to all three
+                // components and the two that did not match read fields the row
+                // does not carry. A "spacer" row has no label or value, which is
+                // what produced the TypeError below on every report.
                 MetricRow {
                   visible: modelData.type === "metric"
                   width: parent.width
-                  row: modelData
+                  row: modelData.type === "metric" ? modelData : null
                 }
 
                 DetailRow {
                   visible: modelData.type === "text"
                   width: parent.width
-                  row: modelData
+                  row: modelData.type === "text" ? modelData : null
                 }
 
                 BlockRow {
                   visible: modelData.type === "block"
                   width: parent.width
-                  row: modelData
+                  row: modelData.type === "block" ? modelData : null
                 }
 
                 Item {
@@ -594,7 +605,7 @@ Panel {
       id: headingLabel
       visible: detailRow.heading
       width: parent.width
-      text: detailRow.row ? Model.autoTextSafe(detailRow.row.label.toUpperCase()) : ""
+      text: detailRow.row ? Model.autoTextSafe(String(detailRow.row.label || "").toUpperCase()) : ""
       foreground: root.foreground
       fontFamily: root.fontFamily
     }

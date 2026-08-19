@@ -21,6 +21,14 @@ Each release is also published at
   `{weekly_elapsed}` aliases — the macOS menu bar's pace marker now renders
   for both vendors the same way it already does for Claude and Codex.
 
+### Fixed
+
+- Omarchy now reports a missing `ai-usagebar` binary with the required install
+  command instead of leaving the Quattro widget stuck in its loading state.
+- Omarchy's Quattro panel no longer evaluates hidden row components against
+  incompatible report rows, eliminating repeated QML type and string-binding
+  errors without changing the rendered layout.
+
 ## [1.2.0] — 2026-08-18
 
 ### Added
