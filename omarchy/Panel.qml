@@ -31,6 +31,7 @@ Panel {
   property string commandStderr: ""
   property string commandStdout: ""
   property bool loading: true
+  property int lastExitCode: 0
   property bool refreshQueued: false
   property double lastSuccessfulMs: 0
   property double nowMs: Date.now()
@@ -100,7 +101,9 @@ Panel {
       syncSelection()
     } else {
       var detail = commandStderr.trim()
-      loadError = detail !== "" ? Model.errorMessage(detail) : parsed.error
+      loadError = lastExitCode === 127
+        ? Model.launchErrorMessage(lastExitCode, detail)
+        : (detail !== "" ? Model.errorMessage(detail) : parsed.error)
     }
     loading = false
     if (refreshQueued) Qt.callLater(startRefresh)
@@ -209,7 +212,10 @@ Panel {
   Process {
     id: usageProcess
     running: false
-    command: ["ai-usagebar", "usage", "--json"]
+    // Run through `sh` so a missing binary becomes exit 127 with a real
+    // message. Quickshell never emits `exited` when it fails to launch a
+    // binary directly, which left the widget loading forever and silent.
+    command: ["sh", "-c", "exec ai-usagebar usage --json"]
 
     stdout: StdioCollector {
       waitForEnd: true
@@ -223,7 +229,8 @@ Panel {
       onStreamFinished: root.commandStderr = text
     }
 
-    onExited: {
+    onExited: function(exitCode) {
+      root.lastExitCode = exitCode
       // Let both waitForEnd collectors publish their buffers first.
       Qt.callLater(function() { root.finishRefresh() })
     }
