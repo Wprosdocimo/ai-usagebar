@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 
 use crate::countdown;
 use crate::format::{placeholders, substitute, updated_at_hm};
-use crate::pacing::PaceSeverity;
+use crate::pacing::{self, PaceSeverity};
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, push_window, render_bordered};
@@ -18,7 +18,19 @@ use super::fetch::FetchOutcome;
 
 pub const DEFAULT_FORMAT: &str = "{zai_session_pct}% · {zai_session_reset}";
 
+/// Build placeholders with the historical default pacing tolerance.
+///
+/// Keep this signature stable for library callers. Rendering uses the private
+/// tolerance-aware helper so `--pace-tolerance` still applies.
 pub fn build_placeholders(snap: &ZaiSnapshot, now: DateTime<Utc>) -> HashMap<&'static str, String> {
+    build_placeholders_with_tolerance(snap, pacing::DEFAULT_TOLERANCE, now)
+}
+
+fn build_placeholders_with_tolerance(
+    snap: &ZaiSnapshot,
+    pace_tolerance: u32,
+    now: DateTime<Utc>,
+) -> HashMap<&'static str, String> {
     let session_pct = snap
         .session
         .as_ref()
@@ -26,6 +38,12 @@ pub fn build_placeholders(snap: &ZaiSnapshot, now: DateTime<Utc>) -> HashMap<&'s
         .unwrap_or(0);
     let weekly_pct = snap.weekly.as_ref().map(|w| w.utilization_pct).unwrap_or(0);
     let mcp_pct = snap.mcp.as_ref().map(|w| w.utilization_pct).unwrap_or(0);
+    // A present window normally carries a reset, but the upstream response may
+    // omit it. `pacing::calc` deliberately returns neutral 0/arrow values in
+    // that case, matching the established OpenAI placeholder contract.
+    let session = window_pacing(snap.session.as_ref(), pace_tolerance, now);
+    let weekly = window_pacing(snap.weekly.as_ref(), pace_tolerance, now);
+    let mcp = window_pacing(snap.mcp.as_ref(), pace_tolerance, now);
     placeholders(vec![
         ("icon", "󰚩".to_string()),
         ("vendor_short", "zai".to_string()),
@@ -40,6 +58,8 @@ pub fn build_placeholders(snap: &ZaiSnapshot, now: DateTime<Utc>) -> HashMap<&'s
             "weekly_reset",
             countdown::format(window_reset(&snap.weekly), now),
         ),
+        ("session_elapsed", session.elapsed.clone()),
+        ("weekly_elapsed", weekly.elapsed.clone()),
         ("plan", snap.plan.clone()),
         ("zai_plan", snap.plan.clone()),
         ("zai_session_pct", session_pct.to_string()),
@@ -52,16 +72,54 @@ pub fn build_placeholders(snap: &ZaiSnapshot, now: DateTime<Utc>) -> HashMap<&'s
             "zai_weekly_reset",
             countdown::format(window_reset(&snap.weekly), now),
         ),
+        ("zai_session_elapsed", session.elapsed),
+        ("zai_session_pace", session.ratio_pace),
+        ("zai_session_pace_indicator", session.point_pace),
+        ("zai_weekly_elapsed", weekly.elapsed),
+        ("zai_weekly_pace", weekly.ratio_pace),
+        ("zai_weekly_pace_indicator", weekly.point_pace),
         ("zai_mcp_pct", mcp_pct.to_string()),
         (
             "zai_mcp_reset",
             countdown::format(window_reset(&snap.mcp), now),
         ),
+        ("zai_mcp_elapsed", mcp.elapsed),
+        ("zai_mcp_pace", mcp.ratio_pace),
+        ("zai_mcp_pace_indicator", mcp.point_pace),
     ])
 }
 
 fn window_reset(w: &Option<UsageWindow>) -> Option<DateTime<Utc>> {
     w.as_ref().and_then(|w| w.resets_at)
+}
+
+/// Elapsed fraction and pace glyphs for one window, as ready placeholder
+/// values. Empty strings when the window is absent, mirroring the OpenAI
+/// renderer's convention; `pacing::calc` degrades to neutral 0/glyphs when
+/// the reset is unreported.
+#[derive(Default)]
+struct WindowPacing {
+    elapsed: String,
+    ratio_pace: String,
+    point_pace: String,
+}
+
+fn window_pacing(w: Option<&UsageWindow>, pace_tolerance: u32, now: DateTime<Utc>) -> WindowPacing {
+    let Some(w) = w else {
+        return WindowPacing::default();
+    };
+    let p = pacing::calc(
+        w.utilization_pct,
+        w.resets_at,
+        now,
+        w.window_duration,
+        pace_tolerance,
+    );
+    WindowPacing {
+        elapsed: p.elapsed_pct.to_string(),
+        ratio_pace: p.ratio_pace.glyph().to_string(),
+        point_pace: p.point_pace.glyph().to_string(),
+    }
 }
 
 pub fn severity(snap: &ZaiSnapshot) -> PaceSeverity {
@@ -87,7 +145,7 @@ pub fn render(
         .format
         .clone()
         .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
-    let values = build_placeholders(snap, now);
+    let values = build_placeholders_with_tolerance(snap, opts.pace_tolerance, now);
 
     let mut text = substitute(&format, &values);
     if outcome.stale {
@@ -232,12 +290,149 @@ mod tests {
         }
     }
 
+    fn placeholders_at(snap: &ZaiSnapshot, now: DateTime<Utc>) -> HashMap<&'static str, String> {
+        build_placeholders_with_tolerance(snap, opts().pace_tolerance, now)
+    }
+
     #[test]
     fn default_format_renders_session_pct() {
         let snap = sample_snap();
         let oc = outcome(snap.clone());
         let out = render(&oc, &snap, &Theme::default(), &opts(), Utc::now());
         assert!(out.text.contains("42%"));
+    }
+
+    #[test]
+    fn elapsed_placeholders_follow_window_progress() {
+        // Fixed `now` on both sides so the fraction is exact: 2h left of a 5h
+        // window → 60% elapsed; 3d left of a 7d window → 57%.
+        let now = Utc::now();
+        let snap = ZaiSnapshot {
+            plan: "GLM Coding Pro".into(),
+            session: Some(UsageWindow {
+                utilization_pct: 42,
+                resets_at: Some(now + chrono::Duration::hours(2)),
+                window_duration: chrono::Duration::hours(5),
+            }),
+            weekly: Some(UsageWindow {
+                utilization_pct: 15,
+                resets_at: Some(now + chrono::Duration::days(3)),
+                window_duration: chrono::Duration::days(7),
+            }),
+            mcp: None,
+        };
+        let values = placeholders_at(&snap, now);
+        assert_eq!(values["session_elapsed"], "60");
+        assert_eq!(values["weekly_elapsed"], "57");
+    }
+
+    #[test]
+    fn pace_placeholders_follow_usage_vs_elapsed() {
+        // Session: 80% used vs 60% elapsed → ahead of pace. Weekly: 15% used
+        // vs 57% elapsed → under pace.
+        let now = Utc::now();
+        let snap = ZaiSnapshot {
+            plan: "GLM Coding Pro".into(),
+            session: Some(UsageWindow {
+                utilization_pct: 80,
+                resets_at: Some(now + chrono::Duration::hours(2)),
+                window_duration: chrono::Duration::hours(5),
+            }),
+            weekly: Some(UsageWindow {
+                utilization_pct: 15,
+                resets_at: Some(now + chrono::Duration::days(3)),
+                window_duration: chrono::Duration::days(7),
+            }),
+            mcp: None,
+        };
+        let values = placeholders_at(&snap, now);
+        assert_eq!(values["zai_session_pace"], "↑");
+        assert_eq!(values["zai_session_pace_indicator"], "↑");
+        assert_eq!(values["zai_weekly_pace"], "↓");
+        assert_eq!(values["zai_weekly_pace_indicator"], "↓");
+        assert_eq!(values["zai_session_elapsed"], "60");
+        assert_eq!(values["zai_weekly_elapsed"], "57");
+    }
+
+    #[test]
+    fn public_builder_keeps_the_default_tolerance_api() {
+        let now = Utc::now();
+        let snap = sample_snap();
+        assert_eq!(
+            build_placeholders(&snap, now),
+            build_placeholders_with_tolerance(&snap, pacing::DEFAULT_TOLERANCE, now)
+        );
+    }
+
+    #[test]
+    fn custom_tolerance_changes_the_ratio_pace() {
+        let now = Utc::now();
+        let snap = ZaiSnapshot {
+            plan: "GLM Coding Pro".into(),
+            session: Some(UsageWindow {
+                utilization_pct: 53,
+                resets_at: Some(now + chrono::Duration::minutes(150)),
+                window_duration: chrono::Duration::hours(5),
+            }),
+            weekly: None,
+            mcp: None,
+        };
+        assert_eq!(
+            build_placeholders_with_tolerance(&snap, 5, now)["zai_session_pace"],
+            "↑"
+        );
+        assert_eq!(
+            build_placeholders_with_tolerance(&snap, 10, now)["zai_session_pace"],
+            "→"
+        );
+    }
+
+    #[test]
+    fn present_window_without_reset_uses_documented_neutral_pacing() {
+        let now = Utc::now();
+        let mut snap = sample_snap();
+        snap.session.as_mut().unwrap().resets_at = None;
+        let values = placeholders_at(&snap, now);
+        assert_eq!(values["zai_session_reset"], "—");
+        assert_eq!(values["zai_session_elapsed"], "0");
+        assert_eq!(values["zai_session_pace"], "→");
+        assert_eq!(values["zai_session_pace_indicator"], "→");
+    }
+
+    #[test]
+    fn mcp_pace_placeholders_follow_usage_vs_elapsed() {
+        // 70% used vs 15d/30d = 50% elapsed → ahead of pace.
+        let now = Utc::now();
+        let snap = ZaiSnapshot {
+            plan: "GLM Coding Pro".into(),
+            session: None,
+            weekly: None,
+            mcp: Some(UsageWindow {
+                utilization_pct: 70,
+                resets_at: Some(now + chrono::Duration::days(15)),
+                window_duration: chrono::Duration::days(30),
+            }),
+        };
+        let values = placeholders_at(&snap, now);
+        assert_eq!(values["zai_mcp_elapsed"], "50");
+        assert_eq!(values["zai_mcp_pace"], "↑");
+        assert_eq!(values["zai_mcp_pace_indicator"], "↑");
+    }
+
+    #[test]
+    fn elapsed_placeholders_empty_without_window() {
+        let snap = ZaiSnapshot {
+            plan: "GLM Coding Unknown".into(),
+            session: None,
+            weekly: None,
+            mcp: None,
+        };
+        let values = placeholders_at(&snap, Utc::now());
+        assert_eq!(values["session_elapsed"], "");
+        assert_eq!(values["weekly_elapsed"], "");
+        assert_eq!(values["zai_session_pace"], "");
+        assert_eq!(values["zai_mcp_elapsed"], "");
+        assert_eq!(values["zai_mcp_pace"], "");
     }
 
     #[test]
