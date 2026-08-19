@@ -446,22 +446,27 @@ Panel {
                 required property var modelData
                 width: usageSection.width
 
+                // `visible` alone is not enough: QML evaluates the bindings of
+                // hidden items too, so every row used to be handed to all three
+                // components and the two that did not match read fields the row
+                // does not carry. A "spacer" row has no label or value, which is
+                // what produced the TypeError below on every report.
                 MetricRow {
                   visible: modelData.type === "metric"
                   width: parent.width
-                  row: modelData
+                  row: modelData.type === "metric" ? modelData : null
                 }
 
                 DetailRow {
                   visible: modelData.type === "text"
                   width: parent.width
-                  row: modelData
+                  row: modelData.type === "text" ? modelData : null
                 }
 
                 BlockRow {
                   visible: modelData.type === "block"
                   width: parent.width
-                  row: modelData
+                  row: modelData.type === "block" ? modelData : null
                 }
 
                 Item {
@@ -601,7 +606,7 @@ Panel {
       id: headingLabel
       visible: detailRow.heading
       width: parent.width
-      text: detailRow.row ? Model.autoTextSafe(detailRow.row.label.toUpperCase()) : ""
+      text: detailRow.row ? Model.autoTextSafe(String(detailRow.row.label || "").toUpperCase()) : ""
       foreground: root.foreground
       fontFamily: root.fontFamily
     }
