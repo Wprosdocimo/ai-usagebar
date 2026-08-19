@@ -113,6 +113,14 @@ api_key_env = "ZAI_API_KEY"      # checked first; if set + non-empty, used
 enabled = true
 api_key_env = "OPENROUTER_API_KEY"
 # api_key = "sk-or-v1-..."
+# Named keys appear as separate TUI/report entries and use isolated caches.
+# The default key above stays visible unless this is false. It is always kept
+# when no named accounts exist.
+# show_default_account = false
+# [[openrouter.accounts]]
+# label = "work"
+# api_key_env = "OPENROUTER_WORK_API_KEY"
+# api_key = "sk-or-v1-..."  # optional fallback; chmod 600 when inline
 
 [deepseek]
 # Disabled by default — enable once you've set a key (env var or inline).

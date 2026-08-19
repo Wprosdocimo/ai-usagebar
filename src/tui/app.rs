@@ -36,9 +36,9 @@ pub struct ReadyTab {
     pub fetched_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Identity of one TUI tab. Usually a whole vendor; for Anthropic it can also
-/// name a specific configured account (issues #14 / #17). `account: None` is a
-/// plain vendor tab — the default Claude account, or any non-Anthropic vendor.
+/// Identity of one TUI tab. Usually a whole vendor; Claude and OpenRouter can
+/// also name a configured account. `account: None` is a plain vendor tab or
+/// that vendor's default account.
 /// `desktop` marks an account whose usage comes from the Claude Desktop app's
 /// own token rather than a `claude` CLI credential.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -60,8 +60,13 @@ impl TabId {
 
     /// A named Anthropic account tab (`[[anthropic.accounts]]` label).
     pub fn account(label: impl Into<String>) -> Self {
+        Self::account_for(VendorId::Anthropic, label)
+    }
+
+    /// A named account for a vendor that supports account arrays.
+    pub fn account_for(vendor: VendorId, label: impl Into<String>) -> Self {
         Self {
-            vendor: VendorId::Anthropic,
+            vendor,
             account: Some(label.into()),
             desktop: false,
         }
@@ -78,11 +83,10 @@ impl TabId {
     }
 }
 
-/// Expand enabled vendors into the tab list. Anthropic yields its default
-/// account tab followed by one tab per `[[anthropic.accounts]]` entry, in
-/// config order; every other vendor is a single tab. With no extra accounts
-/// configured the result equals `config.enabled_vendors()` — identical tab set
-/// and order to before (issue #14/#17 back-compat).
+/// Expand enabled vendors into the tab list. Claude and OpenRouter yield their
+/// default account followed by configured named accounts; every other vendor
+/// is a single tab. With no extra accounts the result equals
+/// `config.enabled_vendors()`, preserving the historical tab set and order.
 ///
 /// Config-only and pure — no Desktop profiles. Production uses
 /// [`tabs_with_desktop`]; this stays for the hermetic unit tests and any caller
@@ -134,6 +138,13 @@ fn build_tabs(config: &Config, desktop_labels: &[String]) -> Vec<TabId> {
             }
             for label in desktop_labels {
                 tabs.push(TabId::desktop_account(label.clone()));
+            }
+        } else if vendor == VendorId::Openrouter {
+            if config.openrouter.show_default_account || config.openrouter.accounts.is_empty() {
+                tabs.push(TabId::vendor(vendor));
+            }
+            for account in &config.openrouter.accounts {
+                tabs.push(TabId::account_for(vendor, account.label.clone()));
             }
         } else {
             tabs.push(TabId::vendor(vendor));
@@ -467,12 +478,11 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             Ok(outcome.into())
         }
         VendorId::Openrouter => {
-            let api_key = crate::config::resolve_api_key(
-                "OpenRouter",
-                &config.openrouter.api_key_env,
-                config.openrouter.api_key.as_deref(),
-            )?;
-            let cache = crate::cache::Cache::for_vendor("openrouter")?;
+            let api_key = config.openrouter.resolve_api_key(tab.account.as_deref())?;
+            let cache = match tab.account.as_deref() {
+                Some(label) => crate::cache::Cache::for_vendor_account("openrouter", label)?,
+                None => crate::cache::Cache::for_vendor("openrouter")?,
+            };
             let endpoints = crate::openrouter::fetch::Endpoints::default();
             let outcome = crate::openrouter::fetch_snapshot(
                 client,
@@ -932,6 +942,60 @@ mod tests {
         let vendors: Vec<VendorId> = tabs.iter().map(|t| t.vendor).collect();
         assert_eq!(vendors, config.enabled_vendors());
         assert!(tabs.iter().all(|t| t.account.is_none()));
+    }
+
+    #[test]
+    fn tabs_expand_openrouter_accounts_without_changing_other_vendors() {
+        let mut config = Config::default();
+        config.anthropic.enabled = false;
+        config.openai.enabled = false;
+        config.zai.enabled = false;
+        config.openrouter.accounts = vec![
+            crate::config::OpenRouterAccount {
+                label: "work".into(),
+                api_key_env: Some("OPENROUTER_WORK_API_KEY".into()),
+                api_key: None,
+            },
+            crate::config::OpenRouterAccount {
+                label: "personal".into(),
+                api_key_env: None,
+                api_key: Some("personal-key".into()),
+            },
+        ];
+        assert_eq!(
+            tabs_from_config(&config),
+            vec![
+                TabId::vendor(VendorId::Openrouter),
+                TabId::account_for(VendorId::Openrouter, "work"),
+                TabId::account_for(VendorId::Openrouter, "personal"),
+            ]
+        );
+    }
+
+    #[test]
+    fn openrouter_can_hide_default_only_when_named_accounts_exist() {
+        let mut config = Config::default();
+        config.anthropic.enabled = false;
+        config.openai.enabled = false;
+        config.zai.enabled = false;
+        config.openrouter.show_default_account = false;
+        assert_eq!(
+            tabs_from_config(&config),
+            vec![TabId::vendor(VendorId::Openrouter)]
+        );
+
+        config
+            .openrouter
+            .accounts
+            .push(crate::config::OpenRouterAccount {
+                label: "work".into(),
+                api_key_env: Some("OPENROUTER_WORK_API_KEY".into()),
+                api_key: None,
+            });
+        assert_eq!(
+            tabs_from_config(&config),
+            vec![TabId::account_for(VendorId::Openrouter, "work")]
+        );
     }
 
     #[test]

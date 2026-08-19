@@ -181,8 +181,8 @@ fn report_exit_code(entries: &[Entry]) -> i32 {
     i32::from(entries.iter().all(|entry| entry.error.is_some()))
 }
 
-/// Stable machine id, matching the `anthropic@<label>` convention the macOS
-/// menu bar already uses for accounts.
+/// Stable machine id shared by aggregate views and the macOS menu bar:
+/// `<vendor>@<label>` for named accounts.
 fn tab_id(tab: &TabId) -> String {
     match &tab.account {
         Some(account) => format!("{}@{account}", tab.vendor.slug()),
@@ -376,6 +376,11 @@ mod tests {
         assert_eq!(tab_id(&plain), "cursor");
         assert_eq!(tab_name(&plain), "cursor");
         assert_eq!(tab_display_name(&plain), "Cursor");
+
+        let openrouter = TabId::account_for(VendorId::Openrouter, "work");
+        assert_eq!(tab_id(&openrouter), "openrouter@work");
+        assert_eq!(tab_name(&openrouter), "openrouter · work");
+        assert_eq!(tab_display_name(&openrouter), "OpenRouter · work");
     }
 
     #[test]

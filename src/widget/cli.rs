@@ -116,11 +116,10 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub creds_path: Option<std::path::PathBuf>,
 
-    /// Select a named Anthropic account from `[[anthropic.accounts]]` in
-    /// config (issue #14). Without it, `--vendor anthropic` uses the default
-    /// account — the singular `[anthropic] credentials_path` — with unchanged
-    /// output and cache path. Anthropic only; conflicts with the lower-level
-    /// `--creds-path` (they both name a credentials file).
+    /// Select a named Claude or OpenRouter account from the matching
+    /// `[[...accounts]]` config array. Without it, the vendor's default account
+    /// and original cache path are unchanged. For Claude it conflicts with the
+    /// lower-level `--creds-path` because both select a credential source.
     #[arg(long, value_name = "LABEL", conflicts_with = "creds_path")]
     pub account: Option<String>,
 

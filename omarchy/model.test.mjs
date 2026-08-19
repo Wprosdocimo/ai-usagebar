@@ -86,6 +86,17 @@ assert.equal(model.preferredEntryId(parsed.entries, parsed.primary), 'openai');
 assert.equal(model.preferredEntryId(parsed.entries, 'anthropic'), 'anthropic@work');
 assert.equal(model.preferredEntryId(parsed.entries, 'missing'), 'anthropic@work');
 
+const openRouterAccounts = model.parseReport(JSON.stringify({entries: [{
+  id: 'openrouter@work', name: 'openrouter · work', display_name: 'OpenRouter · work',
+  error: null, sections: []
+}, {
+  id: 'openrouter@personal', name: 'openrouter · personal', display_name: 'OpenRouter · personal',
+  error: null, sections: []
+}]})).entries;
+assert.deepEqual(Array.from(model.filteredEntries(openRouterAccounts, 'openrouter')).map(entry => entry.id),
+  ['openrouter@work', 'openrouter@personal']);
+assert.equal(model.providerName(openRouterAccounts[0]), 'OpenRouter · work');
+
 assert.equal(model.headline(parsed.entries[0]).text, '29%');
 assert.equal(model.headline(parsed.entries[1]).severity, 'critical');
 assert.equal(model.isAlarming(parsed.entries[0]), true); // stale

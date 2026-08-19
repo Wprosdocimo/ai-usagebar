@@ -133,6 +133,7 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
     // typo'd section shows another account's usage with no diagnostic.
     let config = Config::load()?;
     let vendor = cli.resolved_vendor(&config);
+    validate_vendor_options(cli, vendor)?;
     if !dispatch_is_eligible(cli, &config, vendor) {
         return Err(AppError::Other(format!(
             "vendor {:?} is disabled in {}",
@@ -160,6 +161,20 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
         Vendor::NousResearch => nous_output(cli).await,
         Vendor::OpenCodeGo => opencode_go_output(cli, &config).await,
     }
+}
+
+fn validate_vendor_options(cli: &Cli, vendor: Vendor) -> Result<()> {
+    if cli.account.is_some() && !matches!(vendor, Vendor::Anthropic | Vendor::Openrouter) {
+        return Err(AppError::Other(
+            "--account is supported only for Claude and OpenRouter".into(),
+        ));
+    }
+    if cli.desktop && vendor != Vendor::Anthropic {
+        return Err(AppError::Other(
+            "--desktop is supported only for Claude accounts".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Config and persisted selections may only dispatch enabled vendors. An
@@ -633,13 +648,8 @@ async fn zai_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
 }
 
 async fn openrouter_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
-    let api_key = crate::config::resolve_api_key(
-        "OpenRouter",
-        &config.openrouter.api_key_env,
-        config.openrouter.api_key.as_deref(),
-    )?;
+    let (api_key, cache) = openrouter_target(cli, config)?;
     let client = http_client()?;
-    let cache = vendor_cache(cli, "openrouter")?;
     let endpoints = openrouter::fetch::Endpoints::default();
     let outcome = match openrouter::fetch_snapshot(
         &client,
@@ -667,6 +677,21 @@ async fn openrouter_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
         &opts,
         chrono::Utc::now(),
     ))
+}
+
+/// Resolve an OpenRouter key and its cache as one identity. The unnamed key
+/// keeps the historical vendor-root cache; each named key is isolated below
+/// `openrouter/<label>` so fresh data can never cross accounts.
+fn openrouter_target(cli: &Cli, config: &Config) -> Result<(String, Cache)> {
+    let label = cli.account.as_deref();
+    let api_key = config.openrouter.resolve_api_key(label)?;
+    let cache = match (cli.cache_dir.as_deref(), label) {
+        (Some(root), Some(label)) => Cache::at(root.join("openrouter").join(label)),
+        (Some(root), None) => Cache::at(root.join("openrouter")),
+        (None, Some(label)) => Cache::for_vendor_account("openrouter", label)?,
+        (None, None) => Cache::for_vendor("openrouter")?,
+    };
+    Ok((api_key, cache))
 }
 
 async fn deepseek_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
@@ -1097,5 +1122,68 @@ mod tests {
         use clap::Parser;
         let res = Cli::try_parse_from(["ai-usagebar", "--account", "work", "--creds-path", "/x"]);
         assert!(res.is_err(), "--account and --creds-path must conflict");
+    }
+
+    #[test]
+    fn openrouter_named_account_uses_its_key_and_cache_subdir() {
+        let mut config = Config::default();
+        config
+            .openrouter
+            .accounts
+            .push(crate::config::OpenRouterAccount {
+                label: "work".into(),
+                api_key_env: None,
+                api_key: Some("work-key".into()),
+            });
+        config
+            .openrouter
+            .accounts
+            .push(crate::config::OpenRouterAccount {
+                label: "personal".into(),
+                api_key_env: None,
+                api_key: Some("personal-key".into()),
+            });
+        let root = tempfile::tempdir().unwrap();
+        let root_str = root.path().to_str().unwrap();
+        let cli = cli_with(Some("work"), None, Some(root_str));
+        let (key, cache) = openrouter_target(&cli, &config).unwrap();
+        assert_eq!(key, "work-key");
+        assert_eq!(cache.dir(), root.path().join("openrouter/work"));
+        cache.write_payload(b"work-only").unwrap();
+
+        let personal_cli = cli_with(Some("personal"), None, Some(root_str));
+        let (personal_key, personal_cache) = openrouter_target(&personal_cli, &config).unwrap();
+        assert_eq!(personal_key, "personal-key");
+        assert!(
+            personal_cache.maybe_payload().unwrap().is_none(),
+            "a named account must not reuse another account's fresh cache"
+        );
+    }
+
+    #[test]
+    fn openrouter_default_target_keeps_the_original_cache_path() {
+        let mut config = Config::default();
+        config.openrouter.api_key_env.clear();
+        config.openrouter.api_key = Some("default-key".into());
+        let cli = cli_with(None, None, Some("/tmp/cache"));
+        let (key, cache) = openrouter_target(&cli, &config).unwrap();
+        assert_eq!(key, "default-key");
+        assert_eq!(cache.dir(), std::path::Path::new("/tmp/cache/openrouter"));
+    }
+
+    #[test]
+    fn account_flag_rejects_unrelated_vendors() {
+        let cli = cli_with(Some("work"), None, Some("/tmp/cache"));
+        assert!(validate_vendor_options(&cli, Vendor::Zai).is_err());
+        assert!(validate_vendor_options(&cli, Vendor::Anthropic).is_ok());
+        assert!(validate_vendor_options(&cli, Vendor::Openrouter).is_ok());
+    }
+
+    #[test]
+    fn desktop_flag_remains_claude_only() {
+        let mut cli = cli_with(Some("work"), None, Some("/tmp/cache"));
+        cli.desktop = true;
+        assert!(validate_vendor_options(&cli, Vendor::Openrouter).is_err());
+        assert!(validate_vendor_options(&cli, Vendor::Anthropic).is_ok());
     }
 }

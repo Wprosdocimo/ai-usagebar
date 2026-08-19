@@ -129,7 +129,7 @@ come from environment variables or `config.toml`.
 | Anthropic API | Organization Admin key | Opt in with `ANTHROPIC_ADMIN_KEY` or `[anthropic_api] api_key`. Inference and Claude Code keys do not work. |
 | Codex | OAuth, read from `~/.codex/auth.json` | Run `codex login` once. Token auto-refreshes. |
 | Z.AI | API key (`ZAI_API_KEY` env or `[zai] api_key` in config) | Set either. |
-| OpenRouter | API key (`OPENROUTER_API_KEY` env or `[openrouter] api_key` in config) | Set either. |
+| OpenRouter | API key (`OPENROUTER_API_KEY` env or `[openrouter] api_key` in config) | Set either. Named keys are supported. |
 | DeepSeek | API key (`DEEPSEEK_API_KEY` or config) | Set either and opt in. |
 | Kimi | API key (`KIMI_API_KEY` or config) | Set either and opt in. |
 | Kilo | API key (`KILO_API_KEY` env or `[kilo] api_key` in config) | Set either. Opt-in. For a team balance, also set `[kilo] organization_id`; omit it for the personal balance. |
@@ -466,6 +466,15 @@ Claude Desktop or CLI login. The dedicated
 - safe credential and cache isolation;
 - Waybar modules for personal and work subscriptions;
 - macOS Desktop and CLI switching, backups, and history conflicts.
+
+### Multiple OpenRouter accounts
+
+Add one `[[openrouter.accounts]]` entry per key, then select it with
+`--vendor openrouter --account <label>`. Named accounts appear separately in
+the TUI, native integrations, and `usage` reports. Each has its own cache, so
+one key's fresh data cannot be shown for another. See the
+[OpenRouter account guide](docs/openrouter-accounts.md) for the config and
+Waybar examples.
 
 ## Hyprland: float the TUI window
 
