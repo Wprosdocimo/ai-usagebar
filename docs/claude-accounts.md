@@ -71,9 +71,10 @@ Each named account gets its own cache under
 `~/.cache/ai-usagebar/anthropic/<label>/`. The default account keeps the
 original `~/.cache/ai-usagebar/anthropic/` path.
 
-`--account` works only with Claude and cannot be combined with `--creds-path`.
-An unknown label fails with a list of valid labels. The TUI shows the default
-Claude tab followed by one tab for each named account.
+For Claude, `--account` cannot be combined with `--creds-path`. (OpenRouter
+also supports `--account` through its own account array.) An unknown label
+fails with a list of valid labels. The TUI shows the default Claude tab
+followed by one tab for each named account.
 
 If a CLI account and a saved Desktop profile share a label, aggregate views
 such as the TUI and `usage --json` use the Desktop profile to avoid refreshing

@@ -11,6 +11,10 @@ Each release is also published at
 
 ### Added
 
+- OpenRouter supports multiple named keys through `[[openrouter.accounts]]`.
+  Named accounts work with `--account`, appear separately in aggregate views,
+  and keep isolated caches; existing singular `[openrouter]` configs and cache
+  paths remain unchanged.
 - Z.AI and MiniMax now expose pace and elapsed-time placeholders
   (`{zai_session_elapsed}`, `{zai_session_pace}`, `{zai_weekly_elapsed}`,
   `{zai_weekly_pace}`, `{zai_mcp_elapsed}`, `{zai_mcp_pace}`,

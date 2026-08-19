@@ -327,17 +327,22 @@ impl AnthropicConfig {
 /// cache sidecar names would escape, spoof terminal output, or collide with the
 /// cache layout (`usage.json`, `.stale`, …).
 pub fn validate_account_label(label: &str) -> Result<()> {
+    validate_account_label_for("anthropic", label)
+}
+
+fn validate_account_label_for(vendor: &str, label: &str) -> Result<()> {
     const RESERVED: [&str; 4] = ["usage.json", ".stale", ".last_error", ".fetch.lock"];
     let bad = label.is_empty()
         || label == "."
         || label == ".."
         || label.contains(['/', '\\'])
+        || label.contains(':')
         || label.chars().any(char::is_control)
         || RESERVED.contains(&label);
     if bad {
         return Err(AppError::Credentials(format!(
-            "invalid anthropic account label {label:?}: must be a non-empty name \
-             without path separators, control characters, or reserved cache names"
+            "invalid {vendor} account label {label:?}: must be a non-empty name \
+             without path separators, drive prefixes, control characters, or reserved cache names"
         )));
     }
     Ok(())
@@ -520,6 +525,13 @@ impl Default for ZaiConfig {
 #[serde(default)]
 pub struct OpenRouterConfig {
     pub enabled: bool,
+    /// Extra OpenRouter accounts beyond the default key. Each account gets a
+    /// separate aggregate-view entry and cache directory.
+    pub accounts: Vec<OpenRouterAccount>,
+    /// Whether aggregate views include the default (unnamed) key when named
+    /// accounts exist. Ignored when `accounts` is empty so OpenRouter never
+    /// loses its only tab.
+    pub show_default_account: bool,
     pub api_key_env: String,
     pub api_key: Option<String>,
 }
@@ -528,8 +540,63 @@ impl Default for OpenRouterConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            accounts: Vec::new(),
+            show_default_account: true,
             api_key_env: "OPENROUTER_API_KEY".to_string(),
             api_key: None,
+        }
+    }
+}
+
+/// One named OpenRouter account. The default account continues to use the
+/// singular `api_key_env` / `api_key` fields under `[openrouter]`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OpenRouterAccount {
+    /// Stable CLI/report label and account-scoped cache subdirectory.
+    pub label: String,
+    /// Optional environment variable containing this account's key.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Inline fallback when the account environment variable is unset.
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl OpenRouterConfig {
+    /// Find a named account or fail loudly instead of falling back to the
+    /// default key (which would show the wrong account's usage).
+    pub fn account(&self, label: &str) -> Result<&OpenRouterAccount> {
+        validate_account_label_for("openrouter", label)?;
+        self.accounts
+            .iter()
+            .find(|account| account.label == label)
+            .ok_or_else(|| {
+                let known: Vec<&str> = self
+                    .accounts
+                    .iter()
+                    .map(|account| account.label.as_str())
+                    .collect();
+                AppError::Credentials(format!(
+                    "openrouter account {label:?} not found in [[openrouter.accounts]]; \
+                     known labels: {known:?}"
+                ))
+            })
+    }
+
+    /// Resolve either the backward-compatible default key or one named
+    /// account. Configured values are never included in an error message.
+    pub fn resolve_api_key(&self, label: Option<&str>) -> Result<String> {
+        match label {
+            None => resolve_api_key("OpenRouter", &self.api_key_env, self.api_key.as_deref()),
+            Some(label) => {
+                let account = self.account(label)?;
+                resolve_api_key_in_section(
+                    &format!("OpenRouter account {label:?}"),
+                    "[[openrouter.accounts]]",
+                    account.api_key_env.as_deref().unwrap_or(""),
+                    account.api_key.as_deref(),
+                )
+            }
         }
     }
 }
@@ -810,6 +877,19 @@ pub fn resolve_api_key(
     env_var_name: &str,
     inline: Option<&str>,
 ) -> crate::error::Result<String> {
+    let section = match vendor_label {
+        "OpenCode Go" => "[opencode-go]".to_string(),
+        _ => format!("[{}]", vendor_label.to_lowercase()),
+    };
+    resolve_api_key_in_section(vendor_label, &section, env_var_name, inline)
+}
+
+fn resolve_api_key_in_section(
+    vendor_label: &str,
+    section: &str,
+    env_var_name: &str,
+    inline: Option<&str>,
+) -> crate::error::Result<String> {
     let valid_env_name = is_valid_env_var_name(env_var_name);
     if valid_env_name
         && let Ok(v) = std::env::var(env_var_name)
@@ -827,12 +907,8 @@ pub fn resolve_api_key(
     } else {
         "fix the invalid `api_key_env` with a valid environment variable name or set `api_key`"
     };
-    let section = match vendor_label {
-        "OpenCode Go" => "opencode-go".to_string(),
-        _ => vendor_label.to_lowercase(),
-    };
     Err(crate::error::AppError::Credentials(format!(
-        "{vendor_label}: no API key. Either {advice} under [{section}] in {}.",
+        "{vendor_label}: no API key. Either {advice} under {section} in {}.",
         config_path_hint()
     )))
 }
@@ -909,6 +985,12 @@ impl Config {
             self.opencode_go.api_key.as_deref(),
         ]
         .into_iter()
+        .chain(
+            self.openrouter
+                .accounts
+                .iter()
+                .map(|account| account.api_key.as_deref()),
+        )
         .any(|key| key.is_some_and(|key| !key.is_empty()))
     }
 
@@ -1015,6 +1097,30 @@ impl Config {
             if !labels.insert(&account.label) {
                 return Err(AppError::Credentials(format!(
                     "duplicate anthropic account label {:?}",
+                    account.label
+                )));
+            }
+        }
+        let mut openrouter_labels = HashSet::new();
+        for account in &self.openrouter.accounts {
+            validate_account_label_for("openrouter", &account.label)?;
+            if !openrouter_labels.insert(&account.label) {
+                return Err(AppError::Credentials(format!(
+                    "duplicate openrouter account label {:?}",
+                    account.label
+                )));
+            }
+            let has_env = account
+                .api_key_env
+                .as_deref()
+                .is_some_and(|name| !name.is_empty());
+            let has_inline = account
+                .api_key
+                .as_deref()
+                .is_some_and(|key| !key.is_empty());
+            if !has_env && !has_inline {
+                return Err(AppError::Credentials(format!(
+                    "openrouter account {:?} must set api_key_env or api_key",
                     account.label
                 )));
             }
@@ -1170,6 +1276,18 @@ mod tests {
         assert!(config.has_inline_api_keys());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn openrouter_named_inline_keys_receive_config_file_protection() {
+        let mut config = Config::default();
+        config.openrouter.accounts.push(OpenRouterAccount {
+            label: "work".into(),
+            api_key_env: None,
+            api_key: Some("<redacted>".into()),
+        });
+        assert!(config.has_inline_api_keys());
+    }
+
     #[test]
     fn missing_file_uses_defaults() {
         let path = std::path::Path::new("/tmp/does-not-exist-ai-usagebar-test");
@@ -1205,6 +1323,8 @@ mod tests {
         assert_eq!(c.openai.admin_key_env, "MY_ADMIN_KEY");
         assert_eq!(c.zai.api_key_env, "MY_ZAI");
         assert_eq!(c.zai.plan_tier.as_deref(), Some("pro"));
+        assert!(c.openrouter.accounts.is_empty());
+        assert!(c.openrouter.show_default_account);
     }
 
     #[test]
@@ -1554,6 +1674,106 @@ enabled = false
     }
 
     #[test]
+    fn openrouter_named_accounts_preserve_the_default_contract() {
+        let f = write_toml(
+            r#"
+            [openrouter]
+            enabled = true
+            api_key_env = "AI_USAGEBAR_TEST_OR_DEFAULT"
+            api_key = "default-inline"
+            show_default_account = false
+
+            [[openrouter.accounts]]
+            label = "work"
+            api_key_env = "OPENROUTER_WORK_API_KEY"
+
+            [[openrouter.accounts]]
+            label = "personal"
+            api_key = "personal-inline"
+            "#,
+        );
+        let _g = env_guard();
+        unsafe { std::env::remove_var("AI_USAGEBAR_TEST_OR_DEFAULT") };
+        let config = Config::load_from(f.path()).unwrap();
+        assert!(!config.openrouter.show_default_account);
+        assert_eq!(config.openrouter.accounts.len(), 2);
+        assert_eq!(
+            config.openrouter.resolve_api_key(None).unwrap(),
+            "default-inline"
+        );
+        assert_eq!(
+            config.openrouter.resolve_api_key(Some("personal")).unwrap(),
+            "personal-inline"
+        );
+    }
+
+    #[test]
+    fn openrouter_named_accounts_reject_ambiguous_or_unsafe_labels() {
+        for source in [
+            r#"
+            [[openrouter.accounts]]
+            label = "work"
+            api_key = "one"
+            [[openrouter.accounts]]
+            label = "work"
+            api_key = "two"
+            "#,
+            r#"
+            [[openrouter.accounts]]
+            label = "../work"
+            api_key = "one"
+            "#,
+            r#"
+            [[openrouter.accounts]]
+            label = "work"
+            "#,
+        ] {
+            let f = write_toml(source);
+            assert!(Config::load_from(f.path()).is_err(), "accepted {source}");
+        }
+    }
+
+    #[test]
+    fn openrouter_unknown_account_never_falls_back_to_default_key() {
+        let mut config = OpenRouterConfig {
+            api_key: Some("default-secret".into()),
+            ..OpenRouterConfig::default()
+        };
+        config.accounts.push(OpenRouterAccount {
+            label: "work".into(),
+            api_key_env: None,
+            api_key: Some("work-secret".into()),
+        });
+        let message = config
+            .resolve_api_key(Some("missing"))
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("missing") && message.contains("work"));
+        assert!(!message.contains("default-secret"));
+        assert!(!message.contains("work-secret"));
+    }
+
+    #[test]
+    fn openrouter_account_key_errors_do_not_echo_configured_values() {
+        let config = OpenRouterConfig {
+            accounts: vec![OpenRouterAccount {
+                label: "work".into(),
+                api_key_env: Some("sk_pasted_secret".into()),
+                api_key: None,
+            }],
+            ..OpenRouterConfig::default()
+        };
+        let _g = env_guard();
+        unsafe { std::env::remove_var("sk_pasted_secret") };
+        let message = config
+            .resolve_api_key(Some("work"))
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("[[openrouter.accounts]]"));
+        assert!(!message.contains("sk_pasted_secret"));
+    }
+
+    #[test]
     fn enabled_vendors_preserves_canonical_order() {
         // DeepSeek and Kimi are disabled by default (require explicit API key
         // config), so they are absent from the enabled list unless enabled.
@@ -1788,6 +2008,7 @@ enabled = false
             "..",
             "a/b",
             r"a\b",
+            "C:work",
             "line\nbreak",
             "tab\tname",
             "usage.json",

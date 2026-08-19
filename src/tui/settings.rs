@@ -1210,6 +1210,10 @@ plan_tier = "pro"
 [openrouter]
 enabled = true
 api_key_env = "OPENROUTER_API_KEY"
+
+[[openrouter.accounts]]
+label = "work"
+api_key_env = "OPENROUTER_WORK_API_KEY"
 "##,
         ));
 
@@ -1221,6 +1225,8 @@ api_key_env = "OPENROUTER_API_KEY"
         assert!(raw.contains("# pre-existing comment"));
         assert!(raw.contains("# tier comment"));
         assert!(raw.contains("api_key_env = \"ZAI_API_KEY\""));
+        assert!(raw.contains("[[openrouter.accounts]]"));
+        assert!(raw.contains("api_key_env = \"OPENROUTER_WORK_API_KEY\""));
         assert!(raw.contains("plan_tier = \"pro\""));
         assert!(raw.contains("primary = \"openrouter\""));
         assert!(raw.contains("api_key = \"zk2\""));

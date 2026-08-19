@@ -401,6 +401,10 @@ func testClaudeAccounts() {
 
     [cursor]
     enabled = true
+
+    [[openrouter.accounts]]
+    label = "work"
+    api_key_env = "OPENROUTER_WORK_API_KEY"
     """
     assertEqual(anthropicAccountLabels(inTOML: toml).joined(separator: ","),
                 "struct,gmail", "labels in file order")
@@ -416,11 +420,11 @@ func testClaudeAccounts() {
                 "b,a,c", "explicit first, clash dropped")
 
     // show_default_account semantics mirror Rust: ignored without accounts.
-    assertEqual(showDefaultClaudeAccount(configValue: "false", hasAccounts: false), true,
+    assertEqual(showDefaultAccount(configValue: "false", hasAccounts: false), true,
                 "no accounts → default always shown")
-    assertEqual(showDefaultClaudeAccount(configValue: "false", hasAccounts: true), false,
+    assertEqual(showDefaultAccount(configValue: "false", hasAccounts: true), false,
                 "false hides the default")
-    assertEqual(showDefaultClaudeAccount(configValue: nil, hasAccounts: true), true,
+    assertEqual(showDefaultAccount(configValue: nil, hasAccounts: true), true,
                 "omitted → shown")
 
     // accounts_dir discovery: every subdir is an account (Keychain-backed
@@ -446,6 +450,14 @@ func testClaudeAccounts() {
     assertEqual(baseVendorId("cursor"), "cursor", "base id unchanged")
     assertEqual(vendorArgs(for: "anthropic@gmail").joined(separator: " "),
                 "--vendor anthropic --account gmail", "account fetch args")
+    assertEqual(accountLabels(inTOML: toml, vendor: "openrouter"), ["work"],
+                "provider-specific account array is parsed")
+    assertEqual(baseVendorId("openrouter@work"), "openrouter",
+                "OpenRouter account → base vendor")
+    assertEqual(vendorArgs(for: "openrouter@work").joined(separator: " "),
+                "--vendor openrouter --account work", "OpenRouter account fetch args")
+    assertEqual(entryDisplayName("openrouter@work"), "OpenRouter · work",
+                "OpenRouter account display name")
     assertEqual(vendorArgs(for: "zai").joined(separator: " "), "--vendor zai", "vendor fetch args")
     assertEqual(entryDisplayName("anthropic@gmail"), "Claude · gmail", "account display name")
     assertEqual(entryDisplayName("overview"), "Visão geral", "overview display name")
@@ -641,12 +653,12 @@ func testDesktopAccounts() {
     assertEqual(accountLabel(of: id), "gmail", "desktop id yields its label")
     assertEqual(baseVendorId(id), "anthropic", "desktop id is an anthropic entry")
     assertEqual(isDesktopAccountId(id), true, "desktop id detected")
-    assertEqual(isDesktopAccountId(ACCOUNT_ID_PREFIX + "gmail"), false, "cli id is not desktop")
+    assertEqual(isDesktopAccountId(CLAUDE_ACCOUNT_ID_PREFIX + "gmail"), false, "cli id is not desktop")
 
     // vendorArgs adds --desktop only for a desktop account.
     assertEqual(vendorArgs(for: id), ["--vendor", "anthropic", "--account", "gmail", "--desktop"],
                 "desktop account passes --desktop")
-    assertEqual(vendorArgs(for: ACCOUNT_ID_PREFIX + "gmail"),
+    assertEqual(vendorArgs(for: CLAUDE_ACCOUNT_ID_PREFIX + "gmail"),
                 ["--vendor", "anthropic", "--account", "gmail"],
                 "cli account omits --desktop")
 
@@ -655,8 +667,14 @@ func testDesktopAccounts() {
         UsageAccount(label: "personal", desktop: false),
     ])
     assertEqual(shared.map { $0.id },
-                [DESKTOP_ACCOUNT_ID_PREFIX + "work", ACCOUNT_ID_PREFIX + "personal"],
+                [DESKTOP_ACCOUNT_ID_PREFIX + "work", CLAUDE_ACCOUNT_ID_PREFIX + "personal"],
                 "menu uses the source selected by Rust status")
+
+    let openRouter = openRouterAccountMenuEntries(["work", "personal"])
+    assertEqual(openRouter.map { $0.id },
+                [OPENROUTER_ACCOUNT_ID_PREFIX + "work",
+                 OPENROUTER_ACCOUNT_ID_PREFIX + "personal"],
+                "OpenRouter accounts use generic report ids")
 }
 
 @main

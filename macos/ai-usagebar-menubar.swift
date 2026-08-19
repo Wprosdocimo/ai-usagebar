@@ -757,25 +757,26 @@ func apiKeyEnvironment(_ v: VendorAuth) -> String {
     configValueTOML(v.id, "api_key_env") ?? v.env
 }
 
-// ── Anthropic multi-account ────────────────────────────────────────────────
-// Mirrors the Rust side (`src/config.rs`): explicit `[[anthropic.accounts]]`
-// entries plus subdirectories of `[anthropic] accounts_dir`, explicit labels
-// winning on a clash. Each account is a
+// ── Multi-account identities ───────────────────────────────────────────────
+// Claude mirrors the Rust side (`src/config.rs`): explicit
+// `[[anthropic.accounts]]` entries plus subdirectories of `[anthropic]`
+// `accounts_dir`, with explicit labels winning on a clash. Each account is a
 // selectable entry with the pseudo-id `anthropic@<label>`, fetched by the
 // binary as `--vendor anthropic --account <label>` — the binary resolves the
 // account's credentials itself (file or its own Keychain item), so the app
 // never needs to know where they live.
 
-/// `[[anthropic.accounts]]` labels, in file order. Pure text scan, like the
-/// rest of this app's TOML reading: a `[[anthropic.accounts]]` header opens a
-/// block, the first `label = "…"` inside it counts.
-func anthropicAccountLabels(inTOML text: String) -> [String] {
+/// Account-array labels for one provider, in file order. Pure text scan, like
+/// the rest of this app's TOML reading: a `[[provider.accounts]]` header opens
+/// a block, and the first `label = "…"` inside it counts.
+func accountLabels(inTOML text: String, vendor: String) -> [String] {
     var labels: [String] = []
     var inBlock = false
+    let header = "[[\(vendor).accounts]]"
     for rawLine in text.components(separatedBy: .newlines) {
         let line = rawLine.trimmingCharacters(in: .whitespaces)
         if line.hasPrefix("[") {
-            inBlock = line == "[[anthropic.accounts]]"
+            inBlock = line == header
             continue
         }
         guard inBlock, line.hasPrefix("label") else { continue }
@@ -794,6 +795,10 @@ func anthropicAccountLabels(inTOML text: String) -> [String] {
         }
     }
     return labels
+}
+
+func anthropicAccountLabels(inTOML text: String) -> [String] {
+    accountLabels(inTOML: text, vendor: "anthropic")
 }
 
 /// Immediate subdirectories of `dir`, sorted — the same discovery rule as the
@@ -826,16 +831,25 @@ func claudeAccountLabels() -> [String] {
     return mergedAccountLabels(explicit: explicit, discovered: discovered)
 }
 
-/// Rust semantics (`show_default_account`): `false` hides the default
-/// (unnamed) Claude entry, but is ignored when there are no named accounts,
-/// so Anthropic never loses its only entry.
-func showDefaultClaudeAccount(configValue: String?, hasAccounts: Bool) -> Bool {
+/// Explicit `[[openrouter.accounts]]` labels from the active config.
+func openRouterAccountLabels() -> [String] {
+    guard let text = try? String(contentsOfFile: configPathTOML(), encoding: .utf8) else {
+        return []
+    }
+    return accountLabels(inTOML: text, vendor: "openrouter")
+}
+
+/// Rust semantics (`show_default_account`): `false` hides an unnamed entry,
+/// but is ignored when there are no named accounts, so a vendor never loses
+/// its only entry.
+func showDefaultAccount(configValue: String?, hasAccounts: Bool) -> Bool {
     guard hasAccounts else { return true }
     return configValue != "false"
 }
 
-/// Pseudo-id mapping: `anthropic@<label>` selects a named account.
-let ACCOUNT_ID_PREFIX = "anthropic@"
+/// Pseudo-id mapping: `<vendor>@<label>` selects a named account.
+let CLAUDE_ACCOUNT_ID_PREFIX = "anthropic@"
+let OPENROUTER_ACCOUNT_ID_PREFIX = "openrouter@"
 // A Claude account whose usage comes from the Desktop app's own token (a saved
 // ~/.claude-acc/profiles/<label>), fetched with the widget's `--desktop` flag.
 // Distinct prefix so `vendorArgs` knows to pass it; every other helper treats it
@@ -846,41 +860,51 @@ func accountLabel(of id: String) -> String? {
     if id.hasPrefix(DESKTOP_ACCOUNT_ID_PREFIX) {
         return String(id.dropFirst(DESKTOP_ACCOUNT_ID_PREFIX.count))
     }
-    return id.hasPrefix(ACCOUNT_ID_PREFIX) ? String(id.dropFirst(ACCOUNT_ID_PREFIX.count)) : nil
+    guard let separator = id.firstIndex(of: "@") else { return nil }
+    let label = String(id[id.index(after: separator)...])
+    return label.isEmpty ? nil : label
 }
 
 func isDesktopAccountId(_ id: String) -> Bool { id.hasPrefix(DESKTOP_ACCOUNT_ID_PREFIX) }
 
 func baseVendorId(_ id: String) -> String {
-    accountLabel(of: id) != nil ? "anthropic" : id
+    if isDesktopAccountId(id) { return "anthropic" }
+    guard let separator = id.firstIndex(of: "@") else { return id }
+    return String(id[..<separator])
 }
 
 /// The subprocess arguments that select `id` (base vendor or named account).
 func vendorArgs(for id: String) -> [String] {
     if let label = accountLabel(of: id) {
-        var args = ["--vendor", "anthropic", "--account", label]
+        var args = ["--vendor", baseVendorId(id), "--account", label]
         if isDesktopAccountId(id) { args.append("--desktop") }
         return args
     }
     return ["--vendor", id]
 }
 
-/// One selectable entry: a base vendor or one Claude account.
+/// One selectable entry: a base vendor or a named account.
 struct MenuEntry {
-    let id: String    // "cursor", "anthropic", or "anthropic@<label>"
-    let name: String  // display: "Cursor", "Claude · <label>"
+    let id: String    // "cursor", "anthropic@<label>", or "openrouter@<label>"
+    let name: String  // display: "Cursor" or "Vendor · <label>"
 }
 
 func claudeAccountMenuEntries(_ accounts: [UsageAccount]) -> [MenuEntry] {
     accounts.map { account in
-        let prefix = account.desktop ? DESKTOP_ACCOUNT_ID_PREFIX : ACCOUNT_ID_PREFIX
+        let prefix = account.desktop ? DESKTOP_ACCOUNT_ID_PREFIX : CLAUDE_ACCOUNT_ID_PREFIX
         return MenuEntry(id: prefix + account.label, name: "Claude · \(account.label)")
     }
 }
 
+func openRouterAccountMenuEntries(_ labels: [String]) -> [MenuEntry] {
+    labels.map {
+        MenuEntry(id: OPENROUTER_ACCOUNT_ID_PREFIX + $0, name: "OpenRouter · \($0)")
+    }
+}
+
 /// Apply `[ui] overview_vendors` with the same semantics as the TUI: preserve
-/// config order, omit unavailable vendors, and include every named Claude
-/// account when `anthropic` is requested.
+/// config order, omit unavailable vendors, and include every named account
+/// when its base vendor is requested.
 func filterOverviewEntries(_ entries: [MenuEntry], requested: [String]?) -> [MenuEntry] {
     guard let requested else { return entries }
     var result: [MenuEntry] = []
@@ -895,8 +919,8 @@ func filterOverviewEntries(_ entries: [MenuEntry], requested: [String]?) -> [Men
 }
 
 /// The selectable entries, in menu order: every enabled+configured vendor,
-/// with Anthropic expanded into its named accounts (the default entry kept
-/// only per `show_default_account`). `active` stays listed even when
+/// with Claude and OpenRouter expanded into named accounts (their default
+/// entries kept only per `show_default_account`). `active` stays listed even when
 /// unconfigured — same rule the per-vendor list always had.
 func vendorEntries(active: String, usageAccounts: [UsageAccount]? = nil) -> [MenuEntry] {
     var out: [MenuEntry] = []
@@ -908,13 +932,22 @@ func vendorEntries(active: String, usageAccounts: [UsageAccount]? = nil) -> [Men
             let accounts = usageAccounts ?? claudeAccountLabels().map {
                 UsageAccount(label: $0, desktop: false)
             }
-            let showDefault = showDefaultClaudeAccount(
+            let showDefault = showDefaultAccount(
                 configValue: configValueTOML("anthropic", "show_default_account"),
                 hasAccounts: !accounts.isEmpty)
             if showDefault && (v.id == active || vendorConfigured(v)) {
                 out.append(MenuEntry(id: v.id, name: v.name))
             }
             out.append(contentsOf: claudeAccountMenuEntries(accounts))
+        } else if v.id == "openrouter" {
+            let labels = openRouterAccountLabels()
+            let showDefault = showDefaultAccount(
+                configValue: configValueTOML("openrouter", "show_default_account"),
+                hasAccounts: !labels.isEmpty)
+            if showDefault && (v.id == active || vendorConfigured(v)) {
+                out.append(MenuEntry(id: v.id, name: v.name))
+            }
+            out.append(contentsOf: openRouterAccountMenuEntries(labels))
         } else if v.id == active || vendorConfigured(v) {
             out.append(MenuEntry(id: v.id, name: v.name))
         }
@@ -925,7 +958,11 @@ func vendorEntries(active: String, usageAccounts: [UsageAccount]? = nil) -> [Men
 /// Display name for any selectable id (base vendor, account, or overview).
 func entryDisplayName(_ id: String) -> String {
     if id == "overview" { return "Visão geral" }
-    if let label = accountLabel(of: id) { return "Claude · \(label)" }
+    if let label = accountLabel(of: id) {
+        let base = baseVendorId(id)
+        let vendor = VENDOR_AUTH.first { $0.id == base }?.name ?? base
+        return "\(vendor) · \(label)"
+    }
     return VENDOR_AUTH.first { $0.id == id }?.name ?? id
 }
 
@@ -1299,13 +1336,19 @@ struct SettingsView: View {
     // Only enabled vendors appear in the selector: Rust treats opt-in vendors
     // (deepseek/kimi/kilo/novita/moonshot/grok/anthropic_api) as disabled when
     // their `[vendor].enabled` is omitted, and so must this picker. Claude
-    // accounts appear as their `anthropic@<label>` pseudo-ids, same as the
+    // accounts appear as their `vendor@<label>` pseudo-ids, same as the
     // "Trocar vendor" submenu.
     private var vendors: [String] {
         var ids = VENDOR_AUTH.filter { vendorEnabled($0) }.map { $0.id }
         let labels = claudeAccountLabels()
         if let at = ids.firstIndex(of: "anthropic") {
-            ids.insert(contentsOf: labels.map { ACCOUNT_ID_PREFIX + $0 }, at: at + 1)
+            ids.insert(contentsOf: labels.map { CLAUDE_ACCOUNT_ID_PREFIX + $0 }, at: at + 1)
+        }
+        let openRouterLabels = openRouterAccountLabels()
+        if let at = ids.firstIndex(of: "openrouter") {
+            ids.insert(
+                contentsOf: openRouterLabels.map { OPENROUTER_ACCOUNT_ID_PREFIX + $0 },
+                at: at + 1)
         }
         return ids
     }

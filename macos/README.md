@@ -175,6 +175,14 @@ ai-usagebar account switch work --desktop   # quits and reopens Claude.app
 
 See the main README's *Switching the active Claude account* for the full story.
 
+## Multiple OpenRouter accounts
+
+Entries from `[[openrouter.accounts]]` appear as separate menu choices and use
+`--vendor openrouter --account <label>` behind the scenes. Each account keeps
+its own cache. Set `[openrouter] show_default_account = false` when you do not
+want the unnamed key listed. See the main
+[OpenRouter account guide](../docs/openrouter-accounts.md) for configuration.
+
 ## Live config reload
 
 The app watches `config.toml` and reloads on any change — enable a vendor, add

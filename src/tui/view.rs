@@ -79,9 +79,8 @@ fn vendor_label(id: VendorId) -> &'static str {
     }
 }
 
-/// Tab label for the header/sidebar/detail title. A named Anthropic account
-/// (#14/#17) appends its label, e.g. `Claude · work`; a plain vendor tab is
-/// just the vendor name.
+/// Tab label for the header/sidebar/detail title. A named account appends its
+/// label, e.g. `Claude · work` or `OpenRouter · personal`.
 fn tab_label(tab: &TabId) -> String {
     let label = match &tab.account {
         Some(acct) => format!("{} · {}", vendor_label(tab.vendor), acct),
