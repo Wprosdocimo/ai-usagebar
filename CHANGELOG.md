@@ -11,6 +11,8 @@ Each release is also published at
 
 ### Fixed
 
+- Omarchy now reports a missing `ai-usagebar` binary with the required install
+  command instead of leaving the Quattro widget stuck in its loading state.
 - Omarchy's Quattro panel no longer evaluates hidden row components against
   incompatible report rows, eliminating repeated QML type and string-binding
   errors without changing the rendered layout.

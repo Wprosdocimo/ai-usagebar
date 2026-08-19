@@ -225,12 +225,11 @@ function errorMessage(value) {
   return message === "" ? "The usage command failed without an error message." : message
 }
 
-// The panel shells out through `sh -c`, so a missing ai-usagebar binary comes
-// back as the shell's 127 ("command not found") instead of the process simply
-// never starting. Quickshell does not emit `exited` when it cannot launch a
-// binary directly -- it only logs an internal warning -- which used to leave
-// the widget stuck on its loading state with no way for the user to tell that
-// the plugin is only a frontend and the binary was never installed.
+// The panel launches ai-usagebar through /usr/bin/env, so a missing binary
+// comes back as exit 127 instead of the process simply never starting.
+// Quickshell does not emit `exited` when it cannot launch a binary directly --
+// it only logs an internal warning -- which used to leave the widget stuck on
+// its loading state with no way to explain that the binary was not installed.
 function launchErrorMessage(exitCode, stderrText) {
   if (Number(exitCode) === 127)
     return "ai-usagebar is not installed. The plugin is only the display frontend. Install the binary with: omarchy pkg aur add ai-usagebar-bin"

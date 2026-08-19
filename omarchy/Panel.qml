@@ -212,10 +212,9 @@ Panel {
   Process {
     id: usageProcess
     running: false
-    // Run through `sh` so a missing binary becomes exit 127 with a real
-    // message. Quickshell never emits `exited` when it fails to launch a
-    // binary directly, which left the widget loading forever and silent.
-    command: ["sh", "-c", "exec ai-usagebar usage --json"]
+    // /usr/bin/env always starts on Omarchy and reports a missing ai-usagebar
+    // as exit 127. Keep the command as structured argv: no shell is needed.
+    command: ["/usr/bin/env", "ai-usagebar", "usage", "--json"]
 
     stdout: StdioCollector {
       waitForEnd: true
