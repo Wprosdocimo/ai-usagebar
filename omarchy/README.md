@@ -40,7 +40,9 @@ omarchy plugin remove akitaonrails.ai-usagebar
 
 - Bar: left-click opens the native Quattro usage panel; right-click
   intentionally launches `ai-usagebar-tui` in a terminal; middle-click or the
-  mouse wheel switches provider. Right-click is not the settings shortcut.
+  mouse wheel switches provider. The exact provider or named account is saved
+  in the widget's inline `shell.json` settings and restored after shell reloads
+  and sleep/unlock cycles. Right-click is not the settings shortcut.
 - Panel: click the gear or press `s` to open the native QML settings page.
   `h`/`l` or Left/Right switches provider, `j`/`k` or Up/Down scrolls, `r`,
   Enter, or Space refreshes, Tab moves to the neighboring bar panel, and Esc

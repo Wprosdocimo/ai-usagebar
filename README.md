@@ -325,6 +325,9 @@ The widget reads the providers and accounts already enabled in
 - The gear or `s` opens QML settings.
 - Right-click launches the TUI.
 - Middle-click or the mouse wheel switches providers.
+- The selected provider or named account is remembered across shell reloads
+  and sleep/unlock cycles. If it is later disabled, the configured primary is
+  used instead.
 
 The [Omarchy plugin guide](omarchy/README.md) covers keyboard controls,
 credential handling, updates, and development checks.

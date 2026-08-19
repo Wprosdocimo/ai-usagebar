@@ -29,6 +29,11 @@ assert.match(panelSource, /property\s+var\s+anchorItem:\s*null/);
 assert.match(panelSource, /property\s+var\s+hostWidget:\s*null/);
 assert.match(panelSource, /SettingsView\s*\{/);
 assert.match(panelSource, /function\s+openSettings\s*\(/);
+assert.match(panelSource, /setting\("lastSelectedEntryId",\s*""\)/);
+assert.match(panelSource, /function\s+persistSelection\s*\(/);
+assert.match(panelSource, /Model\.settingsWithSelectedEntry\(root\.settings,\s*root\.moduleName,\s*entryId\)/);
+assert.match(panelSource, /bar\.shell\.updateEntryInline\(root\.moduleName,\s*entry\)/);
+assert.match(panelSource, /persistSelection\(selectedEntryId\)/);
 
 const settingsViewSource = fs.readFileSync(new URL('./SettingsView.qml', import.meta.url), 'utf8');
 assert.match(settingsViewSource, /command:\s*\["ai-usagebar",\s*"settings",\s*"show"\]/);
@@ -85,6 +90,9 @@ assert.equal(model.selectedIndex(parsed.entries, 'missing'), 0);
 assert.equal(model.preferredEntryId(parsed.entries, parsed.primary), 'openai');
 assert.equal(model.preferredEntryId(parsed.entries, 'anthropic'), 'anthropic@work');
 assert.equal(model.preferredEntryId(parsed.entries, 'missing'), 'anthropic@work');
+assert.equal(model.preferredEntryId(parsed.entries, parsed.primary, 'anthropic@work'), 'anthropic@work');
+assert.equal(model.preferredEntryId(parsed.entries, parsed.primary, '  ANTHROPIC@WORK  '), 'anthropic@work');
+assert.equal(model.preferredEntryId(parsed.entries, parsed.primary, 'missing'), 'openai');
 
 const openRouterAccounts = model.parseReport(JSON.stringify({entries: [{
   id: 'openrouter@work', name: 'openrouter · work', display_name: 'OpenRouter · work',
@@ -96,6 +104,25 @@ const openRouterAccounts = model.parseReport(JSON.stringify({entries: [{
 assert.deepEqual(Array.from(model.filteredEntries(openRouterAccounts, 'openrouter')).map(entry => entry.id),
   ['openrouter@work', 'openrouter@personal']);
 assert.equal(model.providerName(openRouterAccounts[0]), 'OpenRouter · work');
+assert.equal(model.preferredEntryId(openRouterAccounts, 'openrouter', 'openrouter@personal'),
+  'openrouter@personal');
+assert.equal(model.preferredEntryId(openRouterAccounts, 'openrouter', 'openrouter@missing'),
+  'openrouter@work');
+
+const priorWidgetSettings = {
+  provider: '', refreshIntervalSec: 90, futureSetting: {keep: true}, id: 'stale-id'
+};
+const selectedWidgetSettings = model.settingsWithSelectedEntry(
+  priorWidgetSettings, 'akitaonrails.ai-usagebar', 'openrouter@personal');
+assert.deepEqual(JSON.parse(JSON.stringify(selectedWidgetSettings)), {
+  id: 'akitaonrails.ai-usagebar',
+  provider: '',
+  refreshIntervalSec: 90,
+  futureSetting: {keep: true},
+  lastSelectedEntryId: 'openrouter@personal'
+});
+assert.equal(priorWidgetSettings.lastSelectedEntryId, undefined);
+assert.equal(model.settingsWithSelectedEntry({}, 'akitaonrails.ai-usagebar', ''), null);
 
 assert.equal(model.headline(parsed.entries[0]).text, '29%');
 assert.equal(model.headline(parsed.entries[1]).severity, 'critical');

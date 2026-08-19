@@ -41,6 +41,7 @@ Panel {
   readonly property int refreshIntervalSec: Math.max(30, Math.min(3600,
     Number(setting("refreshIntervalSec", 300)) || 300))
   readonly property string configuredProvider: String(setting("provider", "") || "").trim()
+  readonly property string rememberedEntryId: String(setting("lastSelectedEntryId", "") || "").trim()
   readonly property var visibleEntries: Model.filteredEntries(entries, configuredProvider)
   readonly property int entryIndex: Model.selectedIndex(visibleEntries, selectedEntryId)
   readonly property var entry: entryIndex >= 0 ? visibleEntries[entryIndex] : null
@@ -68,13 +69,36 @@ Panel {
     }
     for (var i = 0; i < visibleEntries.length; i++)
       if (visibleEntries[i].id === selectedEntryId) return
-    selectedEntryId = Model.preferredEntryId(visibleEntries, primaryProvider)
+    selectedEntryId = Model.preferredEntryId(visibleEntries, primaryProvider, rememberedEntryId)
+  }
+
+  function restoreRememberedSelection() {
+    if (visibleEntries.length === 0) return
+    selectedEntryId = Model.preferredEntryId(visibleEntries, primaryProvider, rememberedEntryId)
+  }
+
+  function persistSelection(entryId) {
+    if (String(entryId || "").trim() === rememberedEntryId) return
+
+    // Quattro persists inline widget settings in shell.json and pushes them
+    // live to every monitor. Keep every existing setting, including settings
+    // introduced by future versions, and add only the selected report id.
+    var entry = Model.settingsWithSelectedEntry(root.settings, root.moduleName, entryId)
+    if (!entry) return
+
+    // Apply locally first so selection remains responsive. Older compatible
+    // hosts without updateEntryInline still retain the choice for this session.
+    root.settings = entry
+    if (hostWidget && "settings" in hostWidget) hostWidget.settings = entry
+    if (bar && bar.shell && typeof bar.shell.updateEntryInline === "function")
+      bar.shell.updateEntryInline(root.moduleName, entry)
   }
 
   function selectEntry(index) {
     if (visibleEntries.length === 0) return
     var wrapped = ((index % visibleEntries.length) + visibleEntries.length) % visibleEntries.length
     selectedEntryId = visibleEntries[wrapped].id
+    persistSelection(selectedEntryId)
     if (providerList.visible) providerList.positionViewAtIndex(wrapped, ListView.Contain)
     if (panelFlick) panelFlick.contentY = 0
   }
@@ -181,6 +205,7 @@ Panel {
 
   onEntriesChanged: Qt.callLater(syncSelection)
   onConfiguredProviderChanged: Qt.callLater(syncSelection)
+  onRememberedEntryIdChanged: Qt.callLater(restoreRememberedSelection)
   onOpenedChanged: {
     if (opened) {
       cursorActive = false

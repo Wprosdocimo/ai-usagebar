@@ -140,15 +140,34 @@ function selectedIndex(entries, selectedId) {
   return list.length > 0 ? 0 : -1
 }
 
-function preferredEntryId(entries, primaryProvider) {
+function preferredEntryId(entries, primaryProvider, rememberedEntryId) {
   var list = Array.isArray(entries) ? entries : []
   if (list.length === 0) return ""
+  var remembered = cleanText(rememberedEntryId, 180).trim().toLowerCase()
+  for (var r = 0; r < list.length; r++)
+    if (String(list[r].id).toLowerCase() === remembered) return list[r].id
   var primary = String(primaryProvider || "").toLowerCase()
   for (var i = 0; i < list.length; i++)
     if (String(list[i].id).toLowerCase() === primary) return list[i].id
   for (var j = 0; j < list.length; j++)
     if (baseProvider(list[j].id).toLowerCase() === primary) return list[j].id
   return list[0].id
+}
+
+function settingsWithSelectedEntry(settings, moduleName, entryId) {
+  var selected = cleanText(entryId, 180).trim()
+  if (selected === "") return null
+
+  var next = { id: cleanText(moduleName, 180).trim() }
+  var current = settings && typeof settings === "object" && !Array.isArray(settings)
+    ? settings : {}
+  for (var key in current) {
+    if (key === "id" || key === "__proto__" || key === "constructor" || key === "prototype")
+      continue
+    next[key] = current[key]
+  }
+  next.lastSelectedEntryId = selected
+  return next
 }
 
 function headline(entry) {

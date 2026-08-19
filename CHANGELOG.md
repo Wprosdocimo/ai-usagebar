@@ -9,6 +9,13 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- Omarchy remembers the exact provider or named account selected in the
+  Quattro panel and restores it after shell reloads, including sleep/unlock
+  cycles. If that entry is no longer available, the configured primary remains
+  the safe fallback.
+
 ## [1.3.0] — 2026-08-19
 
 ### Added
