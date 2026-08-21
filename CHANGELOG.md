@@ -9,6 +9,8 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-08-21
+
 ### Added
 
 - Omarchy can hide the selected provider's percentage or balance for an
@@ -1587,7 +1589,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.1.0...v1.2.0
