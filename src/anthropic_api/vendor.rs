@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
-use crate::format::{placeholders, substitute, updated_at_hm};
+use crate::format::{placeholders, substitute, updated_at_hm, usd};
 use crate::pacing::PaceSeverity;
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
@@ -19,21 +19,17 @@ use super::fetch::FetchOutcome;
 
 pub const DEFAULT_FORMAT: &str = "{aapi_headline}";
 
-fn money(v: f64) -> String {
-    format!("${v:.2}")
-}
-
 /// Bar headline: spend-vs-limit with a % when a limit is configured, otherwise
 /// just the month-to-date spend.
 fn headline(snap: &AnthropicApiSnapshot) -> String {
     match snap.limit {
         Some(l) if l > 0.0 => format!(
             "{} / ${:.0} · {}%",
-            money(snap.spent),
+            usd(snap.spent),
             l,
             snap.pct().unwrap_or(0)
         ),
-        _ => format!("{}/mo", money(snap.spent)),
+        _ => format!("{}/mo", usd(snap.spent)),
     }
 }
 
@@ -49,7 +45,7 @@ pub fn build_placeholders(snap: &AnthropicApiSnapshot) -> HashMap<&'static str, 
         ("weekly_reset", "—".to_string()),
         ("plan", "Anthropic API".to_string()),
         ("aapi_headline", headline(snap)),
-        ("aapi_spent", money(snap.spent)),
+        ("aapi_spent", usd(snap.spent)),
         (
             "aapi_limit",
             snap.limit
@@ -131,7 +127,7 @@ fn render_tooltip(
     )));
     lines.push(TooltipLine::Body(format!(
         "   <span font_weight='bold' foreground='{color}'>{spent}</span>",
-        spent = escape(&money(snap.spent))
+        spent = escape(&usd(snap.spent))
     )));
     match snap.limit {
         Some(l) if l > 0.0 => {
