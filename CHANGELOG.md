@@ -9,6 +9,12 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- The Omarchy panel's reset row now shows the wall-clock time the limit window
+  reopens alongside the countdown — `Resets in 4h 5m · 13:54` — and dates it
+  whenever the reset lands on another day (#120).
+
 ### Fixed
 
 - Google Antigravity no longer gives up when `ANTIGRAVITY_LS_ADDRESS` points at

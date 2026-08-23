@@ -241,12 +241,36 @@ function formatDuration(milliseconds) {
   return Math.max(1, minutes) + "m"
 }
 
+var MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+function pad2(value) {
+  return ("0" + value).slice(-2)
+}
+
+function isSameLocalDay(a, b) {
+  return a.getFullYear() === b.getFullYear()
+    && a.getMonth() === b.getMonth()
+    && a.getDate() === b.getDate()
+}
+
 function formatReset(resetAt, nowMs) {
   if (!resetAt) return ""
   var resetMs = new Date(String(resetAt)).getTime()
   if (!isFinite(resetMs)) return ""
   var remaining = resetMs - Number(nowMs)
-  return remaining > 0 ? "Resets in " + formatDuration(remaining) : "Reset due"
+  if (remaining <= 0) return "Reset due"
+  // Show the real local clock time the window reopens, so the absolute
+  // reset moment is visible next to the countdown. Date it whenever it
+  // lands on another day: a bare "03:00" on an 18h countdown reads as a
+  // time that has already passed, which is the ambiguity this row exists
+  // to remove. Keyed on the calendar day rather than on "is it 24h away",
+  // because tonight's reset crosses midnight long before it crosses 24h.
+  var at = new Date(resetMs)
+  var clock = pad2(at.getHours()) + ":" + pad2(at.getMinutes())
+  if (!isSameLocalDay(at, new Date(Number(nowMs))))
+    clock = MONTH_NAMES[at.getMonth()] + " " + at.getDate() + " " + clock
+  return "Resets in " + formatDuration(remaining) + " · " + clock
 }
 
 function formatUpdated(fetchedAt, nowMs) {
