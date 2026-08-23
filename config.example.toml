@@ -218,7 +218,9 @@ enabled = false
 # Google Antigravity. No credentials: usage is read from whichever local
 # Antigravity product is running (Antigravity 2.0, the `agy` CLI, or the IDE) —
 # all three share one account-wide quota. Set ANTIGRAVITY_LS_ADDRESS to
-# "host:port" only if auto-discovery of that local server ever fails.
+# "host:port" only if auto-discovery of that local server ever fails. It is
+# tried first, not exclusively: if that address is dead — a stale port after a
+# restart, say — discovery still runs and its ports are probed as fallbacks.
 [antigravity]
 enabled = false
 

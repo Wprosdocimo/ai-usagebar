@@ -134,7 +134,7 @@ async fn open_session(client: &reqwest::Client) -> Result<Session> {
         ));
     }
 
-    let mut last_err = None;
+    let mut errors = Vec::new();
     for base in bases {
         let csrf = fetch_csrf(client, &base).await;
         match post_rpc(client, &base, csrf.as_deref(), STATUS_RPC).await {
@@ -146,12 +146,42 @@ async fn open_session(client: &reqwest::Client) -> Result<Session> {
                     account: account_key(&v),
                 });
             }
-            Err(e) => last_err = Some(e),
+            Err(e) => errors.push(e),
         }
     }
-    Err(last_err.unwrap_or_else(|| {
+    Err(select_probe_error(errors))
+}
+
+/// Which failure to report when no candidate answered.
+///
+/// A server that replies `401`/`403` is running and reachable but signed out —
+/// the user can act on that, so it outranks the connection refusals from the
+/// products that simply are not up. Without this, a stale
+/// `ANTIGRAVITY_LS_ADDRESS` (or a second product on another port) would mask
+/// the one message worth reading behind transport noise.
+///
+/// Note that this also decides *visibility*: transport errors are transient and
+/// fall back silently to cache, while the `401` surfaces in the widget.
+fn select_probe_error(errors: Vec<AppError>) -> AppError {
+    let mut actionable = None;
+    let mut last = None;
+    for e in errors {
+        if actionable.is_none() && is_actionable(&e) {
+            actionable = Some(e);
+        } else {
+            last = Some(e);
+        }
+    }
+    actionable.or(last).unwrap_or_else(|| {
         AppError::Other("antigravity: no local server answered GetUserStatus".into())
-    }))
+    })
+}
+
+/// An error the user can do something about, as opposed to "that product is not
+/// running". `post_rpc` only ever yields `Http`/`Transport`/`Other`, so the
+/// authentication statuses are the whole set.
+fn is_actionable(e: &AppError) -> bool {
+    matches!(e, AppError::Http { status, .. } if *status == 401 || *status == 403)
 }
 
 async fn fetch_live(
@@ -387,28 +417,35 @@ fn candidate_bases() -> Vec<String> {
 /// Test seam for [`candidate_bases`] — takes the address override and the
 /// discovered ports instead of reading the environment and `/proc`.
 fn candidate_bases_with(override_addr: Option<&str>, discovered: Vec<u16>) -> Vec<String> {
+    let mut bases = Vec::new();
     if let Some(addr) = override_addr {
         let addr = addr.trim();
         if !addr.is_empty() {
-            return vec![normalize_base(addr)];
+            bases.push(normalize_base(addr));
         }
     }
 
     // No hardcoded fallback port on purpose: the server always binds with
     // `--https_server_port 0`, so its port is drawn from the ephemeral range
     // and cannot be guessed. Probing a fixed one would just poke whatever
-    // unrelated process happens to own it. Discovery or the explicit override.
-    discovered
-        .into_iter()
-        .map(|p| format!("http://127.0.0.1:{p}"))
-        .collect()
+    // unrelated process happens to own it. Discovered ports follow any
+    // explicit override as fallback, with duplicates omitted.
+    for p in discovered {
+        let candidate = format!("http://127.0.0.1:{p}");
+        if !bases.contains(&candidate) {
+            bases.push(candidate);
+        }
+    }
+
+    bases
 }
 
 fn normalize_base(addr: &str) -> String {
-    if addr.starts_with("http://") || addr.starts_with("https://") {
-        addr.to_string()
+    let trimmed = addr.trim().trim_end_matches('/');
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
     } else {
-        format!("http://{addr}")
+        format!("http://{trimmed}")
     }
 }
 
@@ -560,6 +597,17 @@ fn matching_windows_process_ids(processes: &[(u32, String)]) -> std::collections
         .collect()
 }
 
+/// Returns matching loopback ports in **descending** order.
+///
+/// The `agy` process binds two loopback ports: an HTTPS/TLS listener and the
+/// unencrypted HTTP JSON-RPC listener (where `GetUserStatus` and
+/// `RetrieveUserQuotaSummary` live). Both are ephemeral, but they are bound in
+/// that order, so in practice the RPC listener draws the higher number.
+/// Probing high-to-low therefore usually hits it first and avoids the spurious
+/// TLS handshake errors Go's `net/http.Server` writes to stderr whenever an
+/// unencrypted request reaches its HTTPS listener. It is only a preference:
+/// every candidate is still probed, so an inverted allocation costs one extra
+/// round-trip and nothing else.
 #[cfg(any(test, target_os = "windows"))]
 fn matching_windows_ports(
     pids: &std::collections::HashSet<u32>,
@@ -573,6 +621,7 @@ fn matching_windows_ports(
         })
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
+        .rev()
         .collect()
 }
 
@@ -1320,15 +1369,103 @@ mod tests {
     }
 
     #[test]
-    fn explicit_address_wins_and_gets_a_scheme() {
+    fn explicit_address_comes_first_and_gets_a_scheme() {
         assert_eq!(
             candidate_bases_with(Some("127.0.0.1:1234"), vec![5678]),
-            vec!["http://127.0.0.1:1234".to_string()]
+            vec![
+                "http://127.0.0.1:1234".to_string(),
+                "http://127.0.0.1:5678".to_string(),
+            ]
+        );
+        // Trailing slashes are trimmed.
+        assert_eq!(
+            candidate_bases_with(Some("127.0.0.1:1234/"), vec![5678]),
+            vec![
+                "http://127.0.0.1:1234".to_string(),
+                "http://127.0.0.1:5678".to_string(),
+            ]
+        );
+        // Duplicate base URL is omitted.
+        assert_eq!(
+            candidate_bases_with(Some("127.0.0.1:5678"), vec![5678]),
+            vec!["http://127.0.0.1:5678".to_string()]
+        );
+        // Duplicate discovered ports are omitted.
+        assert_eq!(
+            candidate_bases_with(None, vec![5678, 5678]),
+            vec!["http://127.0.0.1:5678".to_string()]
         );
         // An address that already carries a scheme is left alone.
         assert_eq!(
             candidate_bases_with(Some("https://host:9"), vec![]),
             vec!["https://host:9".to_string()]
+        );
+    }
+
+    fn http(status: u16) -> AppError {
+        AppError::Http {
+            status,
+            body: String::new(),
+        }
+    }
+
+    /// A signed-out server is worth reporting even when a later candidate only
+    /// refused the connection — that is the whole point of probing on past the
+    /// first failure.
+    #[test]
+    fn an_auth_failure_outranks_later_transport_noise() {
+        let err = select_probe_error(vec![
+            http(401),
+            AppError::Transport("connection refused".into()),
+        ]);
+        assert!(matches!(err, AppError::Http { status: 401, .. }), "{err}");
+
+        let err = select_probe_error(vec![
+            AppError::Transport("connection refused".into()),
+            http(403),
+        ]);
+        assert!(matches!(err, AppError::Http { status: 403, .. }), "{err}");
+    }
+
+    /// The *first* actionable failure wins, so the explicit override's message
+    /// survives a second signed-out product further down the list.
+    #[test]
+    fn the_first_auth_failure_wins() {
+        let err = select_probe_error(vec![http(401), http(403)]);
+        assert!(matches!(err, AppError::Http { status: 401, .. }), "{err}");
+    }
+
+    /// With nothing actionable, the last failure stands in for "nothing
+    /// answered" — and stays transient, so the widget falls back silently
+    /// instead of shouting about a product that simply is not running.
+    #[test]
+    fn without_an_auth_failure_the_last_error_stands() {
+        let err = select_probe_error(vec![
+            AppError::Transport("first".into()),
+            http(500),
+            AppError::Transport("last".into()),
+        ]);
+        assert!(
+            matches!(&err, AppError::Transport(m) if m == "last"),
+            "{err}"
+        );
+        assert!(err.is_transient());
+    }
+
+    /// A 5xx is a server that answered but broke; the user cannot act on it, so
+    /// it must not outrank a later real failure the way a 401 does.
+    #[test]
+    fn a_server_error_is_not_treated_as_actionable() {
+        let err = select_probe_error(vec![http(500), http(401)]);
+        assert!(matches!(err, AppError::Http { status: 401, .. }), "{err}");
+    }
+
+    #[test]
+    fn no_candidates_at_all_yields_a_generic_error() {
+        let err = select_probe_error(Vec::new());
+        assert!(
+            err.to_string().contains("no local server answered"),
+            "{err}"
         );
     }
 
@@ -1450,7 +1587,7 @@ mod tests {
                 pid: 10,
             },
         ];
-        assert_eq!(matching_windows_ports(&pids, &rows), vec![59868, 59870]);
+        assert_eq!(matching_windows_ports(&pids, &rows), vec![59870, 59868]);
     }
 
     #[test]
