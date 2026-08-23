@@ -17,6 +17,11 @@ Each release is also published at
 
 ### Fixed
 
+- OpenRouter no longer hides a negative credit balance behind a healthy-looking
+  `$0.00` in green (#118). A balance in debt is shown with its sign — `-$5.71` —
+  and is treated as critical everywhere, including on an account that never
+  bought credits, where the consumed-percentage has no denominator and used to
+  report a reassuring 0%.
 - Google Antigravity no longer gives up when `ANTIGRAVITY_LS_ADDRESS` points at
   a port that has moved. The override is still tried first, but discovered local
   ports are now probed behind it, and a signed-out server's authentication error

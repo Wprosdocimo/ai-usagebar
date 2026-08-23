@@ -19,7 +19,7 @@ use ratatui_bubbletea_components::{Progress, Spinner, SpinnerFrames};
 use ratatui_bubbletea_theme::BubbleTheme;
 
 use crate::countdown;
-use crate::format::local_time_hms;
+use crate::format::{local_time_hms, usd};
 use crate::pacing::{self, PaceSeverity};
 use crate::pango::severity_for;
 use crate::theme::Theme;
@@ -105,7 +105,7 @@ impl SectionBuilder {
 /// is supplied by the caller, so it is not repeated here.
 pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSeverity)>) {
     let pct = |label: &str, p: i32| (format!("{label} {p}%"), severity_for(p));
-    let money = |v: f64| (format!("${v:.2}"), PaceSeverity::Low);
+    let money = |v: f64| (usd(v), PaceSeverity::Low);
     let ccy = |v: f64, c: &str| {
         let s = match c {
             "USD" => format!("${v:.2}"),
@@ -611,11 +611,15 @@ fn openrouter_sections(s: &crate::usage::OpenRouterSnapshot) -> SectionBuilder {
         Section::Metric {
             label: "Credit balance".into(),
             pct,
-            severity: severity_for(pct as i32),
-            value_label: format!("${:.2}", s.balance()),
+            // One severity policy for every frontend: this value is what the
+            // Omarchy, GNOME and KDE panels colour their row with, so it has to
+            // agree with the Waybar tooltip about what "in debt" looks like.
+            severity: crate::openrouter::vendor::severity(s),
+            value_label: usd(s.balance()),
             footnote: format!(
-                "${:.2} of ${:.2} used ({pct}%)",
-                s.total_usage, s.total_credits
+                "{} of {} used ({pct}%)",
+                usd(s.total_usage),
+                usd(s.total_credits)
             ),
         },
         None,
@@ -1474,6 +1478,45 @@ mod tests {
                 .iter()
                 .any(|s| matches!(s, Section::Block { label, .. } if label == "Usage by period"))
         );
+    }
+
+    /// #118 reached every frontend, not just Waybar: the panel row is what the
+    /// Omarchy, GNOME and KDE plugins colour and label from, so the debt has to
+    /// survive the projection with its sign and its severity intact.
+    #[test]
+    fn openrouter_debt_reaches_the_panel_row_red_and_signed() {
+        let snap = OpenRouterSnapshot {
+            label: "OR".into(),
+            total_credits: 0.0,
+            total_usage: 5.71,
+            usage_daily: 1.0,
+            usage_weekly: 5.0,
+            usage_monthly: 5.71,
+            is_free_tier: false,
+            limit: None,
+            limit_remaining: None,
+        };
+        let sections = sections_for(&ready(VendorSnapshot::Openrouter(snap.clone())), now(), 5);
+        let metric = sections
+            .iter()
+            .find_map(|s| match s {
+                Section::Metric {
+                    label,
+                    value_label,
+                    severity,
+                    footnote,
+                    ..
+                } if label == "Credit balance" => Some((value_label, severity, footnote)),
+                _ => None,
+            })
+            .expect("no credit balance metric");
+        assert_eq!(metric.0, "-$5.71");
+        assert_eq!(*metric.1, PaceSeverity::Critical);
+        assert_eq!(metric.2, "$5.71 of $0.00 used (0%)");
+
+        // ...and the same number in the dense Overview list.
+        let (_, cells) = compact_cells(&VendorSnapshot::Openrouter(snap));
+        assert_eq!(cells[0].0, "-$5.71");
     }
 
     #[test]

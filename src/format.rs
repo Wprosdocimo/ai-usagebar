@@ -13,6 +13,21 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local, Utc};
 
+/// A USD amount, with the sign outside the symbol. `format!("${v:.2}")` puts
+/// it inside — `$-5.71` — which reads as a typo rather than as debt, and a
+/// balance is exactly the number allowed to go negative.
+///
+/// The sign is decided from the *rounded* magnitude, so neither a negative
+/// zero off the wire nor a sub-cent debt can produce the nonsense `-$0.00`.
+pub fn usd(v: f64) -> String {
+    let magnitude = format!("{:.2}", v.abs());
+    if v < 0.0 && magnitude != "0.00" {
+        format!("-${magnitude}")
+    } else {
+        format!("${magnitude}")
+    }
+}
+
 pub fn local_time_hm(when: DateTime<Utc>) -> String {
     when.with_timezone(&Local).format("%H:%M").to_string()
 }
@@ -92,6 +107,20 @@ mod tests {
     fn single_substitution() {
         let v = pm(&[("session_pct", "42")]);
         assert_eq!(substitute("{session_pct}%", &v), "42%");
+    }
+
+    #[test]
+    fn usd_keeps_the_sign_outside_the_symbol() {
+        assert_eq!(usd(74.5), "$74.50");
+        assert_eq!(usd(0.0), "$0.00");
+        assert_eq!(usd(-5.71), "-$5.71");
+        // A negative zero off the wire is not a debt, and must not print as
+        // one — `format!("{:.2}")` alone would render it "$-0.00".
+        assert_eq!(usd(-0.0), "$0.00");
+        // Neither is a debt too small to show a cent.
+        assert_eq!(usd(-0.001), "$0.00");
+        // One that does round to a cent keeps its sign.
+        assert_eq!(usd(-0.006), "-$0.01");
     }
 
     #[test]
