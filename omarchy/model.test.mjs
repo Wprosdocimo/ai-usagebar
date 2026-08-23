@@ -162,11 +162,33 @@ assert.equal(model.headline(parsed.entries[0]).text, '29%');
 assert.equal(model.headline(parsed.entries[1]).severity, 'critical');
 assert.equal(model.isAlarming(parsed.entries[0]), true); // stale
 assert.equal(model.isAlarming(parsed.entries[1]), true); // critical
-const resetClock = new Date('2026-08-14T14:00:00Z');
-const resetClockText = `0${resetClock.getHours()}`.slice(-2) + ':' + `0${resetClock.getMinutes()}`.slice(-2);
-assert.equal(model.formatReset('2026-08-14T14:00:00Z', Date.parse('2026-08-14T12:00:00Z')), 'Resets in 2h 0m · ' + resetClockText);
-assert.match(model.formatReset('2026-09-14T14:00:00Z', Date.parse('2026-08-14T12:00:00Z')), /^Resets in \d+d \d+h · [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/);
+// Reset-row fixtures are built from *local* calendar components, not UTC
+// strings, so every expectation below is a literal that holds in any
+// timezone the panel might run in. Deriving the expected clock from the same
+// getHours()/getMinutes() expression the implementation uses would pass no
+// matter what that expression did.
+const localReset = (y, mo, d, h, mi) => new Date(y, mo - 1, d, h, mi).toISOString();
+const at = (y, mo, d, h, mi) => Date.parse(new Date(y, mo - 1, d, h, mi).toISOString());
+
+// Same local day: the clock alone is unambiguous.
+assert.equal(model.formatReset(localReset(2026, 8, 14, 22, 0), at(2026, 8, 14, 8, 0)),
+  'Resets in 14h 0m · 22:00');
+// Both fields zero-padded.
+assert.equal(model.formatReset(localReset(2026, 8, 14, 9, 5), at(2026, 8, 14, 8, 0)),
+  'Resets in 1h 5m · 09:05');
+// Under 24h but past midnight: the date is what stops "03:00" reading as a
+// time that already went by this morning.
+assert.equal(model.formatReset(localReset(2026, 8, 15, 3, 0), at(2026, 8, 14, 20, 0)),
+  'Resets in 7h 0m · Aug 15 03:00');
+// Long windows carry the date too.
+assert.equal(model.formatReset(localReset(2026, 9, 14, 14, 30), at(2026, 8, 14, 12, 0)),
+  'Resets in 31d 2h · Sep 14 14:30');
+// Day-of-month is not padded, matching the rest of the row's typography.
+assert.equal(model.formatReset(localReset(2026, 9, 5, 14, 0), at(2026, 8, 14, 12, 0)),
+  'Resets in 22d 2h · Sep 5 14:00');
 assert.equal(model.formatReset('2026-08-14T12:00:00Z', Date.parse('2026-08-14T12:00:00Z')), 'Reset due');
+assert.equal(model.formatReset('', Date.parse('2026-08-14T12:00:00Z')), '');
+assert.equal(model.formatReset('not-a-date', Date.parse('2026-08-14T12:00:00Z')), '');
 assert.equal(model.formatUpdated('2026-08-14T12:00:00Z', Date.parse('2026-08-14T12:03:00Z')), 'Updated 3m ago');
 assert.equal(model.metricDetail(parsed.entries[0].sections[1]), '60% elapsed · 31pts under');
 
