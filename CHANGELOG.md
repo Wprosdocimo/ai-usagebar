@@ -9,6 +9,16 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- Google Antigravity no longer gives up when `ANTIGRAVITY_LS_ADDRESS` points at
+  a port that has moved. The override is still tried first, but discovered local
+  ports are now probed behind it, and a signed-out server's authentication error
+  is reported instead of being masked by connection refusals from products that
+  are simply not running (#119). On Windows the RPC listener is probed before
+  the TLS one, which also silences the TLS handshake warnings `agy` used to log
+  on every poll.
+
 ## [1.4.0] — 2026-08-21
 
 ### Added
