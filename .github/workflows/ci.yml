@@ -76,8 +76,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+
+      # Ships with `-D warnings` like Linux. Each platform compiles a different
+      # slice of this crate — the macOS Keychain fallback, the Windows process
+      # and TCP-table walk — and a lint on the slice the Linux job never sees
+      # is a lint nobody sees.
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Test
         run: cargo test --all-targets --locked
@@ -98,12 +107,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       # ring assembles its primitives on x86_64 and needs nasm; the runner does
       # not ship it on PATH. No-op if a future image already provides it.
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Test
         run: cargo test --all-targets --locked

@@ -11,6 +11,12 @@ Each release is also published at
 
 ### Fixed
 
+- `cargo clippy -- -D warnings` now runs on macOS and Windows as well as Linux.
+  Each platform compiles a different slice of the crate — the macOS Keychain
+  fallback, the Windows process and TCP-table walk — so a lint on the slice the
+  Linux job never sees was a lint nobody saw. Two credential helpers and a test
+  seam that were unreachable on Windows are gated accordingly.
+
 - Google Antigravity probes the RPC listener ahead of the TLS one on Linux and
   macOS too, not just Windows, and keeps each running product's listeners in
   their own group when ordering them. With more than one product up, every RPC
