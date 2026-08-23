@@ -134,6 +134,7 @@ async fn open_session(client: &reqwest::Client) -> Result<Session> {
         ));
     }
 
+    let mut first_actionable_err = None;
     let mut last_err = None;
     for base in bases {
         let csrf = fetch_csrf(client, &base).await;
@@ -146,10 +147,19 @@ async fn open_session(client: &reqwest::Client) -> Result<Session> {
                     account: account_key(&v),
                 });
             }
-            Err(e) => last_err = Some(e),
+            Err(e) => {
+                if first_actionable_err.is_none()
+                    && (matches!(e, AppError::Http { status, .. } if status == 401 || status == 403)
+                        || matches!(e, AppError::Credentials(_)))
+                {
+                    first_actionable_err = Some(e);
+                } else {
+                    last_err = Some(e);
+                }
+            }
         }
     }
-    Err(last_err.unwrap_or_else(|| {
+    Err(first_actionable_err.or(last_err).unwrap_or_else(|| {
         AppError::Other("antigravity: no local server answered GetUserStatus".into())
     }))
 }
@@ -387,28 +397,35 @@ fn candidate_bases() -> Vec<String> {
 /// Test seam for [`candidate_bases`] — takes the address override and the
 /// discovered ports instead of reading the environment and `/proc`.
 fn candidate_bases_with(override_addr: Option<&str>, discovered: Vec<u16>) -> Vec<String> {
+    let mut bases = Vec::new();
     if let Some(addr) = override_addr {
         let addr = addr.trim();
         if !addr.is_empty() {
-            return vec![normalize_base(addr)];
+            bases.push(normalize_base(addr));
         }
     }
 
     // No hardcoded fallback port on purpose: the server always binds with
     // `--https_server_port 0`, so its port is drawn from the ephemeral range
     // and cannot be guessed. Probing a fixed one would just poke whatever
-    // unrelated process happens to own it. Discovery or the explicit override.
-    discovered
-        .into_iter()
-        .map(|p| format!("http://127.0.0.1:{p}"))
-        .collect()
+    // unrelated process happens to own it. Discovered ports follow any
+    // explicit override as fallback, with duplicates omitted.
+    for p in discovered {
+        let candidate = format!("http://127.0.0.1:{p}");
+        if !bases.contains(&candidate) {
+            bases.push(candidate);
+        }
+    }
+
+    bases
 }
 
 fn normalize_base(addr: &str) -> String {
-    if addr.starts_with("http://") || addr.starts_with("https://") {
-        addr.to_string()
+    let trimmed = addr.trim().trim_end_matches('/');
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
     } else {
-        format!("http://{addr}")
+        format!("http://{trimmed}")
     }
 }
 
@@ -560,6 +577,13 @@ fn matching_windows_process_ids(processes: &[(u32, String)]) -> std::collections
         .collect()
 }
 
+/// Returns matching loopback ports in **descending** order.
+///
+/// The `agy` process binds two loopback ports: a lower-numbered HTTPS/TLS
+/// listener and a higher-numbered HTTP JSON-RPC listener (where `GetUserStatus`
+/// and `RetrieveUserQuotaSummary` live). Probing the higher HTTP port first
+/// avoids spurious TLS handshake errors that Go's `net/http.Server` writes to
+/// stderr whenever an unencrypted HTTP request hits its HTTPS listener.
 #[cfg(any(test, target_os = "windows"))]
 fn matching_windows_ports(
     pids: &std::collections::HashSet<u32>,
@@ -573,6 +597,7 @@ fn matching_windows_ports(
         })
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
+        .rev()
         .collect()
 }
 
@@ -1320,10 +1345,31 @@ mod tests {
     }
 
     #[test]
-    fn explicit_address_wins_and_gets_a_scheme() {
+    fn explicit_address_comes_first_and_gets_a_scheme() {
         assert_eq!(
             candidate_bases_with(Some("127.0.0.1:1234"), vec![5678]),
-            vec!["http://127.0.0.1:1234".to_string()]
+            vec![
+                "http://127.0.0.1:1234".to_string(),
+                "http://127.0.0.1:5678".to_string(),
+            ]
+        );
+        // Trailing slashes are trimmed.
+        assert_eq!(
+            candidate_bases_with(Some("127.0.0.1:1234/"), vec![5678]),
+            vec![
+                "http://127.0.0.1:1234".to_string(),
+                "http://127.0.0.1:5678".to_string(),
+            ]
+        );
+        // Duplicate base URL is omitted.
+        assert_eq!(
+            candidate_bases_with(Some("127.0.0.1:5678"), vec![5678]),
+            vec!["http://127.0.0.1:5678".to_string()]
+        );
+        // Duplicate discovered ports are omitted.
+        assert_eq!(
+            candidate_bases_with(None, vec![5678, 5678]),
+            vec!["http://127.0.0.1:5678".to_string()]
         );
         // An address that already carries a scheme is left alone.
         assert_eq!(
@@ -1450,7 +1496,7 @@ mod tests {
                 pid: 10,
             },
         ];
-        assert_eq!(matching_windows_ports(&pids, &rows), vec![59868, 59870]);
+        assert_eq!(matching_windows_ports(&pids, &rows), vec![59870, 59868]);
     }
 
     #[test]
