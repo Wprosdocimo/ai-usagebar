@@ -26,9 +26,15 @@ Each release is also published at
   a port that has moved. The override is still tried first, but discovered local
   ports are now probed behind it, and a signed-out server's authentication error
   is reported instead of being masked by connection refusals from products that
-  are simply not running (#119). On Windows the RPC listener is probed before
-  the TLS one, which also silences the TLS handshake warnings `agy` used to log
-  on every poll.
+  are simply not running (#119). The RPC listener is probed ahead of the TLS one
+  on Linux, macOS and Windows alike, which also silences the TLS handshake
+  warnings `agy` used to log on every poll.
+- Google Antigravity keeps each running product's listeners in their own group
+  when ordering those probes, so with more than one product up every RPC
+  listener is tried before any TLS listener, instead of the two products' ports
+  interleaving by number and putting the handshake warnings back. An
+  `ANTIGRAVITY_LS_ADDRESS` that leaves no host to connect to is now dropped
+  rather than probed.
 
 ## [1.4.0] — 2026-08-21
 
