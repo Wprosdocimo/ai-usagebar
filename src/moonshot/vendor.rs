@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
-use crate::format::{placeholders, substitute, updated_at_hm};
+use crate::format::{money, placeholders, substitute, updated_at_hm};
 use crate::pacing::PaceSeverity;
 use crate::pango::{color_span, escape, severity_color};
 use crate::theme::Theme;
@@ -28,19 +28,11 @@ pub fn build_placeholders(snap: &MoonshotSnapshot) -> HashMap<&'static str, Stri
         ("weekly_pct", "0".to_string()),
         ("weekly_reset", "—".to_string()),
         ("plan", "Kimi".to_string()),
-        ("km_balance", format_money(snap.available, &snap.currency)),
-        ("km_voucher", format_money(snap.voucher, &snap.currency)),
-        ("km_cash", format_money(snap.cash, &snap.currency)),
+        ("km_balance", money(snap.available, &snap.currency)),
+        ("km_voucher", money(snap.voucher, &snap.currency)),
+        ("km_cash", money(snap.cash, &snap.currency)),
         ("currency", snap.currency.clone()),
     ])
-}
-
-fn format_money(v: f64, currency: &str) -> String {
-    match currency {
-        "USD" => format!("${v:.2}"),
-        "CNY" => format!("¥{v:.2}"),
-        _ => format!("{v:.2} {currency}"),
-    }
 }
 
 /// `available_balance <= 0` blocks the inference API, so that's critical.
@@ -127,12 +119,12 @@ fn render_tooltip(
     )));
     lines.push(TooltipLine::Body(format!(
         "   <span font_weight='bold' foreground='{color}'>{bal}</span>",
-        bal = escape(&format_money(snap.available, &snap.currency))
+        bal = escape(&money(snap.available, &snap.currency))
     )));
     lines.push(TooltipLine::Body(format!(
         " <span foreground='{dim}'>     cash {cash} · voucher {voucher}</span>",
-        cash = escape(&format_money(snap.cash, &snap.currency)),
-        voucher = escape(&format_money(snap.voucher, &snap.currency))
+        cash = escape(&money(snap.cash, &snap.currency)),
+        voucher = escape(&money(snap.voucher, &snap.currency))
     )));
 
     if snap.available <= 0.0 {
@@ -228,6 +220,34 @@ mod tests {
             Utc::now(),
         );
         assert!(out.text.contains("$49.58"));
+    }
+
+    /// `cash_balance` is documented as negative (debt). It used to render as
+    /// "$-5.71" here while OpenRouter rendered the same debt as "-$5.71";
+    /// both now go through `format::money`.
+    #[test]
+    fn a_cash_debt_carries_its_sign_ahead_of_the_symbol() {
+        let mut snap = sample_snap();
+        snap.cash = -5.71;
+        let out = render(
+            &sample_outcome(snap.clone()),
+            &snap,
+            &Theme::default(),
+            &opts(),
+            Utc::now(),
+        );
+        assert!(out.tooltip.contains("cash -$5.71"), "{}", out.tooltip);
+        assert!(!out.tooltip.contains("$-5.71"), "{}", out.tooltip);
+
+        snap.currency = "CNY".into();
+        let out = render(
+            &sample_outcome(snap.clone()),
+            &snap,
+            &Theme::default(),
+            &opts(),
+            Utc::now(),
+        );
+        assert!(out.tooltip.contains("cash -¥5.71"), "{}", out.tooltip);
     }
 
     #[test]

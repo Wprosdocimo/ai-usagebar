@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
 use crate::countdown;
-use crate::format::{placeholders, substitute, updated_at_hm};
+use crate::format::{placeholders, substitute, updated_at_hm, usd};
 use crate::pacing::PaceSeverity;
 use crate::pango::{self, color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
@@ -26,16 +26,7 @@ pub fn build_placeholders(
 ) -> HashMap<&'static str, String> {
     let pct = snap.weekly_pct.to_string();
     let reset = countdown::format(snap.reset_at, now);
-    let prepaid = snap
-        .prepaid_balance
-        .map(|b| {
-            if b < 0.0 {
-                format!("-${:.2}", -b)
-            } else {
-                format!("${b:.2}")
-            }
-        })
-        .unwrap_or_else(|| "—".into());
+    let prepaid = snap.prepaid_balance.map(usd).unwrap_or_else(|| "—".into());
 
     placeholders(vec![
         ("icon", DEFAULT_ICON.to_string()),
@@ -159,11 +150,7 @@ fn render_tooltip(
     );
 
     if let Some(bal) = snap.prepaid_balance {
-        let bal_s = if bal < 0.0 {
-            format!("-${:.2}", -bal)
-        } else {
-            format!("${bal:.2}")
-        };
+        let bal_s = usd(bal);
         lines.push(TooltipLine::Body("".into()));
         lines.push(TooltipLine::Body(format!(
             " <span foreground='{dim}'>  󰢗  Prepaid API  {}</span>",

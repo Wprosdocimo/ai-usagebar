@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
-use crate::format::{placeholders, substitute, updated_at_hm};
+use crate::format::{placeholders, substitute, updated_at_hm, usd};
 use crate::pacing::PaceSeverity;
 use crate::pango::{color_span, escape, severity_color};
 use crate::theme::Theme;
@@ -28,16 +28,8 @@ pub fn build_placeholders(snap: &KiloSnapshot) -> HashMap<&'static str, String> 
         ("weekly_pct", "0".to_string()),
         ("weekly_reset", "—".to_string()),
         ("plan", snap.label.clone()),
-        ("kilo_balance", format_money(snap.balance)),
+        ("kilo_balance", usd(snap.balance)),
     ])
-}
-
-fn format_money(v: f64) -> String {
-    if v < 0.0 {
-        format!("-${:.2}", -v)
-    } else {
-        format!("${v:.2}")
-    }
 }
 
 /// Kilo has no purchased-total on this endpoint, so severity keys on the
@@ -118,7 +110,7 @@ fn render_tooltip(
     )));
     lines.push(TooltipLine::Body(format!(
         "   <span font_weight='bold' foreground='{color}'>{bal}</span>",
-        bal = escape(&format_money(snap.balance))
+        bal = escape(&usd(snap.balance))
     )));
 
     if let Some((code, msg)) = outcome.last_error.as_ref()

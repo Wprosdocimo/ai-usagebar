@@ -9,6 +9,14 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- A negative balance is now spelled the same way everywhere. DeepSeek, Moonshot
+  (whose `cash_balance` is explicitly a debt), Kimi, SuperGrok, and the TUI
+  panel rows rendered it as `$-5.71` while OpenRouter, Grok, Kilo, and Novita
+  rendered `-$5.71`. Every renderer now goes through one `format::money`, which
+  also keeps a negative zero or a sub-cent debt from printing as `-$0.00`.
+
 ## [1.5.0] — 2026-08-23
 
 ### Added
