@@ -162,7 +162,11 @@ assert.equal(model.headline(parsed.entries[0]).text, '29%');
 assert.equal(model.headline(parsed.entries[1]).severity, 'critical');
 assert.equal(model.isAlarming(parsed.entries[0]), true); // stale
 assert.equal(model.isAlarming(parsed.entries[1]), true); // critical
-assert.equal(model.formatReset('2026-08-14T14:00:00Z', Date.parse('2026-08-14T12:00:00Z')), 'Resets in 2h 0m');
+const resetClock = new Date('2026-08-14T14:00:00Z');
+const resetClockText = `0${resetClock.getHours()}`.slice(-2) + ':' + `0${resetClock.getMinutes()}`.slice(-2);
+assert.equal(model.formatReset('2026-08-14T14:00:00Z', Date.parse('2026-08-14T12:00:00Z')), 'Resets in 2h 0m · ' + resetClockText);
+assert.match(model.formatReset('2026-09-14T14:00:00Z', Date.parse('2026-08-14T12:00:00Z')), /^Resets in \d+d \d+h · [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/);
+assert.equal(model.formatReset('2026-08-14T12:00:00Z', Date.parse('2026-08-14T12:00:00Z')), 'Reset due');
 assert.equal(model.formatUpdated('2026-08-14T12:00:00Z', Date.parse('2026-08-14T12:03:00Z')), 'Updated 3m ago');
 assert.equal(model.metricDetail(parsed.entries[0].sections[1]), '60% elapsed · 31pts under');
 

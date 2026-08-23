@@ -246,7 +246,14 @@ function formatReset(resetAt, nowMs) {
   var resetMs = new Date(String(resetAt)).getTime()
   if (!isFinite(resetMs)) return ""
   var remaining = resetMs - Number(nowMs)
-  return remaining > 0 ? "Resets in " + formatDuration(remaining) : "Reset due"
+  if (remaining <= 0) return "Reset due"
+  // Show the real local clock time the window reopens, so the absolute
+  // reset moment is visible next to the countdown.
+  var at = new Date(resetMs)
+  var clock = ("0" + at.getHours()).slice(-2) + ":" + ("0" + at.getMinutes()).slice(-2)
+  if (remaining >= 86400000)
+    clock = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][at.getMonth()] + " " + at.getDate() + " " + clock
+  return "Resets in " + formatDuration(remaining) + " · " + clock
 }
 
 function formatUpdated(fetchedAt, nowMs) {
