@@ -490,11 +490,15 @@ fn is_antigravity_process(comm: &str, exe: Option<&str>) -> bool {
 /// `agy` session both up, one product's TLS port can sort above the other's
 /// RPC port. Ports are therefore grouped per pid, sorted high-to-low inside
 /// each group, and taken rank by rank — every product's highest port, then
-/// every product's second-highest, and so on — which leaves all the RPC
-/// listeners ahead of all the TLS ones.
+/// every product's second-highest, and so on. Where each product shows both
+/// listeners that puts every RPC one ahead of every TLS one.
 ///
-/// This stays a preference, not a guarantee: every candidate is still probed,
-/// so an inverted allocation costs one extra round-trip and nothing else.
+/// This stays a preference, not a guarantee, and the two-listener shape is the
+/// assumption it rests on: a product caught mid-startup, with only its TLS port
+/// bound so far, sits alone at rank 0 and is probed first. Every candidate is
+/// probed regardless, so a mis-ranked one costs an extra round-trip and a line
+/// on `agy`'s stderr, nothing more.
+///
 /// Order among products is arbitrary — all of them report the same
 /// account-wide quota, so whichever answers first is authoritative — and pid
 /// order is used only to keep the result reproducible, since `/proc`, `lsof`
@@ -505,6 +509,11 @@ fn probe_order(per_pid: std::collections::BTreeMap<u32, Vec<u16>>) -> Vec<u16> {
         .into_values()
         .map(|mut group| {
             group.sort_unstable_by(|a, b| b.cmp(a));
+            // Within a product a port is one listener however many rows named
+            // it — a dual-stack bind reports the same port from both
+            // `/proc/net/tcp` and `tcp6`. Collapsing them here keeps a rank
+            // meaning "the Nth listener" rather than "the Nth row".
+            group.dedup();
             group
         })
         .collect();
@@ -1706,6 +1715,41 @@ mod tests {
             vec![6000, 7000, 5000, 4000]
         );
         assert!(probe_order(BTreeMap::new()).is_empty());
+    }
+
+    /// A dual-stack bind names the same port from both `/proc/net/tcp` and
+    /// `tcp6`. Those rows are one listener, so they must not consume two ranks
+    /// and push the product's real second listener down past another
+    /// product's.
+    #[test]
+    fn a_port_named_twice_by_one_product_still_occupies_one_rank() {
+        use std::collections::BTreeMap;
+
+        assert_eq!(
+            probe_order(BTreeMap::from([
+                (10, vec![40001, 40001, 40000, 40000]),
+                (20, vec![50001, 50000]),
+            ])),
+            vec![40001, 50001, 40000, 50000],
+            "duplicate rows must not reorder the ranks below them"
+        );
+    }
+
+    /// The ordering rests on each product showing both listeners. A product
+    /// caught mid-startup, with only its TLS port bound, sits alone at rank 0
+    /// and is probed first — documented as the known cost, and harmless
+    /// because every candidate is probed anyway.
+    #[test]
+    fn a_half_started_product_is_the_documented_exception() {
+        use std::collections::BTreeMap;
+
+        assert_eq!(
+            probe_order(BTreeMap::from([
+                (10, vec![40000]),
+                (20, vec![50001, 50000])
+            ])),
+            vec![40000, 50001, 50000]
+        );
     }
 
     /// `ANTIGRAVITY_LS_ADDRESS` is user input. An entry that leaves no
