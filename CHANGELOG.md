@@ -11,6 +11,13 @@ Each release is also published at
 
 ### Fixed
 
+- Google Antigravity probes the RPC listener ahead of the TLS one on Linux and
+  macOS too, not just Windows, and keeps each running product's listeners in
+  their own group when ordering them. With more than one product up, every RPC
+  listener is now tried before any TLS listener instead of the two products'
+  ports interleaving by number and putting back the `agy` handshake warnings
+  v1.5.0 set out to silence (#121). An `ANTIGRAVITY_LS_ADDRESS` that leaves no
+  host to connect to is dropped rather than probed.
 - A negative balance is now spelled the same way everywhere. DeepSeek, Moonshot
   (whose `cash_balance` is explicitly a debt), Kimi, SuperGrok, and the TUI
   panel rows rendered it as `$-5.71` while OpenRouter, Grok, Kilo, and Novita
