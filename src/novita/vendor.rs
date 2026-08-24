@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
-use crate::format::{placeholders, substitute, updated_at_hm};
+use crate::format::{placeholders, substitute, updated_at_hm, usd};
 use crate::pacing::PaceSeverity;
 use crate::pango::{color_span, escape, severity_color};
 use crate::theme::Theme;
@@ -28,19 +28,11 @@ pub fn build_placeholders(snap: &NovitaSnapshot) -> HashMap<&'static str, String
         ("weekly_pct", "0".to_string()),
         ("weekly_reset", "—".to_string()),
         ("plan", "Novita".to_string()),
-        ("nv_balance", format_money(snap.available)),
-        ("nv_cash", format_money(snap.cash)),
-        ("nv_credit_limit", format_money(snap.credit_limit)),
-        ("nv_owed", format_money(snap.outstanding)),
+        ("nv_balance", usd(snap.available)),
+        ("nv_cash", usd(snap.cash)),
+        ("nv_credit_limit", usd(snap.credit_limit)),
+        ("nv_owed", usd(snap.outstanding)),
     ])
-}
-
-fn format_money(v: f64) -> String {
-    if v < 0.0 {
-        format!("-${:.2}", -v)
-    } else {
-        format!("${v:.2}")
-    }
 }
 
 /// Severity keys on the absolute remaining USD balance (same thresholds as
@@ -119,19 +111,19 @@ fn render_tooltip(
     )));
     lines.push(TooltipLine::Body(format!(
         "   <span font_weight='bold' foreground='{color}'>{bal}</span>",
-        bal = escape(&format_money(snap.available))
+        bal = escape(&usd(snap.available))
     )));
     lines.push(TooltipLine::Body(format!(
         " <span foreground='{dim}'>     top-up {cash} · credit limit {lim}</span>",
-        cash = escape(&format_money(snap.cash)),
-        lim = escape(&format_money(snap.credit_limit))
+        cash = escape(&usd(snap.cash)),
+        lim = escape(&usd(snap.credit_limit))
     )));
 
     if snap.outstanding > 0.0 {
         lines.push(TooltipLine::Body("".into()));
         lines.push(TooltipLine::Body(format!(
             " <span foreground='{dim}'>  󰆑  owed {owed}</span>",
-            owed = escape(&format_money(snap.outstanding))
+            owed = escape(&usd(snap.outstanding))
         )));
     }
 

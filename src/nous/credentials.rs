@@ -131,7 +131,9 @@ impl CredentialDocument {
     }
 
     /// Test seam for proving that writes preserve unrelated future entries.
-    #[cfg(test)]
+    /// Gated like the `tests` module below, which is `unix`-only because every
+    /// assertion in it turns on file modes.
+    #[cfg(all(test, unix))]
     fn insert_other(&mut self, key: impl Into<String>, value: serde_json::Value) {
         self.other.insert(key.into(), value);
     }
@@ -493,17 +495,13 @@ fn reject_symlink(path: &Path) -> Result<()> {
     }
 }
 
+/// `unix`-only: a permission bit has no meaning elsewhere, and every caller is
+/// already inside a `#[cfg(unix)]` block, so a non-unix arm here would be a
+/// branch nothing can reach.
+#[cfg(unix)]
 fn file_mode(metadata: &fs::Metadata) -> u32 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        metadata.mode() & 0o777
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = metadata;
-        CREDENTIALS_FILE_MODE
-    }
+    use std::os::unix::fs::MetadataExt;
+    metadata.mode() & 0o777
 }
 
 fn set_private_permissions(file: &File, mode: u32) -> io::Result<()> {
@@ -519,17 +517,13 @@ fn set_private_permissions(file: &File, mode: u32) -> io::Result<()> {
     }
 }
 
+/// `unix`-only for the same reason as [`file_mode`]. Its sibling
+/// [`set_private_permissions`] is *not* gated: that one is called
+/// unconditionally, so its non-unix no-op arm is live.
+#[cfg(unix)]
 fn set_private_permissions_path(path: &Path, mode: u32) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (path, mode);
-        Ok(())
-    }
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
 }
 
 fn sync_parent(parent: &Path) -> Result<()> {

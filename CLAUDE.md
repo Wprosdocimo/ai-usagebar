@@ -99,7 +99,11 @@ patch version instead.
 - **Frontend adapters stay thin.** Provider fetching, credentials, canonical
   product names, metric projection, and reset metadata belong in Rust.
   `VendorId::display_name` is the shared label source; do not add a complete
-  provider-name table to a frontend. Build report metrics through
+  provider-name table to a frontend. `format::{money, usd}` is the shared money
+  source — a balance can be negative (OpenRouter overrun, Moonshot
+  `cash_balance`) and the sign belongs outside the symbol, so never reach for
+  `format!("${v:.2}")`; it had regrown into four disagreeing copies once
+  already. Build report metrics through
   `SectionBuilder::push_metric` so the absolute reset travels with its row;
   never recreate a per-vendor metric-order table in `report.rs`.
 - **Tests are hermetic.** A `#[test]`/`#[tokio::test]` must never read or
@@ -157,10 +161,16 @@ vendor's response shape drifts:
   no credential and no remote endpoint: quota comes from whichever local
   Antigravity product is running (2.0, the IDE, or an interactive `agy`
   session), over a loopback RPC on a **dynamically assigned** port that is
-  discovered from `/proc` on Linux or `lsof` on macOS (elsewhere set
-  `ANTIGRAVITY_LS_ADDRESS`).
-  Tests must never probe `/proc` or the wall clock — use `candidate_bases_with`
-  and `parse_cache_at`/`fetch_snapshot_at`, not their production wrappers.
+  discovered from `/proc` on Linux, `lsof` on macOS, and the process/TCP-table
+  APIs on Windows. `ANTIGRAVITY_LS_ADDRESS` is a *first* candidate, not an
+  exclusive one — discovered ports are still probed behind it, so a stale
+  override degrades to a slower success instead of a hard failure.
+  Discovered ports are grouped per pid and emitted rank by rank (`probe_order`),
+  so with two products up every RPC listener is probed before any TLS one.
+  Tests must never probe `/proc`, `lsof` or the wall clock — use
+  `candidate_bases_with`, `probe_order`, `matching_windows_ports`,
+  `parse_lsof_pcn` and `parse_cache_at`/`fetch_snapshot_at`, not their
+  production wrappers.
 - `src/kiro/` — Kiro CLI. Reads kiro-cli's own `data.sqlite3` (read-only) for
   the AWS SSO OIDC session, refreshes the ~1h access token via the documented
   CreateToken API, and calls the undocumented `GetUsageLimits` — same operation

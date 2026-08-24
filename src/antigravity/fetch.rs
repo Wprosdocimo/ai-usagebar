@@ -134,7 +134,7 @@ async fn open_session(client: &reqwest::Client) -> Result<Session> {
         ));
     }
 
-    let mut last_err = None;
+    let mut errors = Vec::new();
     for base in bases {
         let csrf = fetch_csrf(client, &base).await;
         match post_rpc(client, &base, csrf.as_deref(), STATUS_RPC).await {
@@ -146,12 +146,42 @@ async fn open_session(client: &reqwest::Client) -> Result<Session> {
                     account: account_key(&v),
                 });
             }
-            Err(e) => last_err = Some(e),
+            Err(e) => errors.push(e),
         }
     }
-    Err(last_err.unwrap_or_else(|| {
+    Err(select_probe_error(errors))
+}
+
+/// Which failure to report when no candidate answered.
+///
+/// A server that replies `401`/`403` is running and reachable but signed out —
+/// the user can act on that, so it outranks the connection refusals from the
+/// products that simply are not up. Without this, a stale
+/// `ANTIGRAVITY_LS_ADDRESS` (or a second product on another port) would mask
+/// the one message worth reading behind transport noise.
+///
+/// Note that this also decides *visibility*: transport errors are transient and
+/// fall back silently to cache, while the `401` surfaces in the widget.
+fn select_probe_error(errors: Vec<AppError>) -> AppError {
+    let mut actionable = None;
+    let mut last = None;
+    for e in errors {
+        if actionable.is_none() && is_actionable(&e) {
+            actionable = Some(e);
+        } else {
+            last = Some(e);
+        }
+    }
+    actionable.or(last).unwrap_or_else(|| {
         AppError::Other("antigravity: no local server answered GetUserStatus".into())
-    }))
+    })
+}
+
+/// An error the user can do something about, as opposed to "that product is not
+/// running". `post_rpc` only ever yields `Http`/`Transport`/`Other`, so the
+/// authentication statuses are the whole set.
+fn is_actionable(e: &AppError) -> bool {
+    matches!(e, AppError::Http { status, .. } if *status == 401 || *status == 403)
 }
 
 async fn fetch_live(
@@ -387,29 +417,42 @@ fn candidate_bases() -> Vec<String> {
 /// Test seam for [`candidate_bases`] — takes the address override and the
 /// discovered ports instead of reading the environment and `/proc`.
 fn candidate_bases_with(override_addr: Option<&str>, discovered: Vec<u16>) -> Vec<String> {
-    if let Some(addr) = override_addr {
-        let addr = addr.trim();
-        if !addr.is_empty() {
-            return vec![normalize_base(addr)];
-        }
+    let mut bases = Vec::new();
+    if let Some(base) = override_addr.and_then(normalize_base) {
+        bases.push(base);
     }
 
     // No hardcoded fallback port on purpose: the server always binds with
     // `--https_server_port 0`, so its port is drawn from the ephemeral range
     // and cannot be guessed. Probing a fixed one would just poke whatever
-    // unrelated process happens to own it. Discovery or the explicit override.
-    discovered
-        .into_iter()
-        .map(|p| format!("http://127.0.0.1:{p}"))
-        .collect()
+    // unrelated process happens to own it. Discovered ports follow any
+    // explicit override as fallback, with duplicates omitted.
+    for p in discovered {
+        let candidate = format!("http://127.0.0.1:{p}");
+        if !bases.contains(&candidate) {
+            bases.push(candidate);
+        }
+    }
+
+    bases
 }
 
-fn normalize_base(addr: &str) -> String {
-    if addr.starts_with("http://") || addr.starts_with("https://") {
-        addr.to_string()
-    } else {
-        format!("http://{addr}")
-    }
+/// Turn a configured address into a base URL: trim surrounding whitespace,
+/// supply the default scheme when it is missing, and drop trailing slashes so
+/// the RPC paths built on top do not come out with a double slash.
+///
+/// Returns `None` when nothing but a scheme survives. `ANTIGRAVITY_LS_ADDRESS`
+/// is user input, and a value like `"/"` carries no authority to connect to;
+/// admitting it as a candidate would spend a probe to learn what is already
+/// knowable here.
+fn normalize_base(addr: &str) -> Option<String> {
+    let trimmed = addr.trim();
+    let (scheme, authority) = match trimmed.split_once("://") {
+        Some((scheme @ ("http" | "https"), rest)) => (scheme, rest),
+        _ => ("http", trimmed),
+    };
+    let authority = authority.trim_end_matches('/');
+    (!authority.is_empty()).then(|| format!("{scheme}://{authority}"))
 }
 
 /// Does this process look like one of the three Antigravity products?
@@ -431,6 +474,61 @@ fn is_antigravity_process(comm: &str, exe: Option<&str>) -> bool {
     })
 }
 
+/// Flatten per-process listener ports into the order they should be probed.
+///
+/// Each Antigravity product binds an HTTPS/TLS listener and the unencrypted
+/// HTTP JSON-RPC listener that serves `GetUserStatus` and
+/// `RetrieveUserQuotaSummary`. Both are ephemeral, but they are bound in that
+/// order, so in practice the RPC listener draws the higher number and probing
+/// high-to-low reaches it first — which keeps Go's `net/http.Server` from
+/// logging a TLS handshake error for every unencrypted request that lands on
+/// its HTTPS listener.
+///
+/// Sorting every discovered port as one descending set only gets that right
+/// for a single process, because the high/low tendency holds *within* a
+/// product and says nothing across two of them: with Antigravity 2.0 and an
+/// `agy` session both up, one product's TLS port can sort above the other's
+/// RPC port. Ports are therefore grouped per pid, sorted high-to-low inside
+/// each group, and taken rank by rank — every product's highest port, then
+/// every product's second-highest, and so on. Where each product shows both
+/// listeners that puts every RPC one ahead of every TLS one.
+///
+/// This stays a preference, not a guarantee, and the two-listener shape is the
+/// assumption it rests on: a product caught mid-startup, with only its TLS port
+/// bound so far, sits alone at rank 0 and is probed first. Every candidate is
+/// probed regardless, so a mis-ranked one costs an extra round-trip and a line
+/// on `agy`'s stderr, nothing more.
+///
+/// Order among products is arbitrary — all of them report the same
+/// account-wide quota, so whichever answers first is authoritative — and pid
+/// order is used only to keep the result reproducible, since `/proc`, `lsof`
+/// and the Windows TCP table each enumerate in their own order.
+#[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn probe_order(per_pid: std::collections::BTreeMap<u32, Vec<u16>>) -> Vec<u16> {
+    let groups: Vec<Vec<u16>> = per_pid
+        .into_values()
+        .map(|mut group| {
+            group.sort_unstable_by(|a, b| b.cmp(a));
+            // Within a product a port is one listener however many rows named
+            // it — a dual-stack bind reports the same port from both
+            // `/proc/net/tcp` and `tcp6`. Collapsing them here keeps a rank
+            // meaning "the Nth listener" rather than "the Nth row".
+            group.dedup();
+            group
+        })
+        .collect();
+
+    let mut ports: Vec<u16> = Vec::new();
+    for rank in 0..groups.iter().map(Vec::len).max().unwrap_or(0) {
+        for port in groups.iter().filter_map(|group| group.get(rank)) {
+            if !ports.contains(port) {
+                ports.push(*port);
+            }
+        }
+    }
+    ports
+}
+
 /// Loopback ports listened on by any running Antigravity product.
 ///
 /// Reads `/proc` directly rather than shelling out to `ss`/`lsof`: find the
@@ -439,14 +537,23 @@ fn is_antigravity_process(comm: &str, exe: Option<&str>) -> bool {
 /// shared quota, so whichever answers first is authoritative.
 #[cfg(target_os = "linux")]
 fn discover_ls_ports() -> Vec<u16> {
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashMap};
 
-    let mut inodes: HashSet<u64> = HashSet::new();
+    // Socket inode -> owning pid, so the ports found in `/proc/net` can be
+    // grouped back per process for `probe_order`.
+    let mut owners: HashMap<u64, u32> = HashMap::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
     for entry in entries.flatten() {
         let pid_dir = entry.path();
+        let Some(pid) = pid_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
         let Ok(comm) = std::fs::read_to_string(pid_dir.join("comm")) else {
             continue;
         };
@@ -467,30 +574,29 @@ fn discover_ls_ports() -> Vec<u16> {
                 .and_then(|s| s.strip_suffix(']'))
                 .and_then(|s| s.parse::<u64>().ok())
             {
-                inodes.insert(ino);
+                owners.insert(ino, pid);
             }
         }
     }
 
-    if inodes.is_empty() {
+    if owners.is_empty() {
         return Vec::new();
     }
 
-    let mut ports = Vec::new();
+    let mut per_pid: BTreeMap<u32, Vec<u16>> = BTreeMap::new();
     for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
         let Ok(contents) = std::fs::read_to_string(table) else {
             continue;
         };
         for line in contents.lines().skip(1) {
             if let Some((port, ino)) = parse_proc_net_line(line)
-                && inodes.contains(&ino)
-                && !ports.contains(&port)
+                && let Some(&pid) = owners.get(&ino)
             {
-                ports.push(port);
+                per_pid.entry(pid).or_default().push(port);
             }
         }
     }
-    ports
+    probe_order(per_pid)
 }
 
 /// macOS has no `/proc`, so fall back to `lsof` (present on every macOS
@@ -514,27 +620,35 @@ fn discover_ls_ports() -> Vec<u16> {
 }
 
 /// Pure parser for `lsof -F pcn` output, kept separate from process spawning
-/// so the parsing logic is unit-testable without shelling out.
-#[cfg(target_os = "macos")]
+/// so the parsing logic is unit-testable without shelling out. Compiled under
+/// `test` on every platform, like [`matching_windows_ports`], so its tests are
+/// not macOS-only.
+#[cfg(any(test, target_os = "macos"))]
 fn parse_lsof_pcn(output: &str) -> Vec<u16> {
-    let mut ports = Vec::new();
-    let mut current_matches = false;
+    let mut per_pid: std::collections::BTreeMap<u32, Vec<u16>> = std::collections::BTreeMap::new();
+    // The pid arrives on the `p` line and the command name on the `c` line
+    // right after it, so hold the pid until the name confirms it is ours.
+    let mut pid = None;
+    let mut owner = None;
     for line in output.lines() {
         let Some(rest) = line.get(1..) else { continue };
         match line.as_bytes().first() {
-            Some(b'p') => current_matches = false,
-            Some(b'c') => current_matches = is_antigravity_process(rest, None),
-            Some(b'n') if current_matches => {
-                if let Some(port) = rest.rsplit(':').next().and_then(|p| p.parse::<u16>().ok())
-                    && !ports.contains(&port)
+            Some(b'p') => {
+                pid = rest.parse::<u32>().ok();
+                owner = None;
+            }
+            Some(b'c') => owner = pid.filter(|_| is_antigravity_process(rest, None)),
+            Some(b'n') => {
+                if let Some(pid) = owner
+                    && let Some(port) = rest.rsplit(':').next().and_then(|p| p.parse::<u16>().ok())
                 {
-                    ports.push(port);
+                    per_pid.entry(pid).or_default().push(port);
                 }
             }
             _ => {}
         }
     }
-    ports
+    probe_order(per_pid)
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -560,20 +674,24 @@ fn matching_windows_process_ids(processes: &[(u32, String)]) -> std::collections
         .collect()
 }
 
+/// Loopback ports owned by the matching processes, grouped per pid and handed
+/// to [`probe_order`], which explains why the grouping matters.
 #[cfg(any(test, target_os = "windows"))]
 fn matching_windows_ports(
     pids: &std::collections::HashSet<u32>,
     rows: &[WindowsTcpRow],
 ) -> Vec<u16> {
-    rows.iter()
-        .filter(|row| pids.contains(&row.pid) && row.local_addr == [127, 0, 0, 1])
-        .filter_map(|row| {
-            let port = u16::from_be((row.local_port & u32::from(u16::MAX)) as u16);
-            (port != 0).then_some(port)
-        })
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect()
+    let mut per_pid: std::collections::BTreeMap<u32, Vec<u16>> = std::collections::BTreeMap::new();
+    for row in rows {
+        if !pids.contains(&row.pid) || row.local_addr != [127, 0, 0, 1] {
+            continue;
+        }
+        let port = u16::from_be((row.local_port & u32::from(u16::MAX)) as u16);
+        if port != 0 {
+            per_pid.entry(row.pid).or_default().push(port);
+        }
+    }
+    probe_order(per_pid)
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -1320,15 +1438,103 @@ mod tests {
     }
 
     #[test]
-    fn explicit_address_wins_and_gets_a_scheme() {
+    fn explicit_address_comes_first_and_gets_a_scheme() {
         assert_eq!(
             candidate_bases_with(Some("127.0.0.1:1234"), vec![5678]),
-            vec!["http://127.0.0.1:1234".to_string()]
+            vec![
+                "http://127.0.0.1:1234".to_string(),
+                "http://127.0.0.1:5678".to_string(),
+            ]
+        );
+        // Trailing slashes are trimmed.
+        assert_eq!(
+            candidate_bases_with(Some("127.0.0.1:1234/"), vec![5678]),
+            vec![
+                "http://127.0.0.1:1234".to_string(),
+                "http://127.0.0.1:5678".to_string(),
+            ]
+        );
+        // Duplicate base URL is omitted.
+        assert_eq!(
+            candidate_bases_with(Some("127.0.0.1:5678"), vec![5678]),
+            vec!["http://127.0.0.1:5678".to_string()]
+        );
+        // Duplicate discovered ports are omitted.
+        assert_eq!(
+            candidate_bases_with(None, vec![5678, 5678]),
+            vec!["http://127.0.0.1:5678".to_string()]
         );
         // An address that already carries a scheme is left alone.
         assert_eq!(
             candidate_bases_with(Some("https://host:9"), vec![]),
             vec!["https://host:9".to_string()]
+        );
+    }
+
+    fn http(status: u16) -> AppError {
+        AppError::Http {
+            status,
+            body: String::new(),
+        }
+    }
+
+    /// A signed-out server is worth reporting even when a later candidate only
+    /// refused the connection — that is the whole point of probing on past the
+    /// first failure.
+    #[test]
+    fn an_auth_failure_outranks_later_transport_noise() {
+        let err = select_probe_error(vec![
+            http(401),
+            AppError::Transport("connection refused".into()),
+        ]);
+        assert!(matches!(err, AppError::Http { status: 401, .. }), "{err}");
+
+        let err = select_probe_error(vec![
+            AppError::Transport("connection refused".into()),
+            http(403),
+        ]);
+        assert!(matches!(err, AppError::Http { status: 403, .. }), "{err}");
+    }
+
+    /// The *first* actionable failure wins, so the explicit override's message
+    /// survives a second signed-out product further down the list.
+    #[test]
+    fn the_first_auth_failure_wins() {
+        let err = select_probe_error(vec![http(401), http(403)]);
+        assert!(matches!(err, AppError::Http { status: 401, .. }), "{err}");
+    }
+
+    /// With nothing actionable, the last failure stands in for "nothing
+    /// answered" — and stays transient, so the widget falls back silently
+    /// instead of shouting about a product that simply is not running.
+    #[test]
+    fn without_an_auth_failure_the_last_error_stands() {
+        let err = select_probe_error(vec![
+            AppError::Transport("first".into()),
+            http(500),
+            AppError::Transport("last".into()),
+        ]);
+        assert!(
+            matches!(&err, AppError::Transport(m) if m == "last"),
+            "{err}"
+        );
+        assert!(err.is_transient());
+    }
+
+    /// A 5xx is a server that answered but broke; the user cannot act on it, so
+    /// it must not outrank a later real failure the way a 401 does.
+    #[test]
+    fn a_server_error_is_not_treated_as_actionable() {
+        let err = select_probe_error(vec![http(500), http(401)]);
+        assert!(matches!(err, AppError::Http { status: 401, .. }), "{err}");
+    }
+
+    #[test]
+    fn no_candidates_at_all_yields_a_generic_error() {
+        let err = select_probe_error(Vec::new());
+        assert!(
+            err.to_string().contains("no local server answered"),
+            "{err}"
         );
     }
 
@@ -1450,7 +1656,116 @@ mod tests {
                 pid: 10,
             },
         ];
-        assert_eq!(matching_windows_ports(&pids, &rows), vec![59868, 59870]);
+        assert_eq!(matching_windows_ports(&pids, &rows), vec![59870, 59868]);
+    }
+
+    /// Antigravity 2.0 and an interactive `agy` session at once. Their port
+    /// pairs must not be flattened into one set: sorting all four descending
+    /// would put pid 20's TLS listener ahead of pid 10's RPC listener.
+    #[test]
+    fn windows_ports_from_two_products_keep_tls_listeners_last() {
+        let pids = std::collections::HashSet::from([10, 20]);
+        let row = |port: u16, pid: u32| WindowsTcpRow {
+            local_addr: [127, 0, 0, 1],
+            local_port: u32::from(port.to_be()),
+            pid,
+        };
+        let rows = [
+            row(40000, 10),
+            row(40001, 10),
+            row(50000, 20),
+            row(50001, 20),
+        ];
+        assert_eq!(
+            matching_windows_ports(&pids, &rows),
+            vec![40001, 50001, 40000, 50000]
+        );
+    }
+
+    /// The high-to-low preference only means something per product, so the
+    /// grouping is what keeps a second product's TLS listener from being
+    /// probed before the first product's RPC listener.
+    #[test]
+    fn probe_order_puts_every_rpc_listener_ahead_of_every_tls_listener() {
+        use std::collections::BTreeMap;
+
+        // One process, the ordinary case: RPC (higher) before TLS (lower).
+        assert_eq!(
+            probe_order(BTreeMap::from([(10, vec![59868, 59870])])),
+            vec![59870, 59868]
+        );
+        // Two products. A plain descending sort would yield 50001, 50000,
+        // 40001, 40000 and reach pid 20's TLS listener second; taking the
+        // ports rank by rank leaves both TLS listeners at the back, where they
+        // are touched only if no RPC listener answered.
+        assert_eq!(
+            probe_order(BTreeMap::from([
+                (10, vec![40000, 40001]),
+                (20, vec![50000, 50001]),
+            ])),
+            vec![40001, 50001, 40000, 50000]
+        );
+        // Uneven groups: the extra port of the deeper group trails everything
+        // it ranks below, and a port claimed by two pids is probed once.
+        assert_eq!(
+            probe_order(BTreeMap::from([
+                (10, vec![6000, 5000, 4000]),
+                (20, vec![6000, 7000]),
+            ])),
+            vec![6000, 7000, 5000, 4000]
+        );
+        assert!(probe_order(BTreeMap::new()).is_empty());
+    }
+
+    /// A dual-stack bind names the same port from both `/proc/net/tcp` and
+    /// `tcp6`. Those rows are one listener, so they must not consume two ranks
+    /// and push the product's real second listener down past another
+    /// product's.
+    #[test]
+    fn a_port_named_twice_by_one_product_still_occupies_one_rank() {
+        use std::collections::BTreeMap;
+
+        assert_eq!(
+            probe_order(BTreeMap::from([
+                (10, vec![40001, 40001, 40000, 40000]),
+                (20, vec![50001, 50000]),
+            ])),
+            vec![40001, 50001, 40000, 50000],
+            "duplicate rows must not reorder the ranks below them"
+        );
+    }
+
+    /// The ordering rests on each product showing both listeners. A product
+    /// caught mid-startup, with only its TLS port bound, sits alone at rank 0
+    /// and is probed first — documented as the known cost, and harmless
+    /// because every candidate is probed anyway.
+    #[test]
+    fn a_half_started_product_is_the_documented_exception() {
+        use std::collections::BTreeMap;
+
+        assert_eq!(
+            probe_order(BTreeMap::from([
+                (10, vec![40000]),
+                (20, vec![50001, 50000])
+            ])),
+            vec![40000, 50001, 50000]
+        );
+    }
+
+    /// `ANTIGRAVITY_LS_ADDRESS` is user input. An entry that leaves no
+    /// authority to connect to is dropped instead of probed, so it can neither
+    /// spend a round-trip nor add a failure that competes with the real one in
+    /// [`select_probe_error`].
+    #[test]
+    fn an_override_with_no_authority_is_dropped_not_probed() {
+        for junk in ["/", "///", "http://", "https://", "  /  "] {
+            assert_eq!(
+                candidate_bases_with(Some(junk), vec![4242]),
+                vec!["http://127.0.0.1:4242".to_string()],
+                "{junk:?} should not survive as a candidate"
+            );
+        }
+        assert!(candidate_bases_with(Some("/"), vec![]).is_empty());
     }
 
     #[test]
@@ -1518,23 +1833,36 @@ mod tests {
         assert!(parse_windows_tcp_rows(&buffer, used - 1).is_empty());
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn lsof_parser_keeps_only_ports_owned_by_antigravity_processes() {
         // `agy` (pid 74101) has three listening sockets; `sshd` (pid 200) has
         // one that must be excluded even though it sorts right after `c`.
         let output = "p74101\ncagy\nf10\nn127.0.0.1:8829\nf11\nn127.0.0.1:61289\nf12\nn127.0.0.1:61290\np200\ncsshd\nf5\nn*:22\n";
-        assert_eq!(parse_lsof_pcn(output), vec![8829, 61289, 61290]);
+        assert_eq!(parse_lsof_pcn(output), vec![61290, 61289, 8829]);
     }
 
-    #[cfg(target_os = "macos")]
+    /// The pid on each `p` line has to survive to the `n` lines, or the ports
+    /// of two running products collapse into one group and rank ordering can
+    /// no longer keep the TLS listeners last.
+    #[test]
+    fn lsof_parser_keeps_each_products_ports_in_its_own_group() {
+        let output = concat!(
+            "p100\ncagy\nf3\nn127.0.0.1:40000\nf4\nn127.0.0.1:40001\n",
+            "p200\nclanguage_server\nf5\nn127.0.0.1:50000\nf6\nn127.0.0.1:50001\n",
+        );
+        assert_eq!(
+            parse_lsof_pcn(output),
+            vec![40001, 50001, 40000, 50000],
+            "both HTTP listeners must precede both TLS listeners"
+        );
+    }
+
     #[test]
     fn lsof_parser_matches_the_capitalised_macos_app_name() {
         let output = "p900\ncAntigravity\nf7\nn127.0.0.1:54321\n";
         assert_eq!(parse_lsof_pcn(output), vec![54321]);
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn lsof_parser_deduplicates_and_handles_empty_output() {
         let output = "p1\ncagy\nf3\nn127.0.0.1:9000\nf4\nn127.0.0.1:9000\n";

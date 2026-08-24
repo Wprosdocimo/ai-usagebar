@@ -13,6 +13,36 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local, Utc};
 
+/// A monetary amount, with the sign outside the symbol. `format!("${v:.2}")`
+/// puts it inside — `$-5.71` — which reads as a typo rather than as debt, and
+/// several providers let a balance go negative: OpenRouter overruns its
+/// credits, Moonshot carries an explicit `cash_balance` debt.
+///
+/// The sign is decided from the *rounded* magnitude, so neither a negative
+/// zero off the wire nor a sub-cent debt can produce the nonsense `-$0.00`.
+///
+/// This is the one place that decides what money looks like. Every renderer
+/// goes through it so a debt cannot be spelled two ways in two panels.
+pub fn money(v: f64, currency: &str) -> String {
+    let magnitude = format!("{:.2}", v.abs());
+    let sign = if v < 0.0 && magnitude != "0.00" {
+        "-"
+    } else {
+        ""
+    };
+    match currency {
+        "USD" => format!("{sign}${magnitude}"),
+        "CNY" => format!("{sign}¥{magnitude}"),
+        // Unknown currencies trail their code instead of guessing a symbol.
+        _ => format!("{sign}{magnitude} {currency}"),
+    }
+}
+
+/// [`money`] for the providers that only ever bill in dollars.
+pub fn usd(v: f64) -> String {
+    money(v, "USD")
+}
+
 pub fn local_time_hm(when: DateTime<Utc>) -> String {
     when.with_timezone(&Local).format("%H:%M").to_string()
 }
@@ -92,6 +122,33 @@ mod tests {
     fn single_substitution() {
         let v = pm(&[("session_pct", "42")]);
         assert_eq!(substitute("{session_pct}%", &v), "42%");
+    }
+
+    #[test]
+    fn usd_keeps_the_sign_outside_the_symbol() {
+        assert_eq!(usd(74.5), "$74.50");
+        assert_eq!(usd(0.0), "$0.00");
+        assert_eq!(usd(-5.71), "-$5.71");
+        // A negative zero off the wire is not a debt, and must not print as
+        // one — `format!("{:.2}")` alone would render it "$-0.00".
+        assert_eq!(usd(-0.0), "$0.00");
+        // Neither is a debt too small to show a cent.
+        assert_eq!(usd(-0.001), "$0.00");
+        // One that does round to a cent keeps its sign.
+        assert_eq!(usd(-0.006), "-$0.01");
+    }
+
+    #[test]
+    fn money_places_the_sign_ahead_of_every_currency() {
+        assert_eq!(money(20.0, "CNY"), "¥20.00");
+        assert_eq!(money(-20.0, "CNY"), "-¥20.00");
+        // An unknown currency trails its code rather than guessing a symbol,
+        // and the sign still leads.
+        assert_eq!(money(3.5, "EUR"), "3.50 EUR");
+        assert_eq!(money(-3.5, "EUR"), "-3.50 EUR");
+        // usd() is the same policy, not a second one.
+        assert_eq!(money(-5.71, "USD"), usd(-5.71));
+        assert_eq!(money(-0.0, "CNY"), "¥0.00");
     }
 
     #[test]
