@@ -82,11 +82,16 @@ rusqlite = { version = "0.40", default-features = false, features = ["bundled"] 
 # configure time. `src/sync/crypto.rs` is the only module allowed to import
 # argon2 or chacha20poly1305; a test in that file enforces it.
 #
-# Argon2id password KDF. `default-features = false` drops the PHC-string
-# machinery (`password-hash`) deliberately: the format stores KDF *parameters*
-# but never a verifier, because the AEAD tag is the verifier. Storing a hash
-# next to the data would hand an offline attacker a plaintext-equivalent oracle.
-argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "zeroize"] }
+# Argon2id password KDF. No `alloc`: that feature exists to provide
+# `hash_password_into`, which allocates the working set with an infallible
+# `vec![]`, and `crypto.rs` allocates it itself so a machine that cannot
+# satisfy a keyfile's demand gets an error instead of an abort. Dropping it
+# also drops `password-hash` — argon2 declares `alloc = ["password-hash/alloc"]`,
+# so `default-features = false` alone would still pull the PHC-string machinery
+# in. The format stores KDF *parameters* but never a verifier, because the AEAD
+# tag is the verifier: a hash stored next to the data would hand an offline
+# attacker a plaintext-equivalent oracle.
+argon2 = { version = "0.5.3", default-features = false, features = ["zeroize"] }
 # XChaCha20-Poly1305. The 192-bit nonce removes all nonce-budget accounting, so
 # chunk nonces can be derived from the chunk id and the snapshot root can use a
 # fresh random one with no counter to track.

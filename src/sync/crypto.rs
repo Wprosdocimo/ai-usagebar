@@ -35,7 +35,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{Algorithm, Argon2, Block, Params, Version};
 use base64::Engine;
 use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -105,14 +105,17 @@ impl Default for KdfParams {
 /// user cannot retroactively satisfy.
 pub const MIN_KDF_MEMORY_KIB: u32 = 8 * 1024;
 
-/// The largest Argon2id working set this build will ever ask for: 4 GiB.
+/// The largest Argon2id working set this build will ever ask for: 2 GiB.
 ///
 /// `m_kib` arrives from the keyfile, which arrives from a remote the format
 /// treats as hostile. `argon2` 0.5.3 sets `MAX_M_COST = u32::MAX` and allocates
-/// its blocks with an **infallible** `vec![]`, so one edited integer is a
-/// `handle_alloc_error` abort or an OOM kill — reached *before* the AAD binding
-/// gets its chance to make the unwrap fail, and in flat violation of the
-/// project's hard invariant that the widget always exits 0.
+/// its blocks with an **infallible** `vec![]`, so one edited integer used to be
+/// a `handle_alloc_error` abort or an OOM kill — reached *before* the AAD
+/// binding gets its chance to make the unwrap fail, and in flat violation of
+/// the project's hard invariant that the widget always exits 0. [`derive_kek`]
+/// now allocates that working set itself with `try_reserve_exact`, so the abort
+/// is an error; this ceiling bounds what a keyfile may *ask* for, which is a
+/// different job and still worth doing.
 ///
 /// **Two gibibytes**, which is RFC 9106 §4's first recommended option and the
 /// most any published recommendation asks for. The previous four was not a
@@ -235,10 +238,30 @@ pub fn derive_kek(pw: &[u8], salt: &[u8; 16], k: KdfParams) -> Result<Zeroizing<
             k.m_kib, k.t, k.p
         ))
     })?;
+    // Argon2's working set is allocated here, *fallibly*, rather than inside
+    // `hash_password_into` — which reaches `vec![Block::default(); n]` and
+    // aborts through `handle_alloc_error` when the machine cannot satisfy it.
+    // The ceiling above caps how large that abort can be; it cannot stop one.
+    // Two gibibytes is still fatal on the 4 GB aarch64 class this project
+    // ships binaries for, and an abort is the one outcome the widget's
+    // exit-0 invariant has no answer for. `try_reserve_exact` turns it into an
+    // error the caller can render, on every platform, with no memory query to
+    // get wrong and no window between asking and allocating.
+    let blocks_needed = params.block_count();
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut blocks: Vec<Block> = Vec::new();
+    blocks.try_reserve_exact(blocks_needed).map_err(|_| {
+        AppError::Other(format!(
+            "not enough memory to derive this bundle's key: its keyfile asks \
+             for {} MiB of working set",
+            k.m_kib / 1024
+        ))
+    })?;
+    blocks.resize(blocks_needed, Block::default());
+
     let mut out = Zeroizing::new([0u8; 32]);
     argon
-        .hash_password_into(pw, salt, out.as_mut())
+        .hash_password_into_with_memory(pw, salt, out.as_mut(), &mut blocks)
         .map_err(|_| AppError::Other("key derivation failed".into()))?;
     Ok(out)
 }
@@ -1341,6 +1364,63 @@ mod tests {
         assert!(
             guard < build,
             "check_kdf_ceiling must run before Argon2::new, not after it"
+        );
+    }
+
+    /// The ceiling bounds what a keyfile may *ask* for. It cannot stop the
+    /// allocation from failing: 2 GiB is still more than the 4 GB aarch64 class
+    /// this project ships binaries for can spare, and `argon2`'s
+    /// `hash_password_into` reaches `vec![Block::default(); n]`, which aborts
+    /// through `handle_alloc_error` rather than returning. An abort is the one
+    /// outcome the widget's exit-0 invariant has no answer for, so the working
+    /// set is allocated here with `try_reserve_exact` and no production path may
+    /// use the infallible entry point.
+    ///
+    /// Asserted over the source rather than by allocating 2 GiB, for the same
+    /// reason the ceiling test does not: a test that proves the bound by
+    /// reaching it is the bug it is meant to catch.
+    #[test]
+    fn no_production_path_allocates_argon2s_working_set_infallibly() {
+        let mut sites = Vec::new();
+        for path in crate::sync::guard::rs_files_in("src") {
+            let source = std::fs::read_to_string(&path).expect("readable module");
+            for (n, line) in crate::sync::guard::production_code(&source)
+                .lines()
+                .enumerate()
+            {
+                // `hash_password_into_with_memory` takes caller-owned storage
+                // and does not match: the open paren is what separates them.
+                if line.contains("hash_password_into(") {
+                    sites.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "`hash_password_into` allocates argon2's working set with an \
+             infallible `vec![]`. Use `hash_password_into_with_memory` with a \
+             `try_reserve_exact`'d buffer, as `derive_kek` does. Found: {sites:#?}"
+        );
+
+        // And the reservation happens before the derivation, in that function.
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sync/crypto.rs"),
+        )
+        .expect("readable module");
+        let body = crate::sync::guard::production_code(&source);
+        let derive = body
+            .split_once("pub fn derive_kek")
+            .expect("derive_kek exists")
+            .1;
+        let reserve = derive
+            .find("try_reserve_exact")
+            .expect("the working set is reserved fallibly");
+        let hash = derive
+            .find("hash_password_into_with_memory")
+            .expect("the derivation runs");
+        assert!(
+            reserve < hash,
+            "the fallible reservation must precede the derivation"
         );
     }
 
