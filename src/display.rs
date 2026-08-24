@@ -30,6 +30,28 @@ pub fn sanitize_untrusted_field(value: &str) -> String {
         .collect()
 }
 
+/// One line of untrusted text on its way to a terminal or a log.
+///
+/// [`sanitize_untrusted_field`] keeps newlines, which is right for a multi-line
+/// diagnostic in a UI cell and wrong for anything sharing a line-oriented
+/// stream with output the user is reading: one embedded newline forges a line.
+/// A subprocess's stderr is exactly that case — it is one or more lines on
+/// their way into an error message.
+pub fn sanitize_untrusted_line(value: &str) -> String {
+    sanitize_untrusted_field(value).replace('\n', " ")
+}
+
+/// A filesystem path on its way to the same place.
+///
+/// [`std::path::Display`] escapes nothing, and a path is not always a literal
+/// this program chose — it can carry a component from an account name, a
+/// vendor response, or an archive member. This is what [`crate::error::AppError::Io`]
+/// renders its path through, so an attacker-chosen path cannot carry a terminal
+/// escape out of *any* error site rather than only the ones that remembered.
+pub fn sanitize_untrusted_path(path: &std::path::Path) -> String {
+    sanitize_untrusted_line(&path.to_string_lossy())
+}
+
 fn is_bidi_control(ch: char) -> bool {
     matches!(
         ch,
@@ -48,6 +70,24 @@ mod tests {
             sanitize_untrusted_field(input),
             "before]52;c;Y2xpcGJvYXJkafter\nnext column returnspoof"
         );
+    }
+
+    /// A subprocess's stderr shares a line-oriented stream with the message
+    /// carrying it, so a newline in it forges a line the program never wrote.
+    /// This is the shape `security` and `tar` diagnostics arrive in.
+    #[test]
+    fn collapses_newlines_so_untrusted_text_cannot_forge_a_line() {
+        let stderr = "tar: \x1b[2Kall good\nRESTORED: 0 files";
+        let out = sanitize_untrusted_line(stderr);
+        assert!(!out.contains('\n'), "{out:?}");
+        assert!(!out.contains('\u{1b}'), "{out:?}");
+        assert_eq!(out, "tar: [2Kall good RESTORED: 0 files");
+    }
+
+    #[test]
+    fn a_path_carrying_an_escape_renders_without_it() {
+        let path = std::path::Path::new("/tmp/\x1b[2Kspoofed");
+        assert_eq!(sanitize_untrusted_path(path), "/tmp/[2Kspoofed");
     }
 
     #[test]

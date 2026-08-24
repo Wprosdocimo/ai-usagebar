@@ -13,7 +13,17 @@ pub const AUTH_FAILURE_MESSAGE: &str =
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     /// Local I/O failed (cache write, credentials read, theme file, etc.).
-    #[error("io error at {path}: {source}")]
+    ///
+    /// **The path is sanitized here rather than at each print site.** A path in
+    /// this variant is not always a literal this program chose — it can carry a
+    /// component from an account label, a vendor response, or an archive
+    /// member — and `Display for Path` escapes nothing. Doing it at the
+    /// `Display` covers every site that formats an `AppError`, including the
+    /// ones written after this comment.
+    #[error(
+        "io error at {}: {source}",
+        crate::display::sanitize_untrusted_path(path)
+    )]
     Io {
         path: PathBuf,
         #[source]
@@ -108,6 +118,26 @@ impl From<reqwest::Error> for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Asserted at the `Display`, not at a print site, because that is the
+    /// whole point: a path in this variant can come from an account label, a
+    /// vendor response, or an archive member, and there are a dozen places
+    /// that format one.
+    #[test]
+    fn an_io_path_carrying_a_terminal_escape_renders_without_it() {
+        let rendered = AppError::Io {
+            path: PathBuf::from("/tmp/\x1b[2Kspoofed\nRESTORED: 0"),
+            source: io::Error::other("disk full"),
+        }
+        .to_string();
+
+        assert!(!rendered.contains('\u{1b}'), "{rendered:?}");
+        assert!(
+            !rendered.contains('\n'),
+            "an embedded newline forges a line: {rendered:?}"
+        );
+        assert!(rendered.contains("disk full"), "{rendered}");
+    }
 
     #[test]
     fn user_message_does_not_expose_authentication_response_bodies() {

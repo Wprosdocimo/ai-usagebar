@@ -26,6 +26,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::display::sanitize_untrusted_line;
 use crate::error::{AppError, Result};
 
 /// Generic-password *service* name Claude Code uses for the credentials blob.
@@ -105,7 +106,10 @@ fn read_raw_service(service: &str) -> Result<Option<String>> {
         if out.status.code() == Some(ERR_SEC_ITEM_NOT_FOUND) {
             return Ok(None);
         }
-        let detail = String::from_utf8_lossy(&out.stderr);
+        // `security` is a subprocess whose stderr is not this program's text.
+        // It reaches a terminal verbatim, so an escape sequence in it repaints
+        // the line and an embedded newline forges one.
+        let detail = sanitize_untrusted_line(&String::from_utf8_lossy(&out.stderr));
         let detail = detail.trim();
         return Err(AppError::Credentials(format!(
             "could not read the Claude credentials from the macOS Keychain \
@@ -196,7 +200,7 @@ fn delete_raw_service(service: &str) -> Result<()> {
     if out.status.success() || out.status.code() == Some(ERR_SEC_ITEM_NOT_FOUND) {
         return Ok(());
     }
-    let detail = String::from_utf8_lossy(&out.stderr);
+    let detail = sanitize_untrusted_line(&String::from_utf8_lossy(&out.stderr));
     Err(AppError::Credentials(format!(
         "failed to remove the Claude credentials from the macOS Keychain \
          (security exited {}): {}",
