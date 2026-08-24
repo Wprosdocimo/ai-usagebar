@@ -1,7 +1,8 @@
 {
   description = "AI plan usage for Waybar, Omarchy, and the terminal";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # Keep updates on the maintained final release branch for x86_64-darwin.
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
 
   outputs =
     { self, nixpkgs }:
