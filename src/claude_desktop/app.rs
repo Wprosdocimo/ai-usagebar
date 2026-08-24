@@ -12,6 +12,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use crate::display::{sanitize_untrusted_line, sanitize_untrusted_path};
 use crate::error::{AppError, Result};
 
 /// Host-level effects of a switch.
@@ -214,10 +215,12 @@ impl AppControl for DesktopApp {
             set_private_mode(archive, 0o600)?;
             return Ok(());
         }
-        let detail = String::from_utf8_lossy(&output.stderr);
+        // `tar` names the member it failed on, and members are paths from the
+        // account tree rather than literals in this program.
+        let detail = sanitize_untrusted_line(&String::from_utf8_lossy(&output.stderr));
         Err(AppError::Other(format!(
             "could not write the rollback archive {} (tar exited {}): {}",
-            archive.display(),
+            sanitize_untrusted_path(archive),
             output.status.code().unwrap_or(-1),
             detail.trim()
         )))
@@ -249,7 +252,7 @@ impl AppControl for DesktopApp {
         } else {
             Err(AppError::Other(format!(
                 "could not restore {} (tar exited {})",
-                archive.display(),
+                sanitize_untrusted_path(archive),
                 output.status.code().unwrap_or(-1)
             )))
         }
@@ -353,5 +356,30 @@ mod tests {
         let archive_mode = std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700);
         assert_eq!(archive_mode, 0o600);
+    }
+
+    /// The rollback archive's path reaches this message from the account tree,
+    /// not from a literal, so an escape sequence in it would repaint the line
+    /// the user is reading. `tar` fails here because the archive does not
+    /// exist, which reaches the failure branch without needing a subprocess
+    /// seam — the same route the archive test above already takes.
+    #[test]
+    fn a_failed_restore_does_not_carry_a_terminal_escape_out_of_the_archive_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("Claude");
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = temp.path().join("\x1b[2Kabsent.tar.gz");
+
+        let error = DesktopApp
+            .restore(&archive, &root, &["config.json"])
+            .expect_err("tar cannot restore an archive that does not exist")
+            .to_string();
+
+        assert!(!error.contains('\u{1b}'), "{error:?}");
+        assert!(
+            !error.contains('\n'),
+            "an embedded newline forges a line: {error:?}"
+        );
+        assert!(error.contains("could not restore"), "{error}");
     }
 }
