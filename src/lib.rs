@@ -24,6 +24,9 @@ pub mod display;
 pub mod error;
 pub mod format;
 pub mod grok;
+/// Source-scanning helpers for structural guard tests. Test-only.
+#[cfg(test)]
+pub(crate) mod guard;
 pub mod kilo;
 pub mod kimi;
 pub mod kiro;

@@ -1537,9 +1537,9 @@ mod tests {
     #[test]
     fn no_note_interpolates_an_unsanitized_path() {
         let mut sites = Vec::new();
-        for file in crate::sync::guard::rs_files_in("src") {
+        for file in crate::guard::rs_files_in("src") {
             let source = std::fs::read_to_string(&file).expect("readable module");
-            let body = crate::sync::guard::production_code(&source);
+            let body = crate::guard::production_code(&source);
             let mut rest = body.as_str();
             while let Some(at) = rest.find("notes.push(") {
                 let call = &rest[at..];
