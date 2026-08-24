@@ -39,7 +39,6 @@ pub mod pango;
 pub mod report;
 pub mod safe_storage;
 pub mod supergrok;
-pub mod sync;
 pub mod theme;
 pub mod tooltip;
 pub mod tui;
