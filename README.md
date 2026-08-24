@@ -65,7 +65,28 @@ root `flake.nix`:
 inputs.ai-usagebar.url = "github:akitaonrails/ai-usagebar";
 ```
 
-Then consume it in a NixOS module that receives `inputs`:
+Pass `inputs` to your NixOS modules with `specialArgs`:
+
+```nix
+nixpkgs.lib.nixosSystem {
+  system = "x86_64-linux";
+  specialArgs = { inherit inputs; };
+  modules = [ ./configuration.nix ];
+}
+```
+
+For standalone Home Manager, use `extraSpecialArgs`:
+
+```nix
+home-manager.lib.homeManagerConfiguration {
+  pkgs = nixpkgs.legacyPackages.${system};
+  extraSpecialArgs = { inherit inputs; };
+  modules = [ ./home.nix ];
+}
+```
+
+If your configuration already passes `inputs` through these arguments, you do
+not need to add it again. Then consume the package in a NixOS module:
 
 ```nix
 { inputs, pkgs, ... }:
