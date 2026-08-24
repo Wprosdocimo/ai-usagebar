@@ -38,21 +38,20 @@ rustPlatform.buildRustPackage {
     lib.optionals stdenv.hostPlatform.isx86_64 [ nasm ]
     ++ lib.optionals stdenv.hostPlatform.isLinux [ makeWrapper ];
 
-  postInstall =
-    ''
-      install -Dm644 config.example.toml \
-        "$out/share/ai-usagebar/config.example.toml"
-      install -Dm644 README.md \
-        "$out/share/doc/ai-usagebar/README.md"
-      install -Dm644 LICENSE \
-        "$out/share/licenses/ai-usagebar/LICENSE"
-    ''
-    + lib.optionalString stdenv.hostPlatform.isLinux ''
-      for program in ai-usagebar ai-usagebar-tui; do
-        wrapProgram "$out/bin/$program" \
-          --prefix PATH : "${linuxRuntimePath}"
-      done
-    '';
+  postInstall = ''
+    install -Dm644 config.example.toml \
+      "$out/share/ai-usagebar/config.example.toml"
+    install -Dm644 README.md \
+      "$out/share/doc/ai-usagebar/README.md"
+    install -Dm644 LICENSE \
+      "$out/share/licenses/ai-usagebar/LICENSE"
+  ''
+  + lib.optionalString stdenv.hostPlatform.isLinux ''
+    for program in ai-usagebar ai-usagebar-tui; do
+      wrapProgram "$out/bin/$program" \
+        --prefix PATH : "${linuxRuntimePath}"
+    done
+  '';
 
   meta = {
     description = "Omarchy/Waybar widgets + TUI for tracking multi-provider AI plan usage";
