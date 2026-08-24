@@ -29,6 +29,50 @@
         }
       );
 
+      apps = forAllSystems (
+        system:
+        let
+          package = packageFor system;
+        in
+        {
+          default = {
+            type = "app";
+            program = nixpkgs.lib.getExe package;
+          };
+          tui = {
+            type = "app";
+            program = nixpkgs.lib.getExe' package "ai-usagebar-tui";
+          };
+        }
+      );
+
+      overlays.default = final: _prev: {
+        ai-usagebar = final.callPackage ./nix/package.nix { };
+      };
+
+      devShells = forAllSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        {
+          default = pkgs.mkShell {
+            packages = with pkgs; [
+              actionlint
+              cargo
+              cargo-machete
+              clippy
+              gnumake
+              nasm
+              nixfmt-rfc-style
+              nodejs
+              rustc
+              rustfmt
+            ];
+          };
+        }
+      );
+
       checks = forAllSystems (system: {
         default = self.packages.${system}.default;
       });
