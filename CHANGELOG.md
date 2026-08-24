@@ -9,6 +9,8 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [1.5.2] — 2026-08-24
+
 ### Fixed
 
 - Terminal escape sequences in a subprocess's stderr, or in a filesystem path,
@@ -1642,7 +1644,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.3.1...v1.4.0
