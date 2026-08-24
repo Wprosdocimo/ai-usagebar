@@ -78,6 +78,9 @@ nixpkgs.lib.nixosSystem {
 For standalone Home Manager, use `extraSpecialArgs`:
 
 ```nix
+let
+  system = "x86_64-linux";
+in
 home-manager.lib.homeManagerConfiguration {
   pkgs = nixpkgs.legacyPackages.${system};
   extraSpecialArgs = { inherit inputs; };
