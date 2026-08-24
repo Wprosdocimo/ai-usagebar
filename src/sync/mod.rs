@@ -246,6 +246,13 @@ fn fold(name: &str) -> String {
 /// A guard that enumerates what to check fails open on everything added after
 /// it. A guard that walks fails *closed*: a new file is scanned by default and
 /// an exemption has to be written down.
+///
+/// **Crate-wide, despite living here.** `claude_desktop`'s note-sanitization
+/// guard uses it too, so this is not sync-private and should not be tidied
+/// into one. It stays under `sync` only because the sync series still has two
+/// PRs to land and moving it now would collide with both; if `sync` is ever
+/// put behind a feature gate, move this to a top-level `mod guard` first or
+/// the `claude_desktop` test stops compiling with it.
 #[cfg(test)]
 pub(crate) mod guard {
     use std::path::{Path, PathBuf};
