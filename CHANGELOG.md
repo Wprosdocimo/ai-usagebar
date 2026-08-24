@@ -9,6 +9,13 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- Terminal escape sequences in a subprocess's stderr, or in a filesystem path,
+  can no longer repaint or forge a line in output the user is reading (#122).
+  `security` and `tar` diagnostics, `AppError::Io`'s path, the Cursor database
+  diagnostics, and the notes printed by `account switch` are all sanitized now.
+
 ## [1.5.1] — 2026-08-23
 
 ### Fixed

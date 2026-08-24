@@ -16,6 +16,7 @@ use std::{hash::Hash, hash::Hasher};
 use base64::Engine;
 use rusqlite::{Connection, OpenFlags};
 
+use crate::display::sanitize_untrusted_path;
 use crate::error::{AppError, Result};
 
 const TOKEN_KEY: &str = "cursorAuth/accessToken";
@@ -49,7 +50,7 @@ pub fn read_access_token(path: &Path) -> Result<String> {
         return Err(AppError::Credentials(format!(
             "Cursor database not found at {}. Open the Cursor IDE and sign in at least once, \
              then try again.",
-            path.display()
+            sanitize_untrusted_path(path)
         )));
     }
     // Read-only: this file is Cursor's own live state, not ours to lock for
@@ -59,7 +60,7 @@ pub fn read_access_token(path: &Path) -> Result<String> {
         Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
             AppError::Credentials(format!(
                 "could not open Cursor database at {}: {e}",
-                path.display()
+                sanitize_untrusted_path(path)
             ))
         })?;
     let token: String = conn
@@ -71,7 +72,7 @@ pub fn read_access_token(path: &Path) -> Result<String> {
         .map_err(|_| {
             AppError::Credentials(format!(
                 "no Cursor session found in {}. Sign in to the Cursor IDE, then try again.",
-                path.display()
+                sanitize_untrusted_path(path)
             ))
         })?;
     if token.trim().is_empty() {
@@ -102,12 +103,16 @@ pub fn read_agent_access_token(path: &Path) -> Result<String> {
         return Err(AppError::Credentials(format!(
             "cursor-agent auth file not found at {}. Run `cursor-agent` and sign in at least \
              once, then try again.",
-            path.display()
+            sanitize_untrusted_path(path)
         )));
     }
     let bytes = std::fs::read(path).map_err(|e| AppError::io_at(path, e))?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| AppError::Credentials(format!("could not parse {}: {e}", path.display())))?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+        AppError::Credentials(format!(
+            "could not parse {}: {e}",
+            sanitize_untrusted_path(path)
+        ))
+    })?;
     let token = value
         .get("accessToken")
         .and_then(serde_json::Value::as_str)
@@ -115,7 +120,7 @@ pub fn read_agent_access_token(path: &Path) -> Result<String> {
         .ok_or_else(|| {
             AppError::Credentials(format!(
                 "no accessToken in {}. Sign in with `cursor-agent` again.",
-                path.display()
+                sanitize_untrusted_path(path)
             ))
         })?;
     Ok(token.to_string())

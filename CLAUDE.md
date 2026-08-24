@@ -92,6 +92,15 @@ patch version instead.
   Waybar instances coexist via per-vendor `flock`.
 - **Tag immutability.** Never `git push --force origin vX.Y.Z` once a
   release is public. The one-time exception in v0.3.0 was a mistake.
+- **Untrusted text is sanitized at the sink, not at the call site.** A
+  subprocess's stderr, a vendor response, and a path carrying an account label
+  are all data, not terminal programs. `pango::escape` and the TUI already
+  sanitize what they render; `AppError::Io`'s `Display` sanitizes its path so
+  every one of ~94 sites is covered. The gap is plain `println!`/`eprintln!`:
+  anything reaching one — `claude_desktop` notes especially — goes through
+  `display::sanitize_untrusted_{line,path}` first. A guard test forbids a bare
+  `.display()` inside `notes.push`. Note the exception it documents: a path
+  used as an *argument* (tar members) must stay raw, or the filename breaks.
 - **No secrets in tracked files.** Inline API keys in config.toml are
   the user's choice (and `chmod 600`ed by the Settings overlay), but
   **never commit** a real key. The `.gitignore` covers `.env`,

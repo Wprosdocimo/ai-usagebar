@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::config::AnthropicConfig;
+use crate::display::sanitize_untrusted_path;
 use crate::error::{AppError, Result};
 
 use app::AppControl;
@@ -490,7 +491,7 @@ fn apply_switch_while_stopped(
                 if let Err(error) = crate::cache::atomic_write(&path, &bytes) {
                     notes.push(format!(
                         "could not apply deletion to {}: {error}",
-                        path.display()
+                        sanitize_untrusted_path(&path)
                     ));
                 }
             }
@@ -500,7 +501,10 @@ fn apply_switch_while_stopped(
             // conversation itself being destroyed.
             for path in sweep.removals {
                 if let Err(error) = std::fs::remove_file(&path) {
-                    notes.push(format!("could not remove {}: {error}", path.display()));
+                    notes.push(format!(
+                        "could not remove {}: {error}",
+                        sanitize_untrusted_path(&path)
+                    ));
                 }
             }
         }
@@ -520,7 +524,7 @@ fn apply_switch_while_stopped(
                         fully_applied = false;
                         notes.push(format!(
                             "could not converge routine names in {}: {error}",
-                            path.display()
+                            sanitize_untrusted_path(&path)
                         ));
                     }
                 }
@@ -604,7 +608,10 @@ fn merge_history_into(
     for (source, destination) in sessions.copied.iter().chain(&sessions.updated) {
         match copy_file(source, destination) {
             Ok(()) => copied += 1,
-            Err(error) => notes.push(format!("could not seed {}: {error}", destination.display())),
+            Err(error) => notes.push(format!(
+                "could not seed {}: {error}",
+                sanitize_untrusted_path(destination)
+            )),
         }
     }
     let routines = match merge::plan_scheduled_merge(
@@ -901,7 +908,10 @@ fn prune_archives(backups_dir: &Path, keep: usize, notes: &mut Vec<String>) {
     let doomed = archives.len() - keep;
     for path in archives.into_iter().take(doomed) {
         if let Err(error) = std::fs::remove_file(&path) {
-            notes.push(format!("could not prune {}: {error}", path.display()));
+            notes.push(format!(
+                "could not prune {}: {error}",
+                sanitize_untrusted_path(&path)
+            ));
         }
     }
 }
@@ -970,7 +980,10 @@ fn restrict(path: &Path, mode: u32, notes: &mut Vec<String>) {
     use std::os::unix::fs::PermissionsExt;
 
     if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
-        notes.push(format!("could not restrict {}: {error}", path.display()));
+        notes.push(format!(
+            "could not restrict {}: {error}",
+            sanitize_untrusted_path(path)
+        ));
     }
 }
 
@@ -1511,6 +1524,73 @@ mod tests {
         assert!(dir.path().join("switch-20260102-000000-x.tar.gz").exists());
         assert!(dir.path().join("switch-20260103-000000-x.tar.gz").exists());
         assert!(dir.path().join("unrelated.txt").exists());
+    }
+
+    /// Notes are printed verbatim by `account`, so a path entering one must go
+    /// through `sanitize_untrusted_path` — `Display for Path` escapes nothing.
+    ///
+    /// Scoped to `notes.push` rather than to the file, because elsewhere in
+    /// this module a bare `.display()` is the *correct* call:
+    /// `collect_registry_members` builds tar arguments, and sanitizing one
+    /// would corrupt the filename actually handed to `tar`. The distinction is
+    /// whether the string is read by a person or by a program.
+    #[test]
+    fn no_note_interpolates_an_unsanitized_path() {
+        let mut sites = Vec::new();
+        for file in crate::sync::guard::rs_files_in("src") {
+            let source = std::fs::read_to_string(&file).expect("readable module");
+            let body = crate::sync::guard::production_code(&source);
+            let mut rest = body.as_str();
+            while let Some(at) = rest.find("notes.push(") {
+                let call = &rest[at..];
+                let mut depth = 0usize;
+                let mut end = call.len();
+                for (i, ch) in call.char_indices() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if call[..end].contains(".display()") {
+                    sites.push(format!("{}: {}", file.display(), &call[..end]));
+                }
+                rest = &call[end.max(1)..];
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "a note reaches the terminal verbatim; render its path with \
+             `sanitize_untrusted_path`. Found: {sites:#?}"
+        );
+    }
+
+    /// `account` prints every note straight to the terminal, so a path that
+    /// reaches one must not carry an escape sequence there. Making the doomed
+    /// archive a directory is the shortest route to the failure branch that
+    /// builds a note: `remove_file` refuses it.
+    ///
+    /// Unix-only because a `\x1b` is not a legal filename byte on Windows.
+    #[cfg(unix)]
+    #[test]
+    fn a_note_does_not_carry_a_terminal_escape_out_of_a_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("switch-20260101-000000-\x1b[2Kx.tar.gz")).unwrap();
+        std::fs::write(dir.path().join("switch-20260102-000000-y.tar.gz"), "z").unwrap();
+        let mut notes = Vec::new();
+
+        prune_archives(dir.path(), 1, &mut notes);
+
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(!notes[0].contains('\u{1b}'), "{:?}", notes[0]);
+        assert!(!notes[0].contains('\n'), "{:?}", notes[0]);
+        assert!(notes[0].contains("could not prune"), "{}", notes[0]);
     }
 
     #[test]
