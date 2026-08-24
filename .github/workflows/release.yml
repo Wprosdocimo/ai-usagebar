@@ -124,7 +124,7 @@ jobs:
 
       - name: Test (native only — aarch64 binaries can't run on x86 runner)
         if: matrix.builder == 'cargo'
-        run: cargo test --release --target ${{ matrix.target }}
+        run: cargo test --release --target ${{ matrix.target }} --locked
 
       - name: Build release binaries
         run: ${{ matrix.builder }} build --release --target ${{ matrix.target }} --locked

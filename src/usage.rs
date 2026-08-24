@@ -587,11 +587,19 @@ pub struct OpenRouterSnapshot {
 impl Eq for OpenRouterSnapshot {}
 
 impl OpenRouterSnapshot {
+    /// Spendable credit, **which can be negative**: OpenRouter lets an account
+    /// run into debt, and clamping that to zero would report a healthy-looking
+    /// `$0.00` to someone who has to top up before anything works again. The
+    /// wire fields are each non-negative (see `openrouter::types`), so a
+    /// negative result only ever means usage has overrun credits.
     pub fn balance(&self) -> f64 {
-        (self.total_credits - self.total_usage).max(0.0)
+        self.total_credits - self.total_usage
     }
     /// Percentage of total_credits consumed (0..=100). Returns 0 when
-    /// `total_credits` is 0 (free-tier-only accounts).
+    /// `total_credits` is 0 (free-tier-only accounts) — there is no
+    /// denominator to be a percentage of. Severity does not come from this
+    /// number alone: see [`crate::openrouter::vendor::severity`], which treats
+    /// a negative [`Self::balance`] as critical regardless of the percentage.
     pub fn consumed_pct(&self) -> i32 {
         if self.total_credits <= 0.0 {
             return 0;

@@ -627,6 +627,10 @@ Panel {
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
+      // The row now carries a date and clock as well as the countdown, so it
+      // can outgrow a narrow panel. Wrap like the detail line above it rather
+      // than painting past the panel edge.
+      wrapMode: Text.WordWrap
     }
   }
 

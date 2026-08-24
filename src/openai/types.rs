@@ -165,7 +165,7 @@ where
         serde_json::Value::Null => Ok(None),
         serde_json::Value::String(s) => Ok(Some(s)),
         serde_json::Value::Number(n) => match n.as_f64() {
-            Some(value) if value.is_finite() => Ok(Some(format!("${value:.2}"))),
+            Some(value) if value.is_finite() => Ok(Some(crate::format::usd(value))),
             _ => Err(serde::de::Error::custom(
                 "credit balance is not a finite number",
             )),

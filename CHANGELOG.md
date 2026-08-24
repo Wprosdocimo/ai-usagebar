@@ -9,6 +9,52 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [1.5.1] — 2026-08-23
+
+### Fixed
+
+- `cargo clippy -- -D warnings` now runs on macOS and Windows as well as Linux.
+  Each platform compiles a different slice of the crate — the macOS Keychain
+  fallback, the Windows process and TCP-table walk — so a lint on the slice the
+  Linux job never sees was a lint nobody saw. Two credential helpers and a test
+  seam that were unreachable on Windows are gated accordingly.
+
+- Google Antigravity probes the RPC listener ahead of the TLS one on Linux and
+  macOS too, not just Windows, and keeps each running product's listeners in
+  their own group when ordering them. With more than one product up, every RPC
+  listener is now tried before any TLS listener instead of the two products'
+  ports interleaving by number and putting back the `agy` handshake warnings
+  v1.5.0 set out to silence (#121). An `ANTIGRAVITY_LS_ADDRESS` that leaves no
+  host to connect to is dropped rather than probed.
+- A negative balance is now spelled the same way everywhere. DeepSeek, Moonshot
+  (whose `cash_balance` is explicitly a debt), Kimi, SuperGrok, and the TUI
+  panel rows rendered it as `$-5.71` while OpenRouter, Grok, Kilo, and Novita
+  rendered `-$5.71`. Every renderer now goes through one `format::money`, which
+  also keeps a negative zero or a sub-cent debt from printing as `-$0.00`.
+
+## [1.5.0] — 2026-08-23
+
+### Added
+
+- The Omarchy panel's reset row now shows the wall-clock time the limit window
+  reopens alongside the countdown — `Resets in 4h 5m · 13:54` — and dates it
+  whenever the reset lands on another day (#120).
+
+### Fixed
+
+- OpenRouter no longer hides a negative credit balance behind a healthy-looking
+  `$0.00` in green (#118). A balance in debt is shown with its sign — `-$5.71` —
+  and is treated as critical everywhere, including on an account that never
+  bought credits, where the consumed-percentage has no denominator and used to
+  report a reassuring 0%.
+- Google Antigravity no longer gives up when `ANTIGRAVITY_LS_ADDRESS` points at
+  a port that has moved. The override is still tried first, but discovered local
+  ports are now probed behind it, and a signed-out server's authentication error
+  is reported instead of being masked by connection refusals from products that
+  are simply not running (#119). On Windows the RPC listener is probed before
+  the TLS one, which also silences the TLS handshake warnings `agy` used to log
+  on every poll.
+
 ## [1.4.0] — 2026-08-21
 
 ### Added
@@ -1589,7 +1635,9 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.0...v1.5.1
+[1.5.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.2.0...v1.3.0
