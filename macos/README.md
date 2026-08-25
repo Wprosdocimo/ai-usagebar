@@ -83,7 +83,7 @@ Settings persist in `UserDefaults` and apply **live, no rebuild**.
 | Bar width | 8 | cells per menu-bar bar (4–20) |
 | Colors (low/mid/high/critical/empty) | One Dark | bar color per severity (≥90 / ≥75 / ≥50 / else) |
 | Refresh interval | 30 s | 5–3600 |
-| Vendor | anthropic | selectors: only enabled vendors (see [Vendor scope](#vendor-scope)). Claude, Codex, and Z.AI expose session/weekly windows; balance-only vendors show a credit balance instead. |
+| Vendor | anthropic | selectors: only enabled vendors (see [Vendor scope](#vendor-scope)). Claude, Codex, and Z.AI expose session/weekly windows — Z.AI adds its monthly MCP-tools pool as a fourth row when the account has one; balance-only vendors show a credit balance instead. |
 | Binary path | auto | empty = `~/.cargo/bin`, Homebrew, then `PATH` |
 | Global vendor shortcut | on | **⌥⌘\\** cycles every configured vendor/account and Overview; turns itself back off if macOS cannot register it |
 | Global compact shortcut | on | **⌥⌘E** toggles Overview between mini bars and compact text; turns itself back off if unavailable |
@@ -103,9 +103,9 @@ The Preferences window needs **macOS 12+** (the menu bar itself works on
 10.15+). Tags/labels use the system label colors, so they adapt to a light or
 dark menu bar; only the bar fill/empty colors are configurable.
 
-Pace markers require both a real reset and elapsed-time output. Currently only
-Anthropic's elapsed placeholder family supplies that pair, so other vendors can
-render their generic windows without a pace marker. When available, the fixed
+Pace markers require both a real reset and elapsed-time output. Claude, Codex,
+Z.AI, MiniMax and Antigravity supply that pair; the remaining vendors render
+their generic windows without a pace marker. When available, the fixed
 blue `│` pace marker is placed at elapsed time. Fill past the marker follows the
 point-delta colors used by the Rust widget: at
 least 10 points ahead is critical/red, 1–9 ahead is high/orange, -10 through

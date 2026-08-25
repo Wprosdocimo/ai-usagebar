@@ -14,6 +14,12 @@ Each release is also published at
 - First-party Nix flake packaging supports `nix run`, profile installation,
   direct NixOS and Home Manager consumption, an overlay, and a development
   shell on x86_64 and aarch64 Linux and macOS.
+- The macOS menu bar shows Z.AI's monthly MCP-tools pool as a fourth row, with
+  its own bar, reset and pace marker — the widget, TUI and native panels have
+  always listed it, only the menu bar had no field for it. It fills the same
+  fourth-window slot Antigravity's second pool uses. An account with no MCP
+  quota reports no reset for it and keeps three rows, and an older binary that
+  does not know `{zai_mcp_*}` degrades the same way.
 
 ### Changed
 

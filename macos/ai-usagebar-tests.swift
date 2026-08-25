@@ -224,7 +224,7 @@ func snapshot(_ format: String, vendor: String, fields: [String]) -> Snapshot? {
 
 func testParserBalances() {
     print("parser balances per vendor")
-    // Build a field array long enough to cover index 26 (aapi_limit).
+    // Build a field array long enough to cover the highest index a case needs.
     func fields(through max: Int, set: [Int: String]) -> [String] {
         (0...max).map { set[$0] ?? "" }
     }
@@ -324,6 +324,50 @@ func testParserBalances() {
     assertEqual(agy?.sonnetLabel, "Claude & GPT OSS 5h", "antigravity third-party 5h label")
     assertEqual(agy?.secondaryWeeklyLabel, "Claude & GPT OSS Weekly", "antigravity fourth label")
     assertNil(agy?.extra, "antigravity fourth window is not a spend bar")
+
+    // Z.AI's monthly MCP-tools pool fills the same fourth-window slot.
+    let zai = snapshot(FORMAT, vendor: "zai",
+                       fields: fields(through: 33, set: [
+                          0: "GLM Coding Pro", 1: "42", 2: "2h", 3: "15", 4: "3d",
+                          13: "40", 14: "35", 16: "zai",
+                          31: "7", 32: "24d 13h", 33: "60"
+                       ]))
+    assertEqual(zai?.session?.pct, 42, "zai session pct")
+    assertEqual(zai?.weekly?.pct, 15, "zai weekly pct")
+    assertEqual(zai?.secondaryWeekly?.pct, 7, "zai MCP pct")
+    assertEqual(zai?.secondaryWeekly?.reset, "24d 13h", "zai MCP reset")
+    assertEqual(zai?.secondaryWeekly?.elapsed, 60, "zai MCP elapsed drives the pace marker")
+    assertEqual(zai?.secondaryWeeklyLabel, "MCP tools (monthly)", "zai MCP label")
+    assertNil(zai?.extra, "zai MCP window is not a spend bar")
+
+    // `{zai_mcp_pct}` flattens an account with no MCP quota to "0", so the row
+    // must key off the reset — otherwise every Z.AI user grows a phantom 0% row.
+    let zaiNoMcp = snapshot(FORMAT, vendor: "zai",
+                            fields: fields(through: 33, set: [
+                               0: "GLM Coding Pro", 1: "42", 2: "2h", 3: "15", 4: "3d",
+                               16: "zai", 31: "0", 32: "—", 33: "0"
+                            ]))
+    assertNil(zaiNoMcp?.secondaryWeekly, "no MCP quota reported → no fourth row")
+    assertEqual(zaiNoMcp?.secondaryWeeklyLabel, "", "no MCP quota reported → no label")
+
+    // An older binary knows nothing of `{zai_mcp_*}` and leaves them literal.
+    let zaiOldBinary = snapshot(FORMAT, vendor: "zai",
+                                fields: fields(through: 16, set: [
+                                   0: "GLM Coding Pro", 1: "42", 2: "2h", 3: "15",
+                                   4: "3d", 16: "zai"
+                                ]))
+    assertEqual(zaiOldBinary?.session?.pct, 42, "old binary still parses the windows it knows")
+    assertNil(zaiOldBinary?.secondaryWeekly, "unknown placeholders → no fourth row")
+
+    // The MCP pool only rides this slot for Z.AI; another vendor's fields at the
+    // same indices must not conjure one.
+    let notZai = snapshot(FORMAT, vendor: "anthropic",
+                          fields: fields(through: 33, set: [
+                             0: "Max", 1: "10", 2: "2h", 3: "20", 4: "3d",
+                             31: "7", 32: "24d 13h", 33: "60"
+                          ]))
+    assertEqual(notZai?.session?.pct, 10, "the non-Z.AI snapshot still parsed")
+    assertNil(notZai?.secondaryWeekly, "the MCP slot is Z.AI-only")
 
     // A non-Cursor vendor keeps the default time-window labels.
     assertEqual(cld?.sessionLabel, "Session", "anthropic keeps the Session label")
