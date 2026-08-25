@@ -95,17 +95,13 @@ pub async fn fetch_snapshot_at(
         Err(e) if e.is_transient() => fallback_silent(cache, now, e),
         Err(AppError::Http { status, body }) => {
             cache.mark_stale();
-            cache.write_last_error(status, &body);
-            let reason = AppError::Http {
-                status,
-                body: body.clone(),
-            };
-            fallback_with_error(cache, Some((status, body)), reason, now)
+            let last_error = Some(cache.write_last_error(status, &body));
+            let reason = AppError::Http { status, body };
+            fallback_with_error(cache, last_error, reason, now)
         }
         Err(e) => {
             cache.mark_stale();
-            cache.write_last_error(0, &e.to_string());
-            let last_error = Some((0, e.to_string()));
+            let last_error = Some(cache.write_last_error(0, &e.to_string()));
             fallback_with_error(cache, last_error, e, now)
         }
     }

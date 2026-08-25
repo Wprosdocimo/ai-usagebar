@@ -11,6 +11,15 @@ Each release is also published at
 
 ### Fixed
 
+- A `401`/`403` response body no longer reaches the widget tooltip or the TUI on
+  the run that hit it. The body was redacted on its way to the `.last_error`
+  file but the copy handed to the outcome was built separately from the raw
+  body, so signing out with a warm cache showed the body once and the neutral
+  message on every run after. `Cache::write_last_error` now returns exactly what
+  it persisted, and every vendor that built the pair itself passes that value on
+  — Anthropic, Anthropic API, Antigravity, Deepseek, Grok, Kilo, MiniMax,
+  Moonshot, Novita, OpenAI, OpenRouter and Z.ai. Cursor, Kimi and Kiro already
+  redacted at this point and are unchanged.
 - Antigravity no longer reports a TLS listener's `400 Client sent an HTTP
   request to an HTTPS server` as the reason a probe run failed. Each product
   binds an RPC port and an HTTPS port, and the probe order reaches the HTTPS

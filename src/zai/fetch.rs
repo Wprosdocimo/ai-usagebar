@@ -70,13 +70,13 @@ pub async fn fetch_snapshot(
         Err(e) if e.is_transient() => fallback_silent(cache, config_plan_tier),
         Err(AppError::Http { status, body }) => {
             cache.mark_stale();
-            cache.write_last_error(status, &body);
-            fallback_with_error(cache, Some((status, body)), config_plan_tier)
+            let last_error = Some(cache.write_last_error(status, &body));
+            fallback_with_error(cache, last_error, config_plan_tier)
         }
         Err(e) => {
             cache.mark_stale();
-            cache.write_last_error(0, &e.to_string());
-            fallback_with_error(cache, Some((0, e.to_string())), config_plan_tier)
+            let last_error = Some(cache.write_last_error(0, &e.to_string()));
+            fallback_with_error(cache, last_error, config_plan_tier)
         }
     }
 }

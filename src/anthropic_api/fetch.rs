@@ -143,8 +143,7 @@ pub async fn fetch_snapshot_at(
         Err(e) if e.is_transient() => fallback_silent(cache, limit, &month, &target, e),
         Err(AppError::Http { status, body }) => {
             cache.mark_stale();
-            cache.write_last_error(status, &body);
-            let diag = (status, body.clone());
+            let diag = cache.write_last_error(status, &body);
             fallback_with_error(
                 cache,
                 Some(diag),
@@ -156,8 +155,7 @@ pub async fn fetch_snapshot_at(
         }
         Err(e) => {
             cache.mark_stale();
-            cache.write_last_error(0, &e.to_string());
-            let diag = (0, e.to_string());
+            let diag = cache.write_last_error(0, &e.to_string());
             fallback_with_error(cache, Some(diag), limit, &month, &target, e)
         }
     }

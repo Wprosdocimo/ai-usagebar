@@ -65,13 +65,13 @@ pub async fn fetch_snapshot(
         Err(e) if e.is_transient() => fallback_silent(cache),
         Err(AppError::Http { status, body }) => {
             cache.mark_stale();
-            cache.write_last_error(status, &body);
-            fallback_with_error(cache, Some((status, body)))
+            let last_error = Some(cache.write_last_error(status, &body));
+            fallback_with_error(cache, last_error)
         }
         Err(e) => {
             cache.mark_stale();
-            cache.write_last_error(0, &e.to_string());
-            fallback_with_error(cache, Some((0, e.to_string())))
+            let last_error = Some(cache.write_last_error(0, &e.to_string()));
+            fallback_with_error(cache, last_error)
         }
     }
 }
@@ -242,6 +242,55 @@ mod tests {
         assert!((out.snapshot.balance - 5.0).abs() < 1e-9);
         assert_eq!(out.snapshot.currency, "USD");
         assert!(!out.stale);
+    }
+
+    /// The whole bug in one path. `reuse_cache` already puts the *redacted*
+    /// message in the outcome — it reads it back from disk — and
+    /// `fallback_with_error` then overwrote it with a pair built from the raw
+    /// body. So the run that hit the `401` displayed the body and every run
+    /// after it displayed the neutral message.
+    ///
+    /// Written against Deepseek because it is the smallest harness that reaches
+    /// the shared path; the same two lines were repeated in five other vendors.
+    #[tokio::test]
+    async fn a_401_body_does_not_reach_the_outcome_when_a_cache_is_warm() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/user/balance")
+            .with_status(401)
+            .with_body("PANCEA user@example.test <credential>&token")
+            .create_async()
+            .await;
+
+        let (_td, cache) = cache_fixture();
+        let warm = serde_json::json!({
+            "is_available": true,
+            "balance": 5.0,
+            "granted": 5.0,
+            "topped_up": 0.0,
+            "currency": "USD"
+        });
+        cache.write_payload(warm.to_string().as_bytes()).unwrap();
+
+        let endpoints = Endpoints {
+            balance: format!("{}/user/balance", server.url()),
+        };
+        let out = fetch_snapshot(
+            &reqwest::Client::new(),
+            "sk-test",
+            &cache,
+            &endpoints,
+            Duration::from_secs(0),
+        )
+        .await
+        .unwrap();
+
+        let (code, msg) = out.last_error.expect("the 401 must still be reported");
+        assert_eq!(code, 401);
+        assert_eq!(msg, crate::error::AUTH_FAILURE_MESSAGE);
+        assert!(!msg.contains("PANCEA"), "{msg}");
+        assert!(!msg.contains("<credential>"), "{msg}");
+        assert!(out.stale);
     }
 
     #[tokio::test]
