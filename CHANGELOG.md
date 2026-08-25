@@ -9,6 +9,8 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-08-25
+
 ### Added
 
 - First-party Nix flake packaging supports `nix run`, profile installation,
@@ -1670,7 +1672,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.4.0...v1.5.0
