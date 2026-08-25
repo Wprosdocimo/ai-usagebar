@@ -9,8 +9,8 @@ use crate::format::{placeholders, substitute, updated_at_hm};
 use crate::pacing::PaceSeverity;
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
-use crate::tooltip::{Line as TooltipLine, render_bordered};
-use crate::usage::KimiSnapshot;
+use crate::tooltip::{Line as TooltipLine, WindowRow, push_window_with_row, render_bordered};
+use crate::usage::{KimiSnapshot, UsageWindow};
 use crate::vendor::{RenderOpts, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
@@ -37,7 +37,23 @@ pub fn warning_kind(code: u16, message: &str) -> WarningKind {
     }
 }
 
-pub const DEFAULT_FORMAT: &str = "{kimi_weekly_pct}%";
+pub const DEFAULT_FORMAT: &str = "{kimi_weekly_pct}% · {kimi_weekly_reset}";
+
+/// Kimi reports the weekly quota's reset instant but never its length; the
+/// subscription bucket rolls every 7 days.
+const WEEKLY_WINDOW: chrono::Duration = chrono::Duration::days(7);
+/// The rolling bucket's length *is* advertised — 300 minutes — and only that
+/// spelling is accepted on the way in (`types::is_five_hour_window`).
+const ROLLING_WINDOW: chrono::Duration = chrono::Duration::hours(5);
+
+/// Project a quota pair onto the shared window shape the tooltip helper draws.
+fn window(pct: i32, resets_at: Option<DateTime<Utc>>, duration: chrono::Duration) -> UsageWindow {
+    UsageWindow {
+        utilization_pct: pct,
+        resets_at,
+        window_duration: duration,
+    }
+}
 
 pub fn build_placeholders(
     snap: &KimiSnapshot,
@@ -143,8 +159,6 @@ fn render_tooltip(
 
     let weekly_pct = snap.weekly_pct();
     let weekly_color = severity_color(severity_for(weekly_pct), theme);
-    let window_pct = snap.window_pct();
-    let window_color = severity_color(severity_for(window_pct), theme);
 
     let mut lines: Vec<TooltipLine> = Vec::new();
     lines.push(TooltipLine::Center(format!(
@@ -162,38 +176,45 @@ fn render_tooltip(
         escape(plan)
     )));
 
+    // Kimi counts requests rather than reporting a percentage, which is why
+    // this block used to print bare `26 / 100  (26%)` pairs. The percentage is
+    // right there — project each quota onto a window and it draws like every
+    // other vendor, with the counts riding along on the reset line.
     lines.push(TooltipLine::Body("".into()));
-    lines.push(TooltipLine::Body(format!(
-        " <span foreground='{fg}'>  󰅄  Weekly quota</span>"
-    )));
-    lines.push(TooltipLine::Body(format!(
-        "   <span font_weight='bold' foreground='{weekly_color}'>{used} / {limit}</span>  ({pct}%)",
+    // `remaining` is the vendor's own number, not `limit - used`: `extract_block`
+    // keeps both when the wire reports both. Dropping it would lose the figure a
+    // request-counting quota is actually read for.
+    let weekly_detail = format!(
+        "{used} / {limit} · {remaining} left",
         used = snap.weekly_used,
         limit = snap.weekly_limit,
-        pct = weekly_pct
-    )));
-    lines.push(TooltipLine::Body(format!(
-        " <span foreground='{dim}'>     {remaining} remaining · reset {reset}</span>",
-        remaining = snap.weekly_remaining,
-        reset = escape(&countdown::format(snap.weekly_reset_at, now))
-    )));
+        remaining = snap.weekly_remaining
+    );
+    push_window_with_row(
+        &mut lines,
+        "  󰅄  Weekly quota",
+        &window(weekly_pct, snap.weekly_reset_at, WEEKLY_WINDOW),
+        theme,
+        now,
+        WindowRow::default().with_detail(&weekly_detail),
+    );
 
     if snap.window_limit > 0 {
         lines.push(TooltipLine::Body("".into()));
-        lines.push(TooltipLine::Body(format!(
-            " <span foreground='{fg}'>  󰅁  Rolling window</span>"
-        )));
-        lines.push(TooltipLine::Body(format!(
-            "   <span font_weight='bold' foreground='{window_color}'>{used} / {limit}</span>  ({pct}%)",
+        let window_detail = format!(
+            "{used} / {limit} · {remaining} left",
             used = snap.window_used,
             limit = snap.window_limit,
-            pct = window_pct
-        )));
-        lines.push(TooltipLine::Body(format!(
-            " <span foreground='{dim}'>     {remaining} remaining · reset {reset}</span>",
-            remaining = snap.window_remaining,
-            reset = escape(&countdown::format(snap.window_reset_at, now))
-        )));
+            remaining = snap.window_remaining
+        );
+        push_window_with_row(
+            &mut lines,
+            "  󰅁  Rolling window (5h)",
+            &window(snap.window_pct(), snap.window_reset_at, ROLLING_WINDOW),
+            theme,
+            now,
+            WindowRow::default().with_detail(&window_detail),
+        );
     }
 
     if let Some((code, msg)) = outcome.last_error.as_ref() {
@@ -481,5 +502,78 @@ mod tests {
         ] {
             assert!(values.contains_key(key), "missing placeholder {key}");
         }
+    }
+
+    /// The whole point of the rework: Kimi's quotas are percentages behind a
+    /// pair of counters, so they draw like every other vendor's window.
+    #[test]
+    fn tooltip_draws_a_progress_bar_for_both_quotas() {
+        let snap = sample_snap();
+        let outcome = sample_outcome(snap.clone());
+        let out = render(&outcome, &snap, &Theme::default(), &opts(), now());
+        assert_eq!(
+            out.tooltip.matches('░').count() + out.tooltip.matches('█').count(),
+            2 * crate::pango::BAR_LEN as usize,
+            "expected one full-width bar per quota: {}",
+            out.tooltip
+        );
+        assert!(out.tooltip.contains("Resets in"), "{}", out.tooltip);
+    }
+
+    /// The counters the old hand-rolled rows carried ride the reset line now —
+    /// the bar replaces the `26 / 100  (26%)` pair, it does not drop it.
+    #[test]
+    fn tooltip_keeps_the_raw_counts_on_the_reset_line() {
+        let snap = sample_snap();
+        let outcome = sample_outcome(snap.clone());
+        let out = render(&outcome, &snap, &Theme::default(), &opts(), now());
+        assert!(out.tooltip.contains("· 26 / 100"), "{}", out.tooltip);
+        assert!(out.tooltip.contains("· 15 / 100"), "{}", out.tooltip);
+    }
+
+    /// `remaining` is what a request-counting quota is read for, and it is the
+    /// vendor's own figure rather than `limit - used` — `extract_block` keeps
+    /// both when the wire reports both, so it cannot be recovered by
+    /// subtraction. The fixture makes them disagree to prove which one is
+    /// rendered.
+    #[test]
+    fn tooltip_keeps_the_vendors_own_remaining_count() {
+        let mut snap = sample_snap();
+        snap.weekly_remaining = 70; // not 100 - 26
+        snap.window_remaining = 80; // not 100 - 15
+        let outcome = sample_outcome(snap.clone());
+        let out = render(&outcome, &snap, &Theme::default(), &opts(), now());
+        assert!(
+            out.tooltip.contains("· 26 / 100 · 70 left"),
+            "{}",
+            out.tooltip
+        );
+        assert!(
+            out.tooltip.contains("· 15 / 100 · 80 left"),
+            "{}",
+            out.tooltip
+        );
+    }
+
+    /// Kimi opts out of pacing, like Codex; the rows must not sprout a glyph
+    /// on their own.
+    #[test]
+    fn tooltip_rows_carry_no_pace_glyph() {
+        let snap = sample_snap();
+        let outcome = sample_outcome(snap.clone());
+        let out = render(&outcome, &snap, &Theme::default(), &opts(), now());
+        for glyph in ['↑', '→', '↓'] {
+            assert!(!out.tooltip.contains(glyph), "{}", out.tooltip);
+        }
+    }
+
+    /// `{pct}% · {reset}` is what every other percentage vendor puts on the
+    /// bar; Kimi printed a bare `26%`.
+    #[test]
+    fn default_bar_text_pairs_the_percentage_with_its_reset() {
+        let snap = sample_snap();
+        let outcome = sample_outcome(snap.clone());
+        let out = render(&outcome, &snap, &Theme::default(), &opts(), now());
+        assert!(out.text.contains("26% · 4d 0h"), "{}", out.text);
     }
 }

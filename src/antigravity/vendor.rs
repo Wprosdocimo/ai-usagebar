@@ -444,4 +444,14 @@ mod tests {
         );
         assert_ne!(plain, paced, "pace marker should change the bars");
     }
+
+    /// Antigravity keeps its opt-in marker through the stable `push_window`
+    /// and gains nothing else from the row helper.
+    #[test]
+    fn tooltip_rows_carry_no_pace_glyph() {
+        let tip = tooltip(&opts(), None);
+        for glyph in ['↑', '→', '↓'] {
+            assert!(!tip.contains(glyph), "{tip}");
+        }
+    }
 }

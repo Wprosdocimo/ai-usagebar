@@ -14,7 +14,7 @@ use crate::format::{placeholders, substitute, updated_at_hm};
 use crate::pacing::{self, PaceSeverity};
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
-use crate::tooltip::{Line as TooltipLine, render_bordered};
+use crate::tooltip::{Line as TooltipLine, WindowRow, push_window_with_row, render_bordered};
 use crate::usage::{MinimaxSnapshot, UsageWindow};
 use crate::vendor::{RenderOpts, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
@@ -200,7 +200,7 @@ pub fn render(
     let tooltip = if let Some(fmt) = opts.tooltip_format.as_deref() {
         substitute(fmt, &pango_values)
     } else {
-        render_tooltip(outcome, snap, theme, now)
+        render_tooltip(outcome, snap, theme, opts, now)
     };
 
     WaybarOutput {
@@ -214,6 +214,7 @@ fn render_tooltip(
     outcome: &VendorOutcome,
     snap: &MinimaxSnapshot,
     theme: &Theme,
+    opts: &RenderOpts,
     now: DateTime<Utc>,
 ) -> String {
     let blue = &theme.blue;
@@ -227,22 +228,30 @@ fn render_tooltip(
     )));
     lines.push(TooltipLine::Sep);
 
+    // Rows go through the shared window helper so a pool reads like every
+    // other vendor's block — bar, percentage, pace arrow — instead of the bare
+    // `Session 20%` pair MiniMax printed before. The pool keeps its heading,
+    // the way Antigravity groups its Gemini / third-party budgets.
     let mut pool = |label: &str, icon: &str, session: &UsageWindow, weekly: &UsageWindow| {
         lines.push(TooltipLine::Body("".into()));
         lines.push(TooltipLine::Body(format!(
-            " <span foreground='{fg}'>  {icon}  {label}</span>"
+            " <span font_weight='bold' foreground='{fg}'>  {icon}  {label}</span>"
         )));
-        for (what, w) in [("Session", session), ("Weekly", weekly)] {
-            let color = severity_color(severity_for(w.utilization_pct), theme);
-            lines.push(TooltipLine::Body(format!(
-                "   <span foreground='{dim}'>{what}</span>  \
-                 <span font_weight='bold' foreground='{color}'>{pct}%</span>",
-                pct = w.utilization_pct
-            )));
-            lines.push(TooltipLine::Body(format!(
-                " <span foreground='{dim}'>     reset {}</span>",
-                escape(&countdown::format(w.resets_at, now))
-            )));
+        for (slot, (what, w)) in [("  󰔟  Session", session), ("  󰃰  Weekly", weekly)]
+            .into_iter()
+            .enumerate()
+        {
+            if slot > 0 {
+                lines.push(TooltipLine::Body("".into()));
+            }
+            push_window_with_row(
+                &mut lines,
+                what,
+                w,
+                theme,
+                now,
+                WindowRow::paced(w, now, opts.pace_tolerance, opts.tooltip_pace_pts),
+            );
         }
     };
 
@@ -462,7 +471,7 @@ mod tests {
     #[test]
     fn tooltip_lists_both_pools_when_present() {
         let s = snap();
-        let tip = render_tooltip(&outcome(&s), &s, &Theme::default(), now());
+        let tip = render_tooltip(&outcome(&s), &s, &Theme::default(), &opts(), now());
         assert!(tip.contains(POOL_GENERAL));
         assert!(tip.contains(POOL_VIDEO));
     }
@@ -472,7 +481,7 @@ mod tests {
         let mut s = snap();
         s.video_session = None;
         s.video_weekly = None;
-        let tip = render_tooltip(&outcome(&s), &s, &Theme::default(), now());
+        let tip = render_tooltip(&outcome(&s), &s, &Theme::default(), &opts(), now());
         assert!(tip.contains(POOL_GENERAL));
         assert!(!tip.contains(POOL_VIDEO));
     }
@@ -511,5 +520,38 @@ mod tests {
         o.stale = true;
         let out = render(&o, &s, &Theme::default(), &opts(), now());
         assert!(out.text.contains('⏸'));
+    }
+
+    /// MiniMax printed a bare `Session 20%` pair per pool; both rows now draw
+    /// the shared bar and carry the pace arrow the placeholders already had.
+    #[test]
+    fn tooltip_draws_a_bar_and_pace_arrow_for_every_pool_row() {
+        let s = snap();
+        let tip = render_tooltip(&outcome(&s), &s, &Theme::default(), &opts(), now());
+        let cells = tip.matches('░').count() + tip.matches('█').count();
+        assert_eq!(
+            cells,
+            4 * crate::pango::BAR_LEN as usize,
+            "expected a bar for each of the four windows: {tip}"
+        );
+        let arrows = tip.matches('↑').count() + tip.matches('→').count() + tip.matches('↓').count();
+        assert_eq!(arrows, 4, "expected one arrow per window: {tip}");
+    }
+
+    #[test]
+    fn the_elapsed_marker_stays_behind_tooltip_pace_pts() {
+        let s = snap();
+        let plain = render_tooltip(&outcome(&s), &s, &Theme::default(), &opts(), now());
+        let paced = render_tooltip(
+            &outcome(&s),
+            &s,
+            &Theme::default(),
+            &RenderOpts {
+                tooltip_pace_pts: true,
+                ..opts()
+            },
+            now(),
+        );
+        assert_ne!(plain, paced, "the marker should redraw the bars");
     }
 }

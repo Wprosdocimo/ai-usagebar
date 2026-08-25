@@ -456,4 +456,16 @@ mod tests {
         s.weekly.as_mut().unwrap().utilization_pct = 95;
         assert_eq!(severity(&s), PaceSeverity::Critical);
     }
+
+    /// Codex was left out of the tooltip pace change on purpose. It calls the
+    /// stable `push_window`, so the glyph the row helper learned must not leak
+    /// through that path.
+    #[test]
+    fn tooltip_rows_carry_no_pace_glyph() {
+        let s = sample();
+        let out = render(&oc(s.clone()), &s, &Theme::default(), &opts(), Utc::now());
+        for glyph in ['↑', '→', '↓'] {
+            assert!(!out.tooltip.contains(glyph), "{}", out.tooltip);
+        }
+    }
 }
