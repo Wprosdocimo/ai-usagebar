@@ -34,6 +34,12 @@ rustPlatform.buildRustPackage {
 
   cargoLock.lockFile = ../Cargo.lock;
 
+  # `claude_desktop::app` shells out to `/usr/bin/tar`, which the build sandbox
+  # does not have. Skipped here rather than narrowing the module's `cfg`, so the
+  # two security assertions it carries — archive permissions, and that a path
+  # cannot carry a terminal escape out of a failure — keep running on Linux CI.
+  checkFlags = [ "--skip=claude_desktop::app::tests" ];
+
   nativeBuildInputs =
     lib.optionals stdenv.hostPlatform.isx86_64 [ nasm ]
     ++ lib.optionals stdenv.hostPlatform.isLinux [ makeWrapper ];
