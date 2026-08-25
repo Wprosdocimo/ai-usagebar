@@ -15,6 +15,17 @@ Each release is also published at
   direct NixOS and Home Manager consumption, an overlay, and a development
   shell on x86_64 and aarch64 Linux and macOS.
 
+### Fixed
+
+- Antigravity no longer reports a TLS listener's `400 Client sent an HTTP
+  request to an HTTPS server` as the reason a probe run failed. Each product
+  binds an RPC port and an HTTPS port, and the probe order reaches the HTTPS
+  one only after the RPC one has already answered, so that reply describes our
+  own probe rather than the product. Because it is an `Http` and not a
+  `Transport`, letting it stand as the last failure also cost the silent cache
+  fallback that a not-yet-serving product is supposed to get. It is now ranked
+  below every other failure, and still reported when nothing else answered.
+
 ## [1.5.2] — 2026-08-24
 
 ### Fixed
