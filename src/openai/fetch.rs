@@ -146,8 +146,8 @@ pub async fn fetch_snapshot(
         Ok(Err(e)) if e.is_transient() => fallback_silent(cache, plan_hint.as_deref()),
         Ok(Err(e)) => {
             cache.mark_stale();
-            cache.write_last_error(0, &e.to_string());
-            fallback(cache, plan_hint.as_deref(), Some((0, e.to_string())))
+            let last_error = Some(cache.write_last_error(0, &e.to_string()));
+            fallback(cache, plan_hint.as_deref(), last_error)
         }
         Err(_) => fallback_silent(cache, plan_hint.as_deref()),
     }

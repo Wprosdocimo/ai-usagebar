@@ -498,6 +498,37 @@ mod tests {
         }
     }
 
+    /// The defect recurred once under a second name — six vendors wrote
+    /// `Some((status, body))` inline and six more built a `diag` local first —
+    /// so the sweep that fixed the first six missed the rest. This forbids the
+    /// shape rather than the spelling: a `last_error` pair must come from
+    /// [`Cache::write_last_error`], which is the only thing that redacts.
+    ///
+    /// `error_to_pair` in `cursor`, `kimi` and `kiro` is untouched by this: it
+    /// redacts on its own and destructures as `(*status, body)`, which is not
+    /// the borrowed shape a leak takes.
+    #[test]
+    fn no_vendor_builds_a_last_error_pair_from_a_raw_http_body() {
+        let mut sites = Vec::new();
+        for file in crate::guard::rs_files_in("src") {
+            if !file.ends_with("fetch.rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&file).expect("readable module");
+            for (n, line) in crate::guard::production_code(&source).lines().enumerate() {
+                if line.contains("(status, body") {
+                    sites.push(format!("{}:{}", file.display(), n + 1));
+                }
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "a last_error pair must be the return of `write_last_error`, which \
+             redacts 401/403 — building one from the raw body puts the response \
+             body in the widget tooltip. Found: {sites:#?}"
+        );
+    }
+
     /// The bug this closes: the pair handed to the widget was built from the
     /// raw body in parallel with the redacted one going to disk, so the run
     /// that hit the `401` showed the body and only the *next* run showed the

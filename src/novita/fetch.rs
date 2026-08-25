@@ -67,14 +67,12 @@ pub async fn fetch_snapshot(
         Err(e) if e.is_transient() => fallback_silent(cache, e),
         Err(AppError::Http { status, body }) => {
             cache.mark_stale();
-            cache.write_last_error(status, &body);
-            let diag = (status, body.clone());
+            let diag = cache.write_last_error(status, &body);
             fallback_with_error(cache, Some(diag), AppError::Http { status, body })
         }
         Err(e) => {
             cache.mark_stale();
-            cache.write_last_error(0, &e.to_string());
-            let diag = (0, e.to_string());
+            let diag = cache.write_last_error(0, &e.to_string());
             fallback_with_error(cache, Some(diag), e)
         }
     }
@@ -186,6 +184,51 @@ mod tests {
         let cache = Cache::at(td.path().join("novita"));
         cache.ensure_dir().unwrap();
         (td, cache)
+    }
+
+    /// The other half of the `401`-body fix. Deepseek's test covers the vendors
+    /// that passed the pair inline; these six built it into a `diag` local
+    /// first, which is why the original sweep missed them — same defect, one
+    /// variable name apart.
+    #[tokio::test]
+    async fn a_401_body_does_not_reach_the_outcome_when_a_cache_is_warm() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/openapi/v1/billing/balance/detail")
+            .with_status(401)
+            .with_body("NOVITA user@example.test <credential>&token")
+            .create_async()
+            .await;
+
+        let (_td, cache) = cache_fixture();
+        let warm = serde_json::json!({
+            "snapshot": {
+                "available": 10.0,
+                "cash": 8.0,
+                "credit_limit": 2.0,
+                "outstanding": 0.0
+            }
+        });
+        cache.write_payload(warm.to_string().as_bytes()).unwrap();
+
+        let endpoints = Endpoints {
+            balance: format!("{}/openapi/v1/billing/balance/detail", server.url()),
+        };
+        let out = fetch_snapshot(
+            &reqwest::Client::new(),
+            "nv-test",
+            &cache,
+            &endpoints,
+            Duration::from_secs(0),
+        )
+        .await
+        .expect("a warm cache must still produce an outcome");
+
+        let (code, msg) = out.last_error.expect("the 401 must still be reported");
+        assert_eq!(code, 401);
+        assert_eq!(msg, crate::error::AUTH_FAILURE_MESSAGE);
+        assert!(!msg.contains("NOVITA"), "{msg}");
+        assert!(!msg.contains("<credential>"), "{msg}");
     }
 
     #[tokio::test]

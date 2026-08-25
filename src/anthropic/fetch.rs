@@ -185,8 +185,8 @@ pub async fn fetch_snapshot(
         }
         Ok(Err(e)) => {
             cache.mark_stale();
-            cache.write_last_error(0, &e.to_string());
-            fallback_to_cache(cache, plan_label, Some((0, e.to_string())))
+            let last_error = Some(cache.write_last_error(0, &e.to_string()));
+            fallback_to_cache(cache, plan_label, last_error)
         }
         Err(_elapsed) => fallback_to_cache_silent(cache, plan_label),
     }

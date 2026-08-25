@@ -101,8 +101,7 @@ pub async fn fetch_snapshot_at(
         }
         Err(e) => {
             cache.mark_stale();
-            cache.write_last_error(0, &e.to_string());
-            let last_error = Some((0, e.to_string()));
+            let last_error = Some(cache.write_last_error(0, &e.to_string()));
             fallback_with_error(cache, last_error, e, now)
         }
     }
