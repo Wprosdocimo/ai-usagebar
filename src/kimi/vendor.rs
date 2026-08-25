@@ -181,10 +181,14 @@ fn render_tooltip(
     // right there — project each quota onto a window and it draws like every
     // other vendor, with the counts riding along on the reset line.
     lines.push(TooltipLine::Body("".into()));
+    // `remaining` is the vendor's own number, not `limit - used`: `extract_block`
+    // keeps both when the wire reports both. Dropping it would lose the figure a
+    // request-counting quota is actually read for.
     let weekly_detail = format!(
-        "{used} / {limit}",
+        "{used} / {limit} · {remaining} left",
         used = snap.weekly_used,
-        limit = snap.weekly_limit
+        limit = snap.weekly_limit,
+        remaining = snap.weekly_remaining
     );
     push_window_with_row(
         &mut lines,
@@ -198,9 +202,10 @@ fn render_tooltip(
     if snap.window_limit > 0 {
         lines.push(TooltipLine::Body("".into()));
         let window_detail = format!(
-            "{used} / {limit}",
+            "{used} / {limit} · {remaining} left",
             used = snap.window_used,
-            limit = snap.window_limit
+            limit = snap.window_limit,
+            remaining = snap.window_remaining
         );
         push_window_with_row(
             &mut lines,
@@ -524,6 +529,30 @@ mod tests {
         let out = render(&outcome, &snap, &Theme::default(), &opts(), now());
         assert!(out.tooltip.contains("· 26 / 100"), "{}", out.tooltip);
         assert!(out.tooltip.contains("· 15 / 100"), "{}", out.tooltip);
+    }
+
+    /// `remaining` is what a request-counting quota is read for, and it is the
+    /// vendor's own figure rather than `limit - used` — `extract_block` keeps
+    /// both when the wire reports both, so it cannot be recovered by
+    /// subtraction. The fixture makes them disagree to prove which one is
+    /// rendered.
+    #[test]
+    fn tooltip_keeps_the_vendors_own_remaining_count() {
+        let mut snap = sample_snap();
+        snap.weekly_remaining = 70; // not 100 - 26
+        snap.window_remaining = 80; // not 100 - 15
+        let outcome = sample_outcome(snap.clone());
+        let out = render(&outcome, &snap, &Theme::default(), &opts(), now());
+        assert!(
+            out.tooltip.contains("· 26 / 100 · 70 left"),
+            "{}",
+            out.tooltip
+        );
+        assert!(
+            out.tooltip.contains("· 15 / 100 · 80 left"),
+            "{}",
+            out.tooltip
+        );
     }
 
     /// Kimi opts out of pacing, like Codex; the rows must not sprout a glyph

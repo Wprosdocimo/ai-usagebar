@@ -26,7 +26,8 @@ Each release is also published at
 - Kimi's tooltip is drawn with the same window block every other vendor uses —
   icon + label, progress bar with the percentage, then the reset countdown —
   instead of the bare `26 / 100  (26%)` pairs it printed before. The counters
-  ride the reset line so nothing reported is lost, and its bar text follows the
+  and the vendor's own remaining figure ride the reset line
+  (`26 / 100 · 74 left`) so nothing reported is lost, and its bar text follows the
   `{pct}% · {reset}` shape the other percentage vendors already use
   (`{kimi_weekly_pct}% · {kimi_weekly_reset}`, was a bare `{kimi_weekly_pct}%`).
 - MiniMax's tooltip rows are drawn with the shared window block too, so each
