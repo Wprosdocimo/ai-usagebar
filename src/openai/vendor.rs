@@ -10,7 +10,7 @@ use crate::format::{placeholders, substitute, updated_at_hm};
 use crate::pacing::{self, PaceSeverity};
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
-use crate::tooltip::{Line as TooltipLine, WindowRow, push_window, render_bordered};
+use crate::tooltip::{Line as TooltipLine, push_window, render_bordered};
 use crate::usage::{OpenAiSnapshot, OpenAiSource, UsageWindow};
 use crate::vendor::{RenderOpts, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
@@ -197,27 +197,13 @@ fn render_tooltip(
     lines.push(TooltipLine::Body("".into()));
 
     if let Some(session) = snap.session.as_ref() {
-        push_window(
-            &mut lines,
-            "  󰔟  Codex 5h",
-            session,
-            theme,
-            now,
-            WindowRow::default(),
-        );
+        push_window(&mut lines, "  󰔟  Codex 5h", session, theme, now, None);
     }
     if let Some(weekly) = snap.weekly.as_ref() {
         if snap.session.is_some() {
             lines.push(TooltipLine::Body("".into()));
         }
-        push_window(
-            &mut lines,
-            "  󰃰  Codex weekly",
-            weekly,
-            theme,
-            now,
-            WindowRow::default(),
-        );
+        push_window(&mut lines, "  󰃰  Codex weekly", weekly, theme, now, None);
     }
     if snap.session.is_none() && snap.weekly.is_none() {
         lines.push(TooltipLine::Body(format!(
@@ -233,7 +219,7 @@ fn render_tooltip(
             cr,
             theme,
             now,
-            WindowRow::default(),
+            None,
         );
     }
 
@@ -471,8 +457,9 @@ mod tests {
         assert_eq!(severity(&s), PaceSeverity::Critical);
     }
 
-    /// Codex was left out of the tooltip pace change on purpose; reworking the
-    /// shared helper must not have handed it an arrow.
+    /// Codex was left out of the tooltip pace change on purpose. It calls the
+    /// stable `push_window`, so the glyph the row helper learned must not leak
+    /// through that path.
     #[test]
     fn tooltip_rows_carry_no_pace_glyph() {
         let s = sample();

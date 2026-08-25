@@ -14,7 +14,7 @@ use crate::format::{placeholders, substitute, updated_at_hm};
 use crate::pacing::{self, PaceSeverity};
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
-use crate::tooltip::{Line as TooltipLine, WindowRow, push_window, render_bordered};
+use crate::tooltip::{Line as TooltipLine, WindowRow, push_window_with_row, render_bordered};
 use crate::usage::{MinimaxSnapshot, UsageWindow};
 use crate::vendor::{RenderOpts, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
@@ -244,7 +244,7 @@ fn render_tooltip(
             if slot > 0 {
                 lines.push(TooltipLine::Body("".into()));
             }
-            push_window(
+            push_window_with_row(
                 &mut lines,
                 what,
                 w,

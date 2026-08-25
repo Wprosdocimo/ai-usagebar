@@ -16,7 +16,7 @@ use crate::format::{placeholders, substitute, updated_at_hm};
 use crate::pacing::{self, PaceSeverity};
 use crate::pango::{color_span, escape, severity_color};
 use crate::theme::Theme;
-use crate::tooltip::{Line as TooltipLine, WindowRow, push_window, render_bordered};
+use crate::tooltip::{Line as TooltipLine, push_window, render_bordered};
 use crate::usage::{AntigravitySnapshot, UsageWindow};
 use crate::vendor::{RenderOpts, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
@@ -192,11 +192,9 @@ fn render_tooltip(
     lines.push(TooltipLine::Body("".into()));
 
     let all = windows(snap);
-    let pace = |w: &UsageWindow| WindowRow {
-        marker_pct: opts
-            .tooltip_pace_pts
-            .then(|| elapsed_pct(w, now, opts.pace_tolerance)),
-        ..WindowRow::default()
+    let pace = |w: &UsageWindow| {
+        opts.tooltip_pace_pts
+            .then(|| elapsed_pct(w, now, opts.pace_tolerance))
     };
 
     // Two groups, each holding the same pair of pools. A Sep between them marks
@@ -447,8 +445,8 @@ mod tests {
         assert_ne!(plain, paced, "pace marker should change the bars");
     }
 
-    /// Antigravity kept its opt-in marker and gained nothing else when the
-    /// shared row helper learned about glyphs.
+    /// Antigravity keeps its opt-in marker through the stable `push_window`
+    /// and gains nothing else from the row helper.
     #[test]
     fn tooltip_rows_carry_no_pace_glyph() {
         let tip = tooltip(&opts(), None);

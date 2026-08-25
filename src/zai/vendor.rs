@@ -9,7 +9,7 @@ use crate::format::{placeholders, substitute, updated_at_hm};
 use crate::pacing::{self, PaceSeverity};
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
-use crate::tooltip::{Line as TooltipLine, WindowRow, push_window, render_bordered};
+use crate::tooltip::{Line as TooltipLine, WindowRow, push_window_with_row, render_bordered};
 use crate::usage::{UsageWindow, ZaiSnapshot};
 use crate::vendor::{RenderOpts, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
@@ -193,18 +193,18 @@ fn render_tooltip(
     lines.push(TooltipLine::Body("".into()));
 
     if let Some(w) = snap.session.as_ref() {
-        push_window(&mut lines, "  󰔟  Session (5h)", w, theme, now, row(w));
+        push_window_with_row(&mut lines, "  󰔟  Session (5h)", w, theme, now, row(w));
     }
     if let Some(w) = snap.weekly.as_ref() {
         if snap.session.is_some() {
             lines.push(TooltipLine::Body("".into()));
         }
-        push_window(&mut lines, "  󰃰  Weekly", w, theme, now, row(w));
+        push_window_with_row(&mut lines, "  󰃰  Weekly", w, theme, now, row(w));
     }
     if let Some(w) = snap.mcp.as_ref() {
         lines.push(TooltipLine::Body("".into()));
         lines.push(TooltipLine::Sep);
-        push_window(
+        push_window_with_row(
             &mut lines,
             "  󰓹  MCP tools (monthly)",
             w,

@@ -9,7 +9,7 @@ use crate::format::{placeholders, substitute, updated_at_hm};
 use crate::pacing::PaceSeverity;
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
-use crate::tooltip::{Line as TooltipLine, WindowRow, push_window, render_bordered};
+use crate::tooltip::{Line as TooltipLine, WindowRow, push_window_with_row, render_bordered};
 use crate::usage::{KimiSnapshot, UsageWindow};
 use crate::vendor::{RenderOpts, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
@@ -186,7 +186,7 @@ fn render_tooltip(
         used = snap.weekly_used,
         limit = snap.weekly_limit
     );
-    push_window(
+    push_window_with_row(
         &mut lines,
         "  󰅄  Weekly quota",
         &window(weekly_pct, snap.weekly_reset_at, WEEKLY_WINDOW),
@@ -202,7 +202,7 @@ fn render_tooltip(
             used = snap.window_used,
             limit = snap.window_limit
         );
-        push_window(
+        push_window_with_row(
             &mut lines,
             "  󰅁  Rolling window (5h)",
             &window(snap.window_pct(), snap.window_reset_at, ROLLING_WINDOW),

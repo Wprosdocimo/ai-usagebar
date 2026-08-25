@@ -82,7 +82,33 @@ impl<'a> WindowRow<'a> {
 
 /// Append the standard three-line block every vendor uses for a usage window:
 /// icon + label, progress bar + bold percentage, then the dim reset countdown.
+///
+/// `elapsed` draws the pace marker inside the bar; pass `None` for a plain bar.
+/// Keep this signature stable for library callers — a row that also wants the
+/// pace glyph or a detail fragment goes through [`push_window_with_row`].
 pub fn push_window(
+    lines: &mut Vec<Line>,
+    label: &str,
+    w: &UsageWindow,
+    theme: &Theme,
+    now: DateTime<Utc>,
+    elapsed: Option<i32>,
+) {
+    push_window_with_row(
+        lines,
+        label,
+        w,
+        theme,
+        now,
+        WindowRow {
+            marker_pct: elapsed,
+            ..WindowRow::default()
+        },
+    );
+}
+
+/// [`push_window`], plus the optional decorations a [`WindowRow`] carries.
+pub fn push_window_with_row(
     lines: &mut Vec<Line>,
     label: &str,
     w: &UsageWindow,
@@ -255,7 +281,7 @@ mod tests {
 
     fn row_markup(w: &UsageWindow, row: WindowRow<'_>) -> String {
         let mut lines = Vec::new();
-        push_window(&mut lines, "  L", w, &theme(), at(12), row);
+        push_window_with_row(&mut lines, "  L", w, &theme(), at(12), row);
         render_bordered(&lines, &theme())
     }
 
