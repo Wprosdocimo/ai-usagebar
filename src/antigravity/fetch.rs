@@ -158,18 +158,25 @@ async fn open_session(client: &reqwest::Client) -> Result<Session> {
 /// the one message worth reading behind transport noise.
 ///
 /// Note that this also decides *visibility*: transport errors are transient and
-/// fall back silently to cache, while the `401` surfaces in the widget.
+/// fall back silently to cache, while the `401` surfaces in the widget. That is
+/// why a TLS listener's echo is ranked below everything else rather than merely
+/// tie-breaking — see [`is_tls_echo`]. Being an `Http`, it is not transient, so
+/// letting it stand as "the last failure" turns a product that simply is not
+/// serving RPC into a visible error about a protocol the user never chose.
 fn select_probe_error(errors: Vec<AppError>) -> AppError {
     let mut actionable = None;
     let mut last = None;
+    let mut echo = None;
     for e in errors {
         if actionable.is_none() && is_actionable(&e) {
             actionable = Some(e);
+        } else if is_tls_echo(&e) {
+            echo = Some(e);
         } else {
             last = Some(e);
         }
     }
-    actionable.or(last).unwrap_or_else(|| {
+    actionable.or(last).or(echo).unwrap_or_else(|| {
         AppError::Other("antigravity: no local server answered GetUserStatus".into())
     })
 }
@@ -179,6 +186,25 @@ fn select_probe_error(errors: Vec<AppError>) -> AppError {
 /// authentication statuses are the whole set.
 fn is_actionable(e: &AppError) -> bool {
     matches!(e, AppError::Http { status, .. } if *status == 401 || *status == 403)
+}
+
+/// A TLS listener answering the plaintext JSON-RPC probe.
+///
+/// Each Antigravity product binds two ports: JSON-RPC in the clear on one and
+/// HTTPS on another. `probe_order` deliberately tries the RPC listener first
+/// and leaves the TLS one behind it, so reaching the TLS port at all means the
+/// RPC port already had its say. Go's `net/http.Server` answers cleartext on a
+/// TLS listener with this fixed `400`, which describes our own probe rather
+/// than anything wrong with the product — as a diagnosis it is noise that
+/// always arrives last and therefore always wins.
+///
+/// Matched on the body, not the status alone: a real `400` from the language
+/// server is a genuine complaint about the request and must keep outranking it.
+fn is_tls_echo(e: &AppError) -> bool {
+    matches!(
+        e,
+        AppError::Http { status: 400, body } if body.contains("HTTP request to an HTTPS server")
+    )
 }
 
 async fn fetch_live(
@@ -1533,6 +1559,87 @@ mod tests {
             err.to_string().contains("no local server answered"),
             "{err}"
         );
+    }
+
+    /// Verbatim from Go's `net/http`: this is what every Antigravity product's
+    /// HTTPS listener replies to the cleartext probe, so it is the tail of a
+    /// normal discovery run rather than a symptom.
+    fn tls_echo() -> AppError {
+        AppError::Http {
+            status: 400,
+            body: "Client sent an HTTP request to an HTTPS server.\n".into(),
+        }
+    }
+
+    /// The RPC listener is probed first, so whatever it said is the diagnosis.
+    /// The TLS port is reached only afterwards and always "fails", so without
+    /// demoting it, it overwrites the one error that came from the server the
+    /// user actually cares about.
+    #[test]
+    fn a_tls_echo_does_not_mask_what_the_rpc_listener_said() {
+        let err = select_probe_error(vec![
+            AppError::Http {
+                status: 500,
+                body: "GetUserStatus: internal".into(),
+            },
+            tls_echo(),
+        ]);
+        assert!(
+            matches!(&err, AppError::Http { status: 500, body } if body.contains("internal")),
+            "{err}"
+        );
+    }
+
+    /// The regression that motivated this: an `Http` is not transient, so an
+    /// echo standing in as "the last failure" costs the silent cache fallback
+    /// that `without_an_auth_failure_the_last_error_stands` exists to protect.
+    /// A product that is merely not serving RPC must stay quiet.
+    #[test]
+    fn a_tls_echo_does_not_cost_the_silent_fallback() {
+        let err = select_probe_error(vec![
+            AppError::Transport("connection refused".into()),
+            tls_echo(),
+        ]);
+        assert!(
+            matches!(&err, AppError::Transport(m) if m == "connection refused"),
+            "{err}"
+        );
+        assert!(
+            err.is_transient(),
+            "the echo must not make the run non-transient: {err}"
+        );
+    }
+
+    /// Demoted, not discarded. When the TLS listener is genuinely all that
+    /// answered, its reply is still better than a generic "nothing answered".
+    #[test]
+    fn a_tls_echo_still_stands_when_it_is_the_only_thing_that_answered() {
+        let err = select_probe_error(vec![tls_echo()]);
+        assert!(matches!(err, AppError::Http { status: 400, .. }), "{err}");
+    }
+
+    /// The demotion keys on the body, so the language server's own `400` — a
+    /// real complaint about a real request — keeps its normal rank.
+    #[test]
+    fn a_genuine_bad_request_is_not_mistaken_for_a_tls_echo() {
+        let err = select_probe_error(vec![
+            AppError::Http {
+                status: 400,
+                body: "unknown method GetUserStatus".into(),
+            },
+            tls_echo(),
+        ]);
+        assert!(
+            matches!(&err, AppError::Http { status: 400, body } if body.contains("unknown method")),
+            "{err}"
+        );
+    }
+
+    /// Ranking the echo last must not disturb the top of the order.
+    #[test]
+    fn an_auth_failure_still_outranks_a_tls_echo() {
+        let err = select_probe_error(vec![tls_echo(), http(401)]);
+        assert!(matches!(err, AppError::Http { status: 401, .. }), "{err}");
     }
 
     #[test]
