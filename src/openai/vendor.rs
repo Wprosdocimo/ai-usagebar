@@ -10,7 +10,7 @@ use crate::format::{placeholders, substitute, updated_at_hm};
 use crate::pacing::{self, PaceSeverity};
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
-use crate::tooltip::{Line as TooltipLine, push_window, render_bordered};
+use crate::tooltip::{Line as TooltipLine, WindowRow, push_window, render_bordered};
 use crate::usage::{OpenAiSnapshot, OpenAiSource, UsageWindow};
 use crate::vendor::{RenderOpts, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
@@ -197,13 +197,27 @@ fn render_tooltip(
     lines.push(TooltipLine::Body("".into()));
 
     if let Some(session) = snap.session.as_ref() {
-        push_window(&mut lines, "  󰔟  Codex 5h", session, theme, now, None);
+        push_window(
+            &mut lines,
+            "  󰔟  Codex 5h",
+            session,
+            theme,
+            now,
+            WindowRow::default(),
+        );
     }
     if let Some(weekly) = snap.weekly.as_ref() {
         if snap.session.is_some() {
             lines.push(TooltipLine::Body("".into()));
         }
-        push_window(&mut lines, "  󰃰  Codex weekly", weekly, theme, now, None);
+        push_window(
+            &mut lines,
+            "  󰃰  Codex weekly",
+            weekly,
+            theme,
+            now,
+            WindowRow::default(),
+        );
     }
     if snap.session.is_none() && snap.weekly.is_none() {
         lines.push(TooltipLine::Body(format!(
@@ -219,7 +233,7 @@ fn render_tooltip(
             cr,
             theme,
             now,
-            None,
+            WindowRow::default(),
         );
     }
 
@@ -455,5 +469,16 @@ mod tests {
         let mut s = sample();
         s.weekly.as_mut().unwrap().utilization_pct = 95;
         assert_eq!(severity(&s), PaceSeverity::Critical);
+    }
+
+    /// Codex was left out of the tooltip pace change on purpose; reworking the
+    /// shared helper must not have handed it an arrow.
+    #[test]
+    fn tooltip_rows_carry_no_pace_glyph() {
+        let s = sample();
+        let out = render(&oc(s.clone()), &s, &Theme::default(), &opts(), Utc::now());
+        for glyph in ['↑', '→', '↓'] {
+            assert!(!out.tooltip.contains(glyph), "{}", out.tooltip);
+        }
     }
 }

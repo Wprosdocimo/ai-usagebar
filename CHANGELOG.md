@@ -15,8 +15,27 @@ Each release is also published at
   direct NixOS and Home Manager consumption, an overlay, and a development
   shell on x86_64 and aarch64 Linux and macOS.
 
+### Changed
+
+- Kimi's tooltip is drawn with the same window block every other vendor uses —
+  icon + label, progress bar with the percentage, then the reset countdown —
+  instead of the bare `26 / 100  (26%)` pairs it printed before. The counters
+  ride the reset line so nothing reported is lost, and its bar text follows the
+  `{pct}% · {reset}` shape the other percentage vendors already use
+  (`{kimi_weekly_pct}% · {kimi_weekly_reset}`, was a bare `{kimi_weekly_pct}%`).
+- MiniMax's tooltip rows are drawn with the shared window block too, so each
+  pool shows a progress bar rather than a bare `Session 20%` pair.
+
 ### Fixed
 
+- Z.AI and MiniMax show the pace arrow (`↑` / `→` / `↓`) next to each
+  percentage in the widget and `--vendor` tooltips. The pace placeholders added
+  in 1.3.0 reached the macOS menu bar, but the default tooltip never consulted
+  them: `tooltip::push_window` had no way to render a glyph, and only the
+  Anthropic renderer had one hand-rolled. The shared helper now takes a
+  `WindowRow`, so the arrow travels with the row. As on the Anthropic tooltip,
+  the elapsed marker inside the bar stays behind `--tooltip-pace-pts`; Codex and
+  Antigravity rows are unchanged.
 - A `401`/`403` response body no longer reaches the widget tooltip or the TUI on
   the run that hit it. The body was redacted on its way to the `.last_error`
   file but the copy handed to the outcome was built separately from the raw

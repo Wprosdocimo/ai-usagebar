@@ -9,7 +9,7 @@ use crate::format::{placeholders, substitute, updated_at_hm};
 use crate::pacing::{self, PaceSeverity};
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
-use crate::tooltip::{Line as TooltipLine, push_window, render_bordered};
+use crate::tooltip::{Line as TooltipLine, WindowRow, push_window, render_bordered};
 use crate::usage::{UsageWindow, ZaiSnapshot};
 use crate::vendor::{RenderOpts, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
@@ -161,7 +161,7 @@ pub fn render(
     let tooltip = if let Some(fmt) = opts.tooltip_format.as_deref() {
         substitute(fmt, &values)
     } else {
-        render_tooltip(outcome, snap, theme, now)
+        render_tooltip(outcome, snap, theme, opts, now)
     };
 
     WaybarOutput {
@@ -175,10 +175,15 @@ fn render_tooltip(
     outcome: &VendorOutcome,
     snap: &ZaiSnapshot,
     theme: &Theme,
+    opts: &RenderOpts,
     now: DateTime<Utc>,
 ) -> String {
     let blue = &theme.blue;
     let dim = &theme.dim;
+    // The `{zai_*_pace}` placeholders already carry this; the default tooltip
+    // never consulted them, so the arrow the macOS bar draws was missing here.
+    let row =
+        |w: &UsageWindow| WindowRow::paced(w, now, opts.pace_tolerance, opts.tooltip_pace_pts);
     let mut lines: Vec<TooltipLine> = Vec::new();
     lines.push(TooltipLine::Center(format!(
         "<span font_weight='bold' foreground='{blue}'>{plan}</span>",
@@ -188,18 +193,25 @@ fn render_tooltip(
     lines.push(TooltipLine::Body("".into()));
 
     if let Some(w) = snap.session.as_ref() {
-        push_window(&mut lines, "  󰔟  Session (5h)", w, theme, now, None);
+        push_window(&mut lines, "  󰔟  Session (5h)", w, theme, now, row(w));
     }
     if let Some(w) = snap.weekly.as_ref() {
         if snap.session.is_some() {
             lines.push(TooltipLine::Body("".into()));
         }
-        push_window(&mut lines, "  󰃰  Weekly", w, theme, now, None);
+        push_window(&mut lines, "  󰃰  Weekly", w, theme, now, row(w));
     }
     if let Some(w) = snap.mcp.as_ref() {
         lines.push(TooltipLine::Body("".into()));
         lines.push(TooltipLine::Sep);
-        push_window(&mut lines, "  󰓹  MCP tools (monthly)", w, theme, now, None);
+        push_window(
+            &mut lines,
+            "  󰓹  MCP tools (monthly)",
+            w,
+            theme,
+            now,
+            row(w),
+        );
     }
     if snap.session.is_none() && snap.weekly.is_none() && snap.mcp.is_none() {
         lines.push(TooltipLine::Body(format!(
@@ -473,5 +485,76 @@ mod tests {
         o.tooltip_format = Some("S:{zai_session_pct} W:{zai_weekly_pct}".into());
         let out = render(&oc, &snap, &Theme::default(), &o, Utc::now());
         assert_eq!(out.tooltip, "S:42 W:15");
+    }
+
+    fn fixed_now() -> DateTime<Utc> {
+        use chrono::TimeZone;
+        Utc.with_ymd_and_hms(2026, 8, 25, 12, 0, 0).unwrap()
+    }
+
+    fn paced_snap() -> ZaiSnapshot {
+        let now = fixed_now();
+        ZaiSnapshot {
+            plan: "GLM Coding Pro".into(),
+            // 3h left of 5h → 40% elapsed against 80% used: clearly ahead.
+            session: Some(UsageWindow {
+                utilization_pct: 80,
+                resets_at: Some(now + chrono::Duration::hours(3)),
+                window_duration: chrono::Duration::hours(5),
+            }),
+            // Reported without a reset — the case the user's own account hits.
+            weekly: Some(UsageWindow {
+                utilization_pct: 3,
+                resets_at: None,
+                window_duration: chrono::Duration::days(7),
+            }),
+            mcp: None,
+        }
+    }
+
+    /// The `{zai_*_pace}` placeholders have carried this since the pace PR; the
+    /// default tooltip never read them, so the CLI showed no arrow where the
+    /// macOS bar did.
+    #[test]
+    fn tooltip_shows_the_pace_arrow_next_to_each_percentage() {
+        let snap = paced_snap();
+        let out = render(
+            &outcome(snap.clone()),
+            &snap,
+            &Theme::default(),
+            &opts(),
+            fixed_now(),
+        );
+        assert!(out.tooltip.contains("80% ↑"), "{}", out.tooltip);
+        // No reset reported → neutral pacing rather than a blank column.
+        assert!(out.tooltip.contains("3% →"), "{}", out.tooltip);
+    }
+
+    /// The elapsed marker stays opt-in, exactly as on the Anthropic tooltip.
+    #[test]
+    fn the_elapsed_marker_stays_behind_tooltip_pace_pts() {
+        let snap = paced_snap();
+        let plain = render(
+            &outcome(snap.clone()),
+            &snap,
+            &Theme::default(),
+            &opts(),
+            fixed_now(),
+        );
+        let paced = render(
+            &outcome(snap.clone()),
+            &snap,
+            &Theme::default(),
+            &RenderOpts {
+                tooltip_pace_pts: true,
+                ..opts()
+            },
+            fixed_now(),
+        );
+        assert_ne!(
+            plain.tooltip, paced.tooltip,
+            "the marker should redraw the bars"
+        );
+        assert!(paced.tooltip.contains("80% ↑"), "{}", paced.tooltip);
     }
 }
