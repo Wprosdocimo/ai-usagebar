@@ -176,8 +176,8 @@ pub async fn fetch_snapshot(
         }
         Ok(Err(AppError::Http { status, body })) => {
             cache.mark_stale();
-            cache.write_last_error(status, &body);
-            fallback_to_cache(cache, plan_label, Some((status, body)))
+            let last_error = Some(cache.write_last_error(status, &body));
+            fallback_to_cache(cache, plan_label, last_error)
         }
         Ok(Err(e)) if e.is_transient() => {
             // Reuse cache silently; no last_error write.

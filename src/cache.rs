@@ -172,7 +172,15 @@ impl Cache {
     /// Write the `.last_error` marker — first line `code`, everything after it
     /// `msg`. Best-effort, never errors (matches claudebar:478-486 which
     /// silently continues if the cache dir isn't writable).
-    pub fn write_last_error(&self, code: u16, msg: &str) {
+    ///
+    /// **Returns exactly what was written**, so a caller that also puts the
+    /// failure in its [`crate::vendor::VendorOutcome`] can hand over this pair
+    /// instead of deriving a second one from the raw body. The two must not be
+    /// computed separately: persisting a redacted message while the in-memory
+    /// copy kept the original is how a `401` body reached the widget tooltip on
+    /// the one run that had a warm cache to fall back on. Callers that only
+    /// persist can keep ignoring the return.
+    pub fn write_last_error(&self, code: u16, msg: &str) -> (u16, String) {
         let _ = self.ensure_dir();
         let path = self.last_error_path();
         // Authentication failure bodies routinely include account identifiers or
@@ -186,6 +194,7 @@ impl Cache {
         let msg = crate::display::sanitize_untrusted_field(msg);
         let body = format!("{code}\n{msg}");
         let _ = atomic_write(&path, body.as_bytes());
+        (code, msg)
     }
 
     /// Best-effort removal of the `.last_error` marker.
@@ -464,6 +473,46 @@ mod tests {
         assert_eq!(persisted, format!("403\n{AUTH_FAILURE_MESSAGE}"));
         assert!(!persisted.contains("PANCEA"));
         assert!(!persisted.contains("<credential>"));
+    }
+
+    /// The invariant that keeps the displayed message from drifting away from
+    /// the persisted one: what comes back is what a later run would read from
+    /// disk, so a caller that shows the return value cannot show anything the
+    /// cache refused to keep. Asserted for the redacting arm and the ordinary
+    /// one, since only the first rewrites the message.
+    #[test]
+    fn write_last_error_returns_exactly_what_a_later_run_would_read() {
+        for (code, raw) in [
+            (401u16, "PANCEA user@example.test <credential>&token"),
+            (403, "PANCEA account@example.test <credential>&token"),
+            (429, "rate limited, retry in 60s"),
+            (500, "bad\x1b]52;c;Y2FuYXJ5\x07field"),
+        ] {
+            let (_td, cache) = fixture();
+            let returned = cache.write_last_error(code, raw);
+            assert_eq!(
+                returned,
+                cache.read_last_error().unwrap(),
+                "returned pair diverged from the persisted one for {code}"
+            );
+        }
+    }
+
+    /// The bug this closes: the pair handed to the widget was built from the
+    /// raw body in parallel with the redacted one going to disk, so the run
+    /// that hit the `401` showed the body and only the *next* run showed the
+    /// neutral message. The returned pair carries the redaction.
+    #[test]
+    fn the_returned_pair_carries_the_auth_redaction() {
+        for code in [401u16, 403] {
+            let (_td, cache) = fixture();
+            let (returned_code, msg) =
+                cache.write_last_error(code, "PANCEA user@example.test <credential>&token");
+            assert_eq!(returned_code, code);
+            assert_eq!(msg, AUTH_FAILURE_MESSAGE);
+            assert!(!msg.contains("PANCEA"), "{msg}");
+            assert!(!msg.contains("<credential>"), "{msg}");
+        }
     }
 
     /// The regression this guards: vendors write the raw HTTP body, which is

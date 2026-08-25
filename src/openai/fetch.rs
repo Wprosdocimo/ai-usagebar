@@ -140,8 +140,8 @@ pub async fn fetch_snapshot(
         }
         Ok(Err(AppError::Http { status, body })) => {
             cache.mark_stale();
-            cache.write_last_error(status, &body);
-            fallback(cache, plan_hint.as_deref(), Some((status, body)))
+            let last_error = Some(cache.write_last_error(status, &body));
+            fallback(cache, plan_hint.as_deref(), last_error)
         }
         Ok(Err(e)) if e.is_transient() => fallback_silent(cache, plan_hint.as_deref()),
         Ok(Err(e)) => {

@@ -9,6 +9,17 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- A `401`/`403` response body no longer reaches the widget tooltip or the TUI on
+  the run that hit it. The body was redacted on its way to the `.last_error`
+  file but the copy handed to the outcome was built separately from the raw
+  body, so signing out with a warm cache showed the body once and the neutral
+  message on every run after. `Cache::write_last_error` now returns exactly what
+  it persisted, and the six vendors that built the pair themselves — Anthropic,
+  Antigravity, Deepseek, OpenAI, OpenRouter, Z.ai — pass that value on. Cursor,
+  Kimi, Kiro and opencode-go already redacted at this point and are unchanged.
+
 ## [1.5.2] — 2026-08-24
 
 ### Fixed
