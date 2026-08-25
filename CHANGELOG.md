@@ -9,6 +9,12 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- First-party Nix flake packaging supports `nix run`, profile installation,
+  direct NixOS and Home Manager consumption, an overlay, and a development
+  shell on x86_64 and aarch64 Linux and macOS.
+
 ### Fixed
 
 - A `401`/`403` response body no longer reaches the widget tooltip or the TUI on

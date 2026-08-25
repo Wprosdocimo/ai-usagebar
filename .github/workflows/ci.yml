@@ -69,6 +69,37 @@ jobs:
       - name: Check declared minimum Rust version
         run: cargo check --all-targets --locked
 
+  nix:
+    name: nix (${{ matrix.system }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+          - system: x86_64-darwin
+            runner: macos-15-intel
+          - system: aarch64-darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Build and test the flake
+        run: nix flake check --print-build-logs
+
+      - name: Smoke-test app outputs
+        env:
+          NIX_SYSTEM: ${{ matrix.system }}
+        run: |
+          nix run .#default -- --version
+          tui_program="$(nix eval --raw ".#apps.${NIX_SYSTEM}.tui.program")"
+          test -x "$tui_program"
+
   macos:
     name: test (macos-latest)
     runs-on: macos-latest

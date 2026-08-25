@@ -43,6 +43,85 @@ codebase.
 
 ## Install
 
+### Nix
+
+Run either application directly from GitHub:
+
+```bash
+nix run github:akitaonrails/ai-usagebar
+nix run github:akitaonrails/ai-usagebar#tui
+```
+
+Install both `ai-usagebar` and `ai-usagebar-tui` into your user profile:
+
+```bash
+nix profile install github:akitaonrails/ai-usagebar
+```
+
+For a flake-based NixOS or Home Manager configuration, add the input in your
+root `flake.nix`:
+
+```nix
+inputs.ai-usagebar.url = "github:akitaonrails/ai-usagebar";
+```
+
+Pass `inputs` to your NixOS modules with `specialArgs`:
+
+```nix
+nixpkgs.lib.nixosSystem {
+  system = "x86_64-linux";
+  specialArgs = { inherit inputs; };
+  modules = [ ./configuration.nix ];
+}
+```
+
+For standalone Home Manager, use `extraSpecialArgs`:
+
+```nix
+let
+  system = "x86_64-linux";
+in
+home-manager.lib.homeManagerConfiguration {
+  pkgs = nixpkgs.legacyPackages.${system};
+  extraSpecialArgs = { inherit inputs; };
+  modules = [ ./home.nix ];
+}
+```
+
+If your configuration already passes `inputs` through these arguments, you do
+not need to add it again. Then consume the package in a NixOS module:
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  environment.systemPackages = [
+    inputs.ai-usagebar.packages.${pkgs.stdenv.hostPlatform.system}.default
+  ];
+}
+```
+
+The equivalent Home Manager module is:
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  home.packages = [
+    inputs.ai-usagebar.packages.${pkgs.stdenv.hostPlatform.system}.default
+  ];
+}
+```
+
+Alternatively, apply the overlay when you want the package available as
+`pkgs.ai-usagebar`:
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  nixpkgs.overlays = [ inputs.ai-usagebar.overlays.default ];
+  environment.systemPackages = [ pkgs.ai-usagebar ];
+}
+```
+
 ### Omarchy Quattro
 
 The native plugin is a display frontend and does not bundle the
