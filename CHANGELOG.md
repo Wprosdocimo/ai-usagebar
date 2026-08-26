@@ -9,13 +9,10 @@ Each release is also published at
 
 ## [Unreleased]
 
-## [1.6.0] — 2026-08-25
+## [1.7.0] — 2026-08-25
 
 ### Added
 
-- First-party Nix flake packaging supports `nix run`, profile installation,
-  direct NixOS and Home Manager consumption, an overlay, and a development
-  shell on x86_64 and aarch64 Linux and macOS.
 - The macOS menu bar shows Z.AI's monthly MCP-tools pool as a fourth row, with
   its own bar, reset and pace marker — the widget, TUI and native panels have
   always listed it, only the menu bar had no field for it. It fills the same
@@ -29,8 +26,8 @@ Each release is also published at
   icon + label, progress bar with the percentage, then the reset countdown —
   instead of the bare `26 / 100  (26%)` pairs it printed before. The counters
   and the vendor's own remaining figure ride the reset line
-  (`26 / 100 · 74 left`) so nothing reported is lost, and its bar text follows the
-  `{pct}% · {reset}` shape the other percentage vendors already use
+  (`26 / 100 · 74 left`) so nothing reported is lost, and its bar text follows
+  the `{pct}% · {reset}` shape the other percentage vendors already use
   (`{kimi_weekly_pct}% · {kimi_weekly_reset}`, was a bare `{kimi_weekly_pct}%`).
 - MiniMax's tooltip rows are drawn with the shared window block too, so each
   pool shows a progress bar rather than a bare `Session 20%` pair.
@@ -45,6 +42,17 @@ Each release is also published at
   `WindowRow`, so the arrow travels with the row. As on the Anthropic tooltip,
   the elapsed marker inside the bar stays behind `--tooltip-pace-pts`; Codex and
   Antigravity rows are unchanged.
+
+## [1.6.0] — 2026-08-25
+
+### Added
+
+- First-party Nix flake packaging supports `nix run`, profile installation,
+  direct NixOS and Home Manager consumption, an overlay, and a development
+  shell on x86_64 and aarch64 Linux and macOS.
+
+### Fixed
+
 - A `401`/`403` response body no longer reaches the widget tooltip or the TUI on
   the run that hit it. The body was redacted on its way to the `.last_error`
   file but the copy handed to the outcome was built separately from the raw
@@ -1698,7 +1706,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.0...v1.5.1
