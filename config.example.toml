@@ -292,6 +292,20 @@ enabled = false
 
 # OpenCode Go — usage from /zen/go/v1/usage. Opt in only after exporting the
 # API key under this variable; the key itself is never written to this example.
+[commandcode]
+# Command Code (commandcode.ai). Disabled by default — enable it once any
+# local agent harness is signed in. There is no key to paste: the OAuth
+# credential written by the official `commandcode` CLI is reused as-is, and
+# it is only ever read, never refreshed or rewritten.
+enabled = false
+# Override where the credential is looked for. Leave commented out to search,
+# in order:
+#   ~/.commandcode/auth.json   (official command-code CLI)
+#   ~/.omp/agent/auth.json
+#   ~/.pi/agent/auth.json
+# COMMANDCODE_API_KEY in the environment outranks all of them.
+# auth_paths = ["~/.commandcode/auth.json"]
+
 [opencode-go]
 enabled = false
 api_key_env = "OPENCODE_GO_API_KEY"

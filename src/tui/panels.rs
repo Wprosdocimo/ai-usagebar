@@ -190,6 +190,16 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
                 .unwrap_or_else(|| ("—".into(), PaceSeverity::Low));
             (s.plan.clone().unwrap_or_default(), vec![cell])
         }
+        VendorSnapshot::CommandCode(s) => {
+            let cells = [
+                ("session", s.five_hour.as_ref()),
+                ("weekly", s.weekly.as_ref()),
+            ]
+            .into_iter()
+            .filter_map(|(label, window)| window.map(|window| pct(label, window.pct())))
+            .collect();
+            (s.plan.clone().unwrap_or_default(), cells)
+        }
         VendorSnapshot::OpenCodeGo(s) => {
             let cells = [
                 ("rolling", s.rolling.as_ref()),
@@ -250,6 +260,10 @@ pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
         VendorSnapshot::NousResearch(s) => s
             .usage_percent()
             .map(|value| value.round().clamp(0.0, 100.0) as i32),
+        VendorSnapshot::CommandCode(s) => {
+            let worst = s.worst_pct();
+            (s.five_hour.is_some() || s.weekly.is_some()).then_some(worst)
+        }
         VendorSnapshot::OpenCodeGo(s) => [
             s.rolling
                 .as_ref()
@@ -331,6 +345,7 @@ pub(crate) fn sections_with_metadata_for(
                 VendorSnapshot::Kiro(s) => kiro_sections(s, now),
                 VendorSnapshot::NousResearch(s) => nous_sections(s, now),
                 VendorSnapshot::OpenCodeGo(s) => opencode_go_sections(s, now),
+                VendorSnapshot::CommandCode(s) => commandcode_sections(s, now),
             };
             // Inject the (already-absolute) fetched-at instant into the title
             // row, right-aligned. Pre-snapshotted in app::refresh_one so it
@@ -764,6 +779,58 @@ fn nous_sections(s: &crate::nous::types::AccountSnapshot, now: DateTime<Utc>) ->
         sections.push(Section::Text {
             label: "Renews".into(),
             value: countdown::format(Some(period_end), now),
+        });
+    }
+    sections
+}
+
+fn commandcode_sections(
+    s: &crate::commandcode::types::Snapshot,
+    now: DateTime<Utc>,
+) -> SectionBuilder {
+    let title = match s.plan.as_deref() {
+        Some(plan) if !plan.is_empty() => format!("Command Code {plan}"),
+        _ => "Command Code".to_string(),
+    };
+    let mut sections = SectionBuilder::new(vec![Section::Title {
+        left: title,
+        right: None,
+    }]);
+    for (label, window) in [
+        ("Session (5h)", s.five_hour.as_ref()),
+        ("Weekly", s.weekly.as_ref()),
+    ] {
+        if let Some(window) = window {
+            let pct = window.pct();
+            sections.push_metric(
+                Section::Metric {
+                    label: label.into(),
+                    pct: pct.clamp(0, 100) as u16,
+                    severity: severity_for(pct),
+                    value_label: format!("{pct}%"),
+                    footnote: format!("{} of {}", usd(window.used), usd(window.cap)),
+                },
+                window.resets_at,
+            );
+            sections.push(Section::Text {
+                label: "Resets".into(),
+                value: countdown::format(window.resets_at, now),
+            });
+        }
+    }
+    if let Some(credits) = s.credits.as_ref() {
+        sections.push(Section::Spacer);
+        let footnote = match (s.credits_spent(), s.credit_pool) {
+            (Some(spent), Some(pool)) => format!("{} of {} spent", usd(spent), usd(pool)),
+            _ => String::new(),
+        };
+        sections.push(Section::Text {
+            label: "Credits".into(),
+            value: if footnote.is_empty() {
+                usd(credits.remaining())
+            } else {
+                format!("{} · {footnote}", usd(credits.remaining()))
+            },
         });
     }
     sections

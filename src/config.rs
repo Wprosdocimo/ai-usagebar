@@ -57,6 +57,7 @@ pub struct Config {
     pub nous: NousConfig,
     #[serde(rename = "opencode-go")]
     pub opencode_go: OpenCodeGoConfig,
+    pub commandcode: CommandCodeConfig,
 }
 
 /// UI / dispatch preferences. Currently just `primary` — which vendor the
@@ -485,6 +486,16 @@ pub struct OpenCodeGoConfig {
     pub enabled: bool,
     pub api_key_env: String,
     pub api_key: Option<String>,
+}
+
+/// Command Code reads the OAuth credential whichever local agent harness
+/// already wrote — the official CLI, pi, or omp — so it has no API key of its
+/// own. `auth_paths` overrides that search list for a non-standard install.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CommandCodeConfig {
+    pub enabled: bool,
+    pub auth_paths: Option<Vec<PathBuf>>,
 }
 
 impl Default for OpenCodeGoConfig {
@@ -1037,6 +1048,7 @@ impl Config {
             VendorId::Kiro => self.kiro.enabled,
             VendorId::NousResearch => self.nous.enabled,
             VendorId::OpenCodeGo => self.opencode_go.enabled,
+            VendorId::CommandCode => self.commandcode.enabled,
         }
     }
 

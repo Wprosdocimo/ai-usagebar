@@ -36,6 +36,7 @@ pub(crate) const VENDOR_SECRET_ENV_VARS: &[&str] = &[
     "XAI_API_KEY",
     "GROK_API_KEY",
     "OPENCODE_GO_API_KEY",
+    "COMMANDCODE_API_KEY",
 ];
 
 pub(crate) fn vendor_secret_env_vars_to_remove(keep: &[&str]) -> Vec<&'static str> {
@@ -128,6 +129,8 @@ pub enum VendorId {
     NousResearch,
     #[serde(rename = "opencode-go")]
     OpenCodeGo,
+    #[serde(rename = "commandcode")]
+    CommandCode,
 }
 
 impl VendorId {
@@ -151,6 +154,7 @@ impl VendorId {
             VendorId::Kiro => "kiro",
             VendorId::NousResearch => "nous",
             VendorId::OpenCodeGo => "opencode-go",
+            VendorId::CommandCode => "commandcode",
         }
     }
 
@@ -177,6 +181,7 @@ impl VendorId {
             VendorId::Kiro => "Kiro",
             VendorId::NousResearch => "Nous Research",
             VendorId::OpenCodeGo => "OpenCode Go",
+            VendorId::CommandCode => "Command Code",
         }
     }
 
@@ -200,6 +205,7 @@ impl VendorId {
             VendorId::Kiro,
             VendorId::NousResearch,
             VendorId::OpenCodeGo,
+            VendorId::CommandCode,
         ]
     }
 }

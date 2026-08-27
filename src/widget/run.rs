@@ -160,6 +160,7 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
         Vendor::Kiro => kiro_output(cli, &config).await,
         Vendor::NousResearch => nous_output(cli).await,
         Vendor::OpenCodeGo => opencode_go_output(cli, &config).await,
+        Vendor::CommandCode => commandcode_output(cli, &config).await,
     }
 }
 
@@ -236,6 +237,40 @@ async fn opencode_go_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> 
     let snapshot = outcome.snapshot.clone();
     let vendor_outcome: VendorOutcome = outcome.into();
     Ok(crate::opencode_go::vendor::render(
+        &vendor_outcome,
+        &snapshot,
+        &theme_from_cli(cli),
+        &RenderOpts::from_cli(cli),
+        Utc::now(),
+    ))
+}
+
+/// Command Code has no API key of its own: it reuses the OAuth credential a
+/// local agent harness already holds, so there is nothing to resolve from
+/// config beyond an optional override of where to look.
+async fn commandcode_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
+    let credential = crate::commandcode::creds::resolve(config.commandcode.auth_paths.as_deref())?;
+    let client = http_client()?;
+    let cache = vendor_cache(cli, "commandcode")?;
+    let endpoints = crate::commandcode::fetch::Endpoints::default();
+    let outcome = match crate::commandcode::fetch::fetch_snapshot(
+        &client,
+        &credential.token,
+        &cache,
+        &endpoints,
+        DEFAULT_TTL,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) if error.is_transient() => {
+            return Ok(WaybarOutput::loading(cli.icon.as_deref()));
+        }
+        Err(error) => return Err(error),
+    };
+    let snapshot = outcome.snapshot.clone();
+    let vendor_outcome: VendorOutcome = outcome.into();
+    Ok(crate::commandcode::vendor::render(
         &vendor_outcome,
         &snapshot,
         &theme_from_cli(cli),

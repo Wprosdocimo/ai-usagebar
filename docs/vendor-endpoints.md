@@ -24,6 +24,7 @@ defensive and includes opt-in live tests for catching response changes.
 | **Kiro CLI** | `codewhisperer.<region>.amazonaws.com` `GetUsageLimits` (undocumented; the same call kiro-cli's own `/usage` slash command makes) | Single credit pool this cycle — used/limit/%, plan, reset | No — widget/TUI only |
 | **Nous Research** | `portal.nousresearch.com/api/oauth/account` (OAuth-authenticated Portal account response) | Subscription usage %, subscription credits, top-up/purchased credits, total usable credits, renewal | Yes |
 | **OpenCode Go** | `opencode.ai/zen/go/v1/usage` | Rolling, weekly, and monthly `percent` windows with absolute reset timestamps | Yes |
+| **Command Code** | `api.commandcode.ai` `/alpha/billing/credits` + `/alpha/billing/subscriptions` (undocumented; the same calls the official `commandcode` CLI's `/usage` makes) | 5-hour and weekly rolling spend windows ($ used of $ cap), plan, and remaining monthly credits | No — widget/TUI only |
 
 
 ## Stability notes
@@ -37,6 +38,7 @@ defensive and includes opt-in live tests for catching response changes.
 | Cursor | Undocumented endpoint called by Cursor's dashboard. Its shape may change with Cursor pricing. |
 | MiniMax | The Token Plan route is official, but no formal response schema is published. |
 | Kiro CLI | `GetUsageLimits` is the same undocumented CodeWhisperer operation used by kiro-cli's `/usage` command. AWS SSO OIDC `CreateToken`, used for refresh, is documented. |
+| Command Code | Undocumented `/alpha/*` routes called by the official `commandcode` CLI. The `alpha` path segment is the vendor's own signal that these may move. Windows are read by name (`fiveHour`, `weekly`) rather than by position, and `windowLimits` is accepted both at the top level and beside the ledger, so the most likely reshuffles are already tolerated. |
 
 Codex's known five-hour and seven-day windows are matched by their reported
 duration, not by `primary_window` or `secondary_window` position. This handles
@@ -51,7 +53,8 @@ make smoke
 ```
 
 Claude, Codex, Z.AI, and OpenRouter tests require their normal credentials or
-API keys. Kimi is optional: its test prints a skip reason when `KIMI_API_KEY` is
+API keys. Command Code needs no key of its own — it reuses whichever local
+agent harness is signed in, and skips when none is. Kimi is optional: its test prints a skip reason when `KIMI_API_KEY` is
 unset.
 
 To test only Kimi:
