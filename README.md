@@ -254,6 +254,10 @@ priced in dollars: `$1.23 of $14.00` for the 5-hour window and `$5.24 of $35.00`
 for the weekly one, alongside the monthly credit that is left. The percentages
 the bar and the meters show are derived from those figures.
 
+**There is no key to enter, and no key field in the settings panel.**
+Command Code appears in the provider selector but not in the key list, the same
+way Claude, Codex, Cursor and Kiro do — enable `[commandcode]` and it works.
+
 Credentials are reused, never issued. Whichever local harness is signed in
 supplies the OAuth token — `~/.commandcode/auth.json` from the official CLI
 first, then `~/.omp/agent/auth.json`, then `~/.pi/agent/auth.json` — and

@@ -1,8 +1,9 @@
 //! Settings overlay — opened from the TUI by pressing `s`. Lets the user pick
 //! the primary vendor and paste an API key for any key-authenticated vendor
 //! (including Z.AI, Kimi, MiniMax, and the balance vendors) without hand-editing
-//! config.toml. Anthropic, OpenAI, Cursor, and Antigravity authenticate through
-//! local product state, so they have no key field here.
+//! config.toml. Anthropic, OpenAI, Cursor, Kiro, Antigravity, and Command Code
+//! authenticate through local product state, so they have no key field here —
+//! there is nothing to paste, and a field would only imply otherwise.
 //!
 //! Persistence uses `toml_edit` so the existing config keeps its comments,
 //! whitespace, and unrelated fields. Writing a key also flips that vendor's
