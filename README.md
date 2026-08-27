@@ -146,6 +146,9 @@ QML settings page. **Right-click intentionally opens `ai-usagebar-tui` in a
 terminal**; it is not the settings shortcut. Middle-click or use the mouse
 wheel to switch providers. In QML settings, turn off **Show usage value in the
 top bar** for an icon-only widget; the panel and tooltip keep the full details.
+Turn on **Show provider name in the top bar** to prefix the entry with the same
+three-letter code Waybar's `{vendor_short}` prints, so a bar cycling several
+providers says which one it is showing.
 
 The source-built `ai-usagebar` AUR package can replace `ai-usagebar-bin` in
 the first command.
@@ -366,9 +369,11 @@ The JSON report has two views of each provider:
   grouped rows, and spacers. Rows without a percentage do not invent one.
 
 The report also includes the configured `primary` id. Each entry has
-`display_name`, `status`, `stale`, and `fetched_at`; metric rows may add
-`severity` and an absolute `reset_at`. These fields are additive, so existing
-consumers remain compatible.
+`display_name`, `short_name`, `status`, `stale`, and `fetched_at`; metric rows
+may add `severity` and an absolute `reset_at`. These fields are additive, so
+existing consumers remain compatible. `short_name` is the same three-letter
+code `{vendor_short}` prints, so a frontend that wants a compact provider tag
+takes it from the report instead of keeping its own table.
 
 ## Standalone TUI
 
@@ -405,6 +410,8 @@ The widget reads the providers and accounts already enabled in
 - The gear or `s` opens QML settings.
 - QML settings can hide the bar's percentage or balance for an icon-only
   widget; this applies immediately and preserves the full panel and tooltip.
+- QML settings can also show the provider's `{vendor_short}` code before that
+  value (`cld 29%`). It is off by default and applies immediately.
 - Right-click launches the TUI.
 - Middle-click or the mouse wheel switches providers.
 - The selected provider or named account is remembered across shell reloads

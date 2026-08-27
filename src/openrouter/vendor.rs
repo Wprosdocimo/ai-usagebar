@@ -10,7 +10,7 @@ use crate::pango::{self, color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
 use crate::usage::OpenRouterSnapshot;
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -21,7 +21,10 @@ pub const DEFAULT_FORMAT: &str = "${or_balance} · ${or_used_today}";
 pub fn build_placeholders(snap: &OpenRouterSnapshot) -> HashMap<&'static str, String> {
     placeholders(vec![
         ("icon", "󱙺".to_string()),
-        ("vendor_short", "opr".to_string()),
+        (
+            "vendor_short",
+            VendorId::Openrouter.short_name().to_string(),
+        ),
         // Cross-vendor aliases — for OpenRouter the "session" concept maps
         // to "credit consumed %", and there's no reset time so we render "—".
         ("session_pct", snap.consumed_pct().to_string()),

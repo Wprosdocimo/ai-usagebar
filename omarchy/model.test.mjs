@@ -17,6 +17,12 @@ assert.equal(manifest.barWidget.defaults.showValue, true);
 const showValueSchema = manifest.barWidget.schema.find(row => row.key === 'showValue');
 assert.equal(showValueSchema.type, 'boolean');
 assert.equal(showValueSchema.defaultValue, true);
+// Opt-in, so an existing bar entry that has never seen this key keeps the
+// label it has today.
+assert.equal(manifest.barWidget.defaults.showProvider, false);
+const showProviderSchema = manifest.barWidget.schema.find(row => row.key === 'showProvider');
+assert.equal(showProviderSchema.type, 'boolean');
+assert.equal(showProviderSchema.defaultValue, false);
 
 const barWidgetSource = fs.readFileSync(new URL('./BarWidget.qml', import.meta.url), 'utf8');
 assert.match(barWidgetSource, /^BarWidget\s*\{/m);
@@ -36,6 +42,8 @@ assert.match(panelSource, /SettingsView\s*\{/);
 assert.match(panelSource, /function\s+openSettings\s*\(/);
 assert.match(panelSource, /setting\("lastSelectedEntryId",\s*""\)/);
 assert.match(panelSource, /setting\("showValue",\s*true\)/);
+assert.match(panelSource, /setting\("showProvider",\s*false\)/);
+assert.match(panelSource, /showProvider\s*\?\s*Model\.providerShort\(entry\)\s*:\s*""/);
 assert.match(panelSource, /function\s+persistSelection\s*\(/);
 assert.match(panelSource, /Model\.settingsWithOverrides\(root\.settings,\s*root\.moduleName,\s*values\)/);
 assert.match(panelSource, /bar\.shell\.updateEntryInline\(root\.moduleName,\s*entry\)/);
@@ -50,6 +58,9 @@ assert.match(settingsViewSource, /write\(root\.pendingPayload\s*\+\s*"\\n"\)/);
 assert.match(settingsViewSource, /signal\s+nousLoginRequested\(\)/);
 assert.match(settingsViewSource, /signal\s+showValueRequested\(bool\s+enabled\)/);
 assert.match(settingsViewSource, /label:\s*"Show usage value in the top bar"/);
+assert.match(settingsViewSource, /signal\s+showProviderRequested\(bool\s+enabled\)/);
+assert.match(settingsViewSource, /label:\s*"Show provider name in the top bar"/);
+assert.match(panelSource, /onShowProviderRequested/);
 assert.match(settingsViewSource, /Log in with Nous Research/);
 assert.match(settingsViewSource, /Leave the terminal open until login completes/);
 assert.match(settingsViewSource, /model:\s*root\.snapshot\.keys/);
@@ -63,6 +74,7 @@ const raw = JSON.stringify({primary: 'openai', entries: [
     id: 'anthropic@work',
     name: 'anthropic · work',
     display_name: 'Claude · work',
+    short_name: 'cld',
     plan: 'Claude Max 20x',
     status: 'ready',
     error: null,
@@ -78,7 +90,7 @@ const raw = JSON.stringify({primary: 'openai', entries: [
     ]
   },
   {
-    id: 'openai', name: 'openai', display_name: 'Codex', plan: 'Plus', error: null,
+    id: 'openai', name: 'openai', display_name: 'Codex', short_name: 'gpt', plan: 'Plus', error: null,
     sections: [{type: 'metric', label: 'Codex weekly', percent: 95, value: '95%', detail: '', severity: 'critical'}]
   }
 ]});
@@ -137,6 +149,12 @@ const hiddenValueSettings = model.settingsWithOverrides(
 assert.equal(hiddenValueSettings.showValue, false);
 assert.equal(hiddenValueSettings.lastSelectedEntryId, 'openrouter@personal');
 assert.equal(selectedWidgetSettings.showValue, undefined);
+const shownProviderSettings = model.settingsWithOverrides(
+  hiddenValueSettings, 'akitaonrails.ai-usagebar', {showProvider: true});
+assert.equal(shownProviderSettings.showProvider, true);
+assert.equal(shownProviderSettings.showValue, false);
+assert.equal(shownProviderSettings.lastSelectedEntryId, 'openrouter@personal');
+assert.equal(hiddenValueSettings.showProvider, undefined);
 const protectedSettings = model.settingsWithOverrides({}, 'akitaonrails.ai-usagebar', {
   id: 'wrong-id', constructor: 'ignored', prototype: 'ignored', showValue: false
 });
@@ -157,6 +175,34 @@ assert.equal(model.barLabel(true, false, true, false, false, ''), '󰅙');
 assert.equal(model.barLabel(false, true, true, false, true, '29%'), '󰚩');
 assert.equal(model.barLabel(true, true, true, false, true, '95%'), '󰅙');
 assert.equal(model.barLabel(false, false, true, true, false, ''), '󰚩  …');
+
+// The provider tag is opt-in and arrives already resolved, so every call
+// above — no seventh argument at all — has to keep its historical label.
+assert.equal(model.barLabel(false, false, true, false, true, '29%', 'gpt'), '󰚩  gpt 29%');
+// Tag on, value off: the icon-only label grows the tag and nothing else.
+assert.equal(model.barLabel(false, false, false, false, true, '29%', 'gpt'), '󰚩  gpt');
+assert.equal(model.barLabel(true, false, true, false, true, '95%', 'cld'), '󰚩  cld 95%');
+// An entry with no headline still names its provider.
+assert.equal(model.barLabel(false, false, true, false, true, '', 'agy'), '󰚩  agy');
+// A vertical bar has no width for either field.
+assert.equal(model.barLabel(false, true, true, false, true, '29%', 'gpt'), '󰚩');
+// Before the first report there is no provider to name.
+assert.equal(model.barLabel(false, false, true, true, false, '', 'gpt'), '󰚩  …');
+assert.equal(model.barLabel(true, false, true, false, false, '', 'gpt'), '󰅙');
+// A tag that sanitizes down to nothing degrades to the label without one.
+assert.equal(model.barLabel(false, false, true, false, true, '29%', '   '), '󰚩  29%');
+assert.equal(model.barLabel(false, false, true, false, true, '29%', undefined), '󰚩  29%');
+
+// The codes come from Rust's VendorId::short_name via the report; the vendor
+// half of the machine id only stands in for a binary that predates the field.
+assert.equal(model.providerShort(parsed.entries[0]), 'cld');
+assert.equal(model.providerShort(parsed.entries[1]), 'gpt');
+assert.equal(model.providerShort({id: 'anthropic@work'}), 'anthropic');
+assert.equal(model.providerShort({id: 'anthropic_api'}), 'anthropic-api');
+assert.equal(model.providerShort({id: 'zai', short_name: '   '}), 'zai');
+assert.equal(model.providerShort(null), '');
+// Provider-controlled text can never reach Text.AutoText as markup.
+assert.equal(model.providerShort({id: 'x', short_name: '<b>x</b>'}), '‹b›x‹/b›');
 
 assert.equal(model.headline(parsed.entries[0]).text, '29%');
 assert.equal(model.headline(parsed.entries[1]).severity, 'critical');

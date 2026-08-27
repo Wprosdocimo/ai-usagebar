@@ -31,6 +31,9 @@ struct Entry {
     id: String,
     name: String,
     display_name: String,
+    /// The vendor's `{vendor_short}` code. Frontends that want a Waybar-style
+    /// provider tag take it from here rather than keeping their own table.
+    short_name: String,
     plan: Option<String>,
     sections: Vec<ReportSection>,
     error: Option<String>,
@@ -128,6 +131,7 @@ fn entry_from_state(tab: &TabId, state: &TabState, now: chrono::DateTime<Utc>) -
         id: tab_id(tab),
         name: tab_name(tab),
         display_name: tab_display_name(tab),
+        short_name: tab.vendor.short_name().to_string(),
         plan: None,
         sections: Vec::new(),
         error: match &state {
@@ -239,6 +243,7 @@ fn render_json_for_primary(entries: &[Entry], primary: Option<&str>) -> String {
                 "id": entry.id,
                 "name": entry.name,
                 "display_name": entry.display_name,
+                "short_name": entry.short_name,
                 "plan": entry.plan,
                 "status": if entry.error.is_some() { "error" } else { "ready" },
                 "error": entry.error,
@@ -346,6 +351,7 @@ mod tests {
             id: name.into(),
             name: name.into(),
             display_name: name.into(),
+            short_name: VendorId::Anthropic.short_name().into(),
             plan: Some("Claude Max 20x".into()),
             sections,
             error: None,
@@ -381,6 +387,28 @@ mod tests {
         assert_eq!(tab_id(&openrouter), "openrouter@work");
         assert_eq!(tab_name(&openrouter), "openrouter · work");
         assert_eq!(tab_display_name(&openrouter), "OpenRouter · work");
+    }
+
+    /// The Omarchy bar can be set to draw the provider tag and nothing else,
+    /// so every entry — a failed one included — has to carry a code, and every
+    /// account of one vendor has to carry that vendor's code rather than a
+    /// per-account one.
+    #[test]
+    fn every_entry_carries_its_vendor_short_code() {
+        let now = Utc::now();
+        let failed = TabState::Error("not signed in".into());
+
+        let account = entry_from_state(&TabId::account("gmail"), &failed, now);
+        assert_eq!(account.short_name, "cld");
+        let other_account = entry_from_state(&TabId::account("work"), &failed, now);
+        assert_eq!(other_account.short_name, account.short_name);
+
+        let cursor = entry_from_state(&TabId::vendor(VendorId::Cursor), &failed, now);
+        assert_eq!(cursor.short_name, "cur");
+
+        let rendered = render_json_for_primary(&[cursor], None);
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(value["entries"][0]["short_name"], "cur");
     }
 
     #[test]
@@ -447,6 +475,7 @@ mod tests {
         let first = &value["entries"][0];
         assert_eq!(first["plan"], "Claude Max 20x");
         assert_eq!(first["display_name"], "anthropic · gmail");
+        assert_eq!(first["short_name"], "cld");
         assert_eq!(first["metrics"][0]["percent"], 29);
         assert_eq!(first["metrics"][0]["detail"], "Resets in 0h 50m");
         assert!(first["error"].is_null());
