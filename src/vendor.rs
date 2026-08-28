@@ -209,6 +209,7 @@ impl VendorId {
             VendorId::Kiro => "kir",
             VendorId::NousResearch => "nrs",
             VendorId::OpenCodeGo => "ocg",
+            VendorId::CommandCode => "cmc",
         }
     }
 

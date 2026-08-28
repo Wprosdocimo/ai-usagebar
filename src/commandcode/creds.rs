@@ -15,10 +15,15 @@ use crate::error::{AppError, Result};
 
 /// Files searched in order; the first holding a live credential wins.
 pub const AUTH_FILES: &[&str] = &[
-    ".commandcode/auth.json", // official command-code CLI
+    OFFICIAL_AUTH_FILE, // official command-code CLI
     ".omp/agent/auth.json",
     ".pi/agent/auth.json",
 ];
+
+/// The Command Code CLI's own file — the only one whose whole contents belong
+/// to Command Code. The others are shared harness keystores, which is why the
+/// unkeyed `apiKey` fallback below is scoped to this one.
+const OFFICIAL_AUTH_FILE: &str = ".commandcode/auth.json";
 
 /// Keys a harness may file the credential under.
 const CREDENTIAL_KEYS: &[&str] = &["command-code", "commandcode"];
@@ -55,10 +60,20 @@ pub fn read_from(path: &Path) -> Option<Credential> {
     let value: Value = serde_json::from_str(&text).ok()?;
     let object = value.as_object()?;
 
+    // `apiKey` is unkeyed, so it is only consulted in Command Code's own file,
+    // where the whole document is Command Code's. A harness keystore holds
+    // every provider the user has signed into — pi's `auth.json` is typed
+    // `Record<providerId, Credential>` and carries their Anthropic, OpenAI and
+    // OpenRouter credentials — so a key that names no provider must not be
+    // read out of one, whatever shape a future version gives it.
+    let generic = path
+        .ends_with(OFFICIAL_AUTH_FILE)
+        .then(|| object.get("apiKey"))
+        .flatten();
     let candidates = CREDENTIAL_KEYS
         .iter()
         .filter_map(|key| object.get(*key))
-        .chain(object.get("apiKey"))
+        .chain(generic)
         .filter_map(candidate);
 
     for found in candidates {
@@ -176,6 +191,36 @@ mod tests {
         );
 
         assert_eq!(read_from(&path).unwrap().token, "tok");
+    }
+
+    /// A harness keystore holds every provider the user signed into — pi types
+    /// its `auth.json` as `Record<providerId, Credential>` and carries their
+    /// Anthropic, OpenAI and OpenRouter credentials there. A key that names no
+    /// provider therefore must not be read out of one: only the provider-keyed
+    /// lookup applies, and only Command Code's own file may fall back to the
+    /// unkeyed `apiKey`.
+    #[test]
+    fn the_unkeyed_apikey_is_only_read_from_command_codes_own_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = serde_json::json!({ "apiKey": "another-providers-secret" });
+
+        let shared = dir.path().join(".pi/agent");
+        std::fs::create_dir_all(&shared).unwrap();
+        let shared = write(&shared, "auth.json", body.clone());
+        assert_eq!(
+            read_from(&shared),
+            None,
+            "an unkeyed apiKey in a shared harness keystore is not ours to read"
+        );
+
+        let own = dir.path().join(".commandcode");
+        std::fs::create_dir_all(&own).unwrap();
+        let own = write(&own, "auth.json", body);
+        assert_eq!(
+            read_from(&own).map(|c| c.token),
+            Some("another-providers-secret".to_string()),
+            "Command Code's own file still accepts a pasted key"
+        );
     }
 
     #[test]

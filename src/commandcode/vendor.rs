@@ -9,7 +9,7 @@ use crate::pacing::PaceSeverity;
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -49,7 +49,10 @@ pub fn build_placeholders(snap: &Snapshot, now: DateTime<Utc>) -> HashMap<&'stat
         .unwrap_or_else(|| UNAVAILABLE.to_string());
 
     placeholders([
-        ("vendor_short", "cc".to_string()),
+        (
+            "vendor_short",
+            VendorId::CommandCode.short_name().to_string(),
+        ),
         ("plan", plan.clone()),
         ("cc_plan", plan),
         // Generic names so a shared format string works across vendors.
@@ -288,7 +291,7 @@ mod tests {
     fn exposes_exact_and_generic_placeholders() {
         let values = build_placeholders(&sample(), at("2026-08-27T02:30:00Z"));
 
-        assert_eq!(values["vendor_short"], "cc");
+        assert_eq!(values["vendor_short"], "cmc");
         assert_eq!(values["plan"], "GOAT");
         assert_eq!(values["cc_session_pct"], "9");
         assert_eq!(values["cc_weekly_pct"], "15");
