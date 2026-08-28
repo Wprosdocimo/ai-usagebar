@@ -316,7 +316,7 @@ pub(crate) fn sections_with_metadata_for(
                 VendorSnapshot::Anthropic(s) => anthropic_sections(s, now, pace_tolerance),
                 VendorSnapshot::AnthropicApi(s) => anthropic_api_sections(s),
                 VendorSnapshot::Openai(s) => openai_sections(s, now, pace_tolerance),
-                VendorSnapshot::Zai(s) => zai_sections(s, now),
+                VendorSnapshot::Zai(s) => zai_sections(s, now, pace_tolerance),
                 VendorSnapshot::Openrouter(s) => openrouter_sections(s),
                 VendorSnapshot::Deepseek(s) => deepseek_sections(s),
                 VendorSnapshot::Kimi(s) => kimi_sections(s, now, pace_tolerance),
@@ -571,19 +571,19 @@ fn openai_sections(
     v
 }
 
-fn zai_sections(s: &crate::usage::ZaiSnapshot, now: DateTime<Utc>) -> SectionBuilder {
+fn zai_sections(s: &crate::usage::ZaiSnapshot, now: DateTime<Utc>, tol: u32) -> SectionBuilder {
     let mut v = SectionBuilder::new(vec![Section::Title {
         left: s.plan.clone(),
         right: None,
     }]);
     if let Some(w) = &s.session {
-        push_window(&mut v, "Session (5h)", w, now, 5, false);
+        push_window(&mut v, "Session (5h)", w, now, tol, true);
     }
     if let Some(w) = &s.weekly {
-        push_window(&mut v, "Weekly", w, now, 5, false);
+        push_window(&mut v, "Weekly", w, now, tol, true);
     }
     if let Some(w) = &s.mcp {
-        push_window(&mut v, "MCP tools (monthly)", w, now, 5, false);
+        push_window(&mut v, "MCP tools (monthly)", w, now, tol, true);
     }
     if s.session.is_none() && s.weekly.is_none() && s.mcp.is_none() {
         v.push(Section::Spacer);
@@ -1510,6 +1510,42 @@ mod tests {
         // ...and the same number in the dense Overview list.
         let (_, cells) = compact_cells(&VendorSnapshot::Openrouter(snap));
         assert_eq!(cells[0].0, "-$5.71");
+    }
+
+    /// The panels express pace as a footnote on the row; the arrow is the
+    /// widget's idiom and the bar tick the menu bar's. All three Z.AI windows
+    /// report a duration and a reset, so all three carry one.
+    #[test]
+    fn zai_windows_are_paced_like_every_other_percentage_vendor() {
+        let window = |pct: i32, hours: i64, span: chrono::Duration| crate::usage::UsageWindow {
+            utilization_pct: pct,
+            resets_at: Some(now() + chrono::Duration::hours(hours)),
+            window_duration: span,
+        };
+        let snap = ZaiSnapshot {
+            plan: "GLM Coding Pro".into(),
+            session: Some(window(40, 2, chrono::Duration::hours(5))),
+            weekly: Some(window(60, 48, chrono::Duration::days(7))),
+            mcp: Some(window(10, 200, chrono::Duration::days(30))),
+        };
+
+        let footnotes: Vec<String> = sections_for(&ready(VendorSnapshot::Zai(snap)), now(), 5)
+            .into_iter()
+            .filter_map(|section| match section {
+                Section::Metric { footnote, .. } => Some(footnote),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(footnotes.len(), 3, "{footnotes:?}");
+        for footnote in &footnotes {
+            assert!(footnote.contains("% elapsed"), "{footnote}");
+        }
+        // 40% used with 60% of a 5h window gone: behind pace, not ahead.
+        assert_eq!(
+            footnotes[0], "Resets in 2h 00m · 60% elapsed · 20pts under",
+            "{footnotes:?}"
+        );
     }
 
     #[test]

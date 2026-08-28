@@ -9,6 +9,17 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- Z.AI's rows in the native panels — Omarchy Quattro, GNOME, KDE and the TUI —
+  carry the pace footnote every other percentage vendor's rows carry
+  (`60% elapsed · 20pts under`) instead of a bare `Resets in 2h 00m`. GLM's
+  session, weekly and monthly MCP windows each report a duration and a reset,
+  so all three pace, off the same `pacing::calc` the `{zai_*_pace}`
+  placeholders already use. Each surface keeps its own way of showing it, so
+  nothing else moves: the arrow stays the widget's, the bar tick the macOS
+  menu bar's, the footnote the panels'.
+
 ## [1.8.0] — 2026-08-28
 
 ### Added
