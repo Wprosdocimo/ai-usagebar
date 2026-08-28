@@ -736,20 +736,22 @@ async fn deepseek_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
 }
 
 async fn kimi_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
-    let api_key = crate::config::resolve_api_key(
-        "Kimi",
-        &config.kimi.api_key_env,
-        config.kimi.api_key.as_deref(),
-    )?;
+    let (auth, endpoints) = kimi::resolve_auth(&config.kimi)?;
     let client = http_client()?;
     let cache = vendor_cache(cli, "kimi")?;
-    let endpoints = kimi::fetch::Endpoints::default();
-    let outcome =
-        match kimi::fetch_snapshot(&client, &api_key, &cache, &endpoints, DEFAULT_TTL).await {
-            Ok(o) => o,
-            Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
-            Err(e) => return Err(e),
-        };
+    let outcome = match kimi::fetch::fetch_snapshot_with_auth(
+        &client,
+        &auth,
+        &cache,
+        &endpoints,
+        DEFAULT_TTL,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
+        Err(e) => return Err(e),
+    };
 
     let theme = theme_from_cli(cli);
     let snap = outcome.snapshot.clone();

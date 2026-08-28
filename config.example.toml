@@ -140,7 +140,12 @@ api_key_env = "DEEPSEEK_API_KEY"  # checked first; if set + non-empty, used
 # api_key = "sk-..."              # fallback; chmod 600 the file if you use it
 
 [kimi]
-# Disabled by default — enable once you've set a key (env var or inline).
+# Disabled by default. Two ways to authenticate:
+#   1. An existing Kimi Code CLI login: log in with `kimi` and just set
+#      `enabled = true` — nothing to create or paste. ai-usagebar reads the
+#      CLI's own OAuth session and refreshes it in place.
+#   2. An API key (env var or inline), which takes precedence when set. A Kimi
+#      For Coding subscription can issue one at kimi.com/code/console.
 # Saving a key in the Settings overlay writes the inline fallback AND flips
 # `enabled` to true; clearing the field removes the inline key again.
 # Shows Kimi Code subscription quota (weekly + 5h rolling window) from the
@@ -148,6 +153,9 @@ api_key_env = "DEEPSEEK_API_KEY"  # checked first; if set + non-empty, used
 enabled = false
 api_key_env = "KIMI_API_KEY"      # checked first; if set + non-empty, used
 # api_key = "sk-..."              # fallback; chmod 600 the file if you use it
+# credentials_path = "~/.kimi-code/credentials/kimi-code.json"  # CLI login file
+# region = "auto"                 # auto follows ~/.kimi-code/region;
+#                                 # cn -> api.kimi.com | global -> api.kimi.ai
 
 # --- Account-balance vendors -------------------------------------------------
 # These report your REMAINING credit as money, rather than plan usage as a %.

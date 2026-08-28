@@ -675,7 +675,18 @@ impl Default for DeepseekConfig {
 pub struct KimiConfig {
     pub enabled: bool,
     pub api_key_env: String,
+    /// Optional: with no key set, the vendor falls back to the Kimi Code CLI's
+    /// own OAuth login, which is what a subscriber already has locally.
     pub api_key: Option<String>,
+    /// Override for kimi-code's credential file (default
+    /// `~/.kimi-code/credentials/kimi-code.json`), mirroring `[cursor] db_path`
+    /// and `[kiro] db_path`. Useful with a relocated `KIMI_CODE_HOME`.
+    pub credentials_path: Option<PathBuf>,
+    /// `"auto"` follows kimi-code's own install marker (`~/.kimi-code/region`);
+    /// `"cn"` pins `api.kimi.com` / `auth.kimi.com`, `"global"` pins
+    /// `api.kimi.ai` / `auth.kimi.ai`. A token minted by one deployment means
+    /// nothing to the other, so this picks the instance, not a currency.
+    pub region: String,
 }
 
 impl Default for KimiConfig {
@@ -684,6 +695,8 @@ impl Default for KimiConfig {
             enabled: false,
             api_key_env: "KIMI_API_KEY".to_string(),
             api_key: None,
+            credentials_path: None,
+            region: "auto".to_string(),
         }
     }
 }
@@ -935,24 +948,29 @@ pub fn resolve_api_key(
     resolve_api_key_in_section(vendor_label, &section, env_var_name, inline)
 }
 
+/// The env-then-inline lookup without the "or fail" ending, for vendors where
+/// an absent API key is a legitimate state rather than an error — Kimi accepts
+/// a Kimi Code CLI subscription login instead.
+pub fn optional_api_key(env_var_name: &str, inline: Option<&str>) -> Option<String> {
+    if is_valid_env_var_name(env_var_name)
+        && let Ok(v) = std::env::var(env_var_name)
+        && !v.is_empty()
+    {
+        return Some(v);
+    }
+    inline.filter(|v| !v.is_empty()).map(str::to_string)
+}
+
 fn resolve_api_key_in_section(
     vendor_label: &str,
     section: &str,
     env_var_name: &str,
     inline: Option<&str>,
 ) -> crate::error::Result<String> {
+    if let Some(key) = optional_api_key(env_var_name, inline) {
+        return Ok(key);
+    }
     let valid_env_name = is_valid_env_var_name(env_var_name);
-    if valid_env_name
-        && let Ok(v) = std::env::var(env_var_name)
-        && !v.is_empty()
-    {
-        return Ok(v);
-    }
-    if let Some(v) = inline
-        && !v.is_empty()
-    {
-        return Ok(v.to_string());
-    }
     let advice = if valid_env_name {
         "set an API key in a valid environment variable or set `api_key`"
     } else {
@@ -1010,6 +1028,7 @@ impl Config {
         expand_tilde_opt(&mut self.cursor.db_path);
         expand_tilde_opt(&mut self.cursor.agent_auth_path);
         expand_tilde_opt(&mut self.kiro.db_path);
+        expand_tilde_opt(&mut self.kimi.credentials_path);
         self.supergrok.grok_binary = expand_tilde(&self.supergrok.grok_binary);
         expand_tilde_opt(&mut self.supergrok.auth_path);
         expand_tilde_opt(&mut self.supergrok.config_path);
@@ -1128,6 +1147,14 @@ impl Config {
                  remove it to show spend without a limit"
                     .into(),
             ));
+        }
+        if crate::kimi::oauth::Region::parse(&self.kimi.region).is_none()
+            && !self.kimi.region.eq_ignore_ascii_case("auto")
+        {
+            return Err(AppError::Other(format!(
+                "[kimi] region must be \"auto\", \"cn\", or \"global\", got {:?}",
+                self.kimi.region
+            )));
         }
         if !self.minimax.region.eq_ignore_ascii_case("global")
             && !self.minimax.region.eq_ignore_ascii_case("cn")
@@ -1543,6 +1570,59 @@ enabled = false
             let error = Config::load_from(file.path()).unwrap_err().to_string();
             assert!(error.contains("[minimax] region"), "{error}");
         }
+    }
+
+    #[test]
+    fn kimi_region_accepts_auto_and_both_deployments() {
+        for region in ["auto", "AUTO", "cn", "mainland-cn", "global"] {
+            let file = write_toml(&format!("[kimi]\nregion = {region:?}\n"));
+            assert_eq!(Config::load_from(file.path()).unwrap().kimi.region, region);
+        }
+
+        for region in ["", "us", "oversea"] {
+            let file = write_toml(&format!("[kimi]\nregion = {region:?}\n"));
+            let error = Config::load_from(file.path()).unwrap_err().to_string();
+            assert!(error.contains("[kimi] region"), "{error}");
+        }
+    }
+
+    #[test]
+    fn kimi_defaults_to_auto_region_and_no_credential_override() {
+        let defaults = KimiConfig::default();
+        assert_eq!(defaults.region, "auto");
+        assert_eq!(defaults.credentials_path, None);
+        assert!(!defaults.enabled);
+    }
+
+    #[test]
+    fn kimi_credentials_path_expands_a_tilde() {
+        let file = write_toml("[kimi]\ncredentials_path = \"~/kimi/creds.json\"\n");
+        let path = Config::load_from(file.path())
+            .unwrap()
+            .kimi
+            .credentials_path
+            .unwrap();
+        assert!(!path.starts_with("~"), "{}", path.display());
+        assert!(path.ends_with("kimi/creds.json"), "{}", path.display());
+    }
+
+    #[test]
+    fn optional_api_key_reports_absence_instead_of_failing() {
+        assert_eq!(
+            optional_api_key("KIMI_API_KEY_DEFINITELY_UNSET", Some("inline")),
+            Some("inline".to_string())
+        );
+        assert_eq!(
+            optional_api_key("KIMI_API_KEY_DEFINITELY_UNSET", None),
+            None
+        );
+        assert_eq!(optional_api_key("KIMI_API_KEY_UNSET", Some("")), None);
+        // An unusable `api_key_env` still lets an inline key through, exactly
+        // as `resolve_api_key` does.
+        assert_eq!(
+            optional_api_key("9INVALID", Some("inline")),
+            Some("inline".to_string())
+        );
     }
 
     #[test]

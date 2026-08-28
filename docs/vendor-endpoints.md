@@ -12,7 +12,7 @@ defensive and includes opt-in live tests for catching response changes.
 | **Z.AI** | `api.z.ai/api/monitor/usage/quota/limit` (undocumented) | Session 5h, Weekly 7d, MCP tools monthly | Yes |
 | **OpenRouter** | `openrouter.ai/api/v1/{credits,key}` (documented) | Balance, today/week/month spend, free vs paid tier | Yes |
 | **DeepSeek** | `api.deepseek.com/user/balance` (documented) | Balance, granted, topped-up credits | Yes |
-| **Kimi** | `api.kimi.com/coding/v1/usages` (undocumented; community-confirmed) | Weekly subscription quota + 5h rolling rate-limit window | No — widget/TUI only; desktop protocol and marker parity are future work |
+| **Kimi** | `api.kimi.com\|.ai/coding/v1/usages` (undocumented; community-confirmed), plus `auth.kimi.com\|.ai/api/oauth/token` to refresh a Kimi Code CLI login | Weekly subscription quota + 5h rolling rate-limit window | No — widget/TUI only; desktop protocol and marker parity are future work |
 | **MiniMax** | `api.minimax.io/v1/token_plan/remains` (official Token Plan quota route) | Token Plan rolling interval window + weekly, per model bucket (text, video) | No — widget/TUI only |
 | **Kilo** | `api.kilo.ai/api/profile/balance` (undocumented; extension-internal) | Remaining credit balance ($) | No — widget/TUI only |
 | **Novita** | `api.novita.ai/openapi/v1/billing/balance/detail` (documented) | Remaining credit balance ($) | No — widget/TUI only |
@@ -33,7 +33,7 @@ defensive and includes opt-in live tests for catching response changes.
 | Claude | Undocumented usage endpoint, but used by the official `claude` CLI. Less fragile than a scraped web page. |
 | Codex | Undocumented ChatGPT usage endpoint used by the official `codex` CLI. Windows are identified by duration instead of response position. |
 | Z.AI | Reverse-engineered from a third-party plugin. Treat this as the most fragile integration. |
-| Kimi | Community-confirmed `/coding/v1/usages` route used by third-party quota tools. Drift is possible. |
+| Kimi | Community-confirmed `/coding/v1/usages` route used by third-party quota tools. Drift is possible. The refresh grant is the Kimi Code CLI's own documented-by-behaviour device-flow token endpoint, using the CLI's public client id. |
 | Cursor | Undocumented endpoint called by Cursor's dashboard. Its shape may change with Cursor pricing. |
 | MiniMax | The Token Plan route is official, but no formal response schema is published. |
 | Kiro CLI | `GetUsageLimits` is the same undocumented CodeWhisperer operation used by kiro-cli's `/usage` command. AWS SSO OIDC `CreateToken`, used for refresh, is documented. |
@@ -52,7 +52,8 @@ make smoke
 
 Claude, Codex, Z.AI, and OpenRouter tests require their normal credentials or
 API keys. Kimi is optional: its test prints a skip reason when `KIMI_API_KEY` is
-unset.
+unset (the smoke test covers the API-key path; a subscription login is exercised
+by `ai-usagebar --vendor kimi`).
 
 To test only Kimi:
 

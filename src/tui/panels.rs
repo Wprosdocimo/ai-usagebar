@@ -1024,9 +1024,13 @@ fn kimi_sections(s: &crate::usage::KimiSnapshot, now: DateTime<Utc>, _tol: u32) 
             label: "Weekly quota".into(),
             pct: weekly_pct,
             severity: severity_for(s.weekly_pct()),
-            value_label: format!("{} / {}", s.weekly_used, s.weekly_limit),
+            // Same `{pct}%` every other vendor shows; the request counts stay
+            // on the footnote.
+            value_label: format!("{weekly_pct}%"),
             footnote: format!(
-                "{} remaining · reset {}",
+                "{} / {} · {} remaining · reset {}",
+                s.weekly_used,
+                s.weekly_limit,
                 s.weekly_remaining,
                 countdown::format(s.weekly_reset_at, now)
             ),
@@ -1042,9 +1046,11 @@ fn kimi_sections(s: &crate::usage::KimiSnapshot, now: DateTime<Utc>, _tol: u32) 
                 label: "Rolling window (5h)".into(),
                 pct: window_pct,
                 severity: severity_for(s.window_pct()),
-                value_label: format!("{} / {}", s.window_used, s.window_limit),
+                value_label: format!("{window_pct}%"),
                 footnote: format!(
-                    "{} remaining · reset {}",
+                    "{} / {} · {} remaining · reset {}",
+                    s.window_used,
+                    s.window_limit,
                     s.window_remaining,
                     countdown::format(s.window_reset_at, now)
                 ),
@@ -1662,7 +1668,8 @@ mod tests {
         };
 
         let (weekly_value, weekly_footnote) = find_footnote("Weekly quota");
-        assert_eq!(weekly_value, "26 / 100");
+        assert_eq!(weekly_value, "26%");
+        assert!(weekly_footnote.contains("26 / 100"));
         assert!(weekly_footnote.contains("74 remaining"));
         assert!(
             weekly_footnote.contains("4d 0h"),
@@ -1671,7 +1678,8 @@ mod tests {
         assert!(!weekly_footnote.contains("2026-05-27T")); // not a raw RFC3339
 
         let (window_value, window_footnote) = find_footnote("Rolling window (5h)");
-        assert_eq!(window_value, "15 / 100");
+        assert_eq!(window_value, "15%");
+        assert!(window_footnote.contains("15 / 100"));
         assert!(window_footnote.contains("85 remaining"));
         assert!(
             window_footnote.contains("2h 00m"),

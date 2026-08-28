@@ -41,6 +41,47 @@ Each release is also published at
   a test now rejects a duplicate or a non-three-letter one.
 - The `{vendor_short}` reference table lists Nous Research (`nrs`) and OpenCode
   Go (`ocg`), which both shipped codes without ever being written down.
+- Kimi accepts a **Kimi For Coding subscription** as a credential: when no
+  `KIMI_API_KEY` (or inline `api_key`) is set, the vendor uses the OAuth
+  session the Kimi Code CLI already stored at
+  `~/.kimi-code/credentials/kimi-code.json` — so a subscriber who works through
+  the CLI has nothing to create, paste, or rotate by hand. Same
+  `/coding/v1/usages` endpoint, same weekly + 5h windows; an API key still takes
+  precedence when one is set. New optional `[kimi] credentials_path` (for
+  a relocated `KIMI_CODE_HOME`) and `[kimi] region` — `auto` follows
+  kimi-code's own `~/.kimi-code/region` marker, `cn` pins `api.kimi.com`,
+  `global` pins `api.kimi.ai`.
+
+  The CLI's access token lives 15 minutes, so ai-usagebar refreshes it against
+  `auth.kimi.com/api/oauth/token` and writes the rotated pair **back into
+  kimi-code's own credential file** (atomically, mode 0600) rather than into a
+  private sidecar the way the Kiro vendor does. Kimi rotates the refresh token
+  on every grant: a private copy would leave the CLI holding a superseded token
+  after each widget tick and log the user out of their own CLI. The refresh
+  runs under kimi-code's own `proper-lockfile` protocol so the two clients
+  never rotate at once, and the file is re-read inside the lock so a refresh
+  that landed while waiting is used instead of being redone.
+
+- Kimi's plan label now reads the subscription's own tier name ("Andante",
+  "Moderato", "Allegretto", "Allegro") from `/coding/v1/me`, fetched
+  concurrently with `/usages` so a widget tick still costs one round-trip.
+  `/usages` only carries the `LEVEL_*` wire enum, which was what the bar used
+  to show. When `/me` is unreachable or the account has no coding profile, the
+  enum is humanized instead (`LEVEL_INTERMEDIATE` → `Intermediate`) — never
+  mapped to an invented tier name. A still-fresh cache entry holding a raw
+  `LEVEL_*` plan is refreshed once rather than waiting out its TTL. The
+  profile response's personal fields (email, phone, nickname) are never
+  deserialized, so they cannot reach a snapshot, the cache, or an error
+  message.
+
+### Changed
+
+- Kimi's default widget format now shows both independent quotas —
+  `5h X% · 7d Y%` — instead of a single percentage that silently discarded
+  one of them. A custom `format` in config.toml is untouched. The TUI panel's
+  value column shows the same `{pct}%` every other vendor shows instead of
+  raw request counts; the counts move to the footnote next to the remaining
+  figure and the reset countdown.
 
 ## [1.7.0] — 2026-08-25
 
