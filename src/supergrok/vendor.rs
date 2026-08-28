@@ -11,7 +11,7 @@ use crate::pango::{self, color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
 use crate::usage::SuperGrokSnapshot;
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -30,7 +30,7 @@ pub fn build_placeholders(
 
     placeholders(vec![
         ("icon", DEFAULT_ICON.to_string()),
-        ("vendor_short", "sgk".to_string()),
+        ("vendor_short", VendorId::Supergrok.short_name().to_string()),
         // Cross-vendor compatibility aliases for the single current pool.
         ("plan", snap.plan.clone()),
         ("session_pct", pct.clone()),

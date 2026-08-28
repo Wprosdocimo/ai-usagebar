@@ -43,6 +43,7 @@ Panel {
   readonly property string configuredProvider: String(setting("provider", "") || "").trim()
   readonly property string rememberedEntryId: String(setting("lastSelectedEntryId", "") || "").trim()
   readonly property bool showValue: Model.booleanSetting(setting("showValue", true), true)
+  readonly property bool showProvider: Model.booleanSetting(setting("showProvider", false), false)
   readonly property var visibleEntries: Model.filteredEntries(entries, configuredProvider)
   readonly property int entryIndex: Model.selectedIndex(visibleEntries, selectedEntryId)
   readonly property var entry: entryIndex >= 0 ? visibleEntries[entryIndex] : null
@@ -103,6 +104,12 @@ Panel {
     var next = enabled === true
     if (next === showValue) return
     persistWidgetSettings({ showValue: next })
+  }
+
+  function setShowProvider(enabled) {
+    var next = enabled === true
+    if (next === showProvider) return
+    persistWidgetSettings({ showProvider: next })
   }
 
   function selectEntry(index) {
@@ -201,7 +208,7 @@ Panel {
 
   function barText() {
     return Model.barLabel(alarming, vertical, showValue, loading,
-      entry !== null, summary.text)
+      entry !== null, summary.text, showProvider ? Model.providerShort(entry) : "")
   }
 
   function tooltipText() {
@@ -371,8 +378,10 @@ Panel {
             urgent: root.urgent
             fontFamily: root.fontFamily
             showValue: root.showValue
+            showProvider: root.showProvider
             onSaved: root.startRefresh()
             onShowValueRequested: function(enabled) { root.setShowValue(enabled) }
+            onShowProviderRequested: function(enabled) { root.setShowProvider(enabled) }
             onFallbackRequested: root.openTerminalSettings()
             onNousLoginRequested: root.openNousLogin()
             onCloseRequested: root.closeSettings()

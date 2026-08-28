@@ -27,7 +27,8 @@
     "defaults": {
       "provider": "",
       "refreshIntervalSec": 300,
-      "showValue": true
+      "showValue": true,
+      "showProvider": false
     },
     "schema": [
       {
@@ -52,6 +53,13 @@
         "label": "Show usage value",
         "description": "Show the selected provider's percentage or balance next to the icon in the top bar.",
         "defaultValue": true
+      },
+      {
+        "key": "showProvider",
+        "type": "boolean",
+        "label": "Show provider name",
+        "description": "Show the selected provider's short code (cld, gpt, zai, agy) before the usage value, the way Waybar's {vendor_short} does. Off by default.",
+        "defaultValue": false
       }
     ]
   }

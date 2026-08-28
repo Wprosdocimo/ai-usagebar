@@ -13,7 +13,7 @@ use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
 use crate::usage::CursorSnapshot;
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -31,7 +31,7 @@ pub fn build_placeholders(
     let reset = countdown::format(snap.reset_at, now);
     placeholders(vec![
         ("icon", DEFAULT_ICON.to_string()),
-        ("vendor_short", "cur".to_string()),
+        ("vendor_short", VendorId::Cursor.short_name().to_string()),
         // Cross-vendor aliases: the two pools map onto the two generic windows
         // (session = Cursor Models, weekly = Other Models) so a shared format
         // and the macOS menu bar show both. Severity still keys on the worst.

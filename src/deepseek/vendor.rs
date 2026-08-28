@@ -10,7 +10,7 @@ use crate::pango::{color_span, escape, severity_color};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
 use crate::usage::DeepseekSnapshot;
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -22,7 +22,7 @@ pub fn build_placeholders(snap: &DeepseekSnapshot) -> HashMap<&'static str, Stri
     let balance = money(snap.balance, &snap.currency);
     placeholders(vec![
         ("icon", "󰧑".to_string()),
-        ("vendor_short", "dsk".to_string()),
+        ("vendor_short", VendorId::Deepseek.short_name().to_string()),
         // Cross-vendor aliases — DeepSeek has neither rate-limit windows nor a
         // spend denominator (`/user/balance` reports only money *remaining*),
         // so these percentages are structurally meaningless for this vendor.

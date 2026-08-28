@@ -9,7 +9,7 @@ use crate::pacing::PaceSeverity;
 use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -45,7 +45,10 @@ pub fn build_placeholders_with_plan(
     let monthly = window_values(usage.monthly.as_ref(), now);
 
     placeholders([
-        ("vendor_short", "ocg".to_string()),
+        (
+            "vendor_short",
+            VendorId::OpenCodeGo.short_name().to_string(),
+        ),
         ("plan", plan.clone()),
         ("ocg_plan", plan),
         ("session_pct", rolling.percent.clone()),

@@ -11,7 +11,7 @@ use crate::pango::{color_span, escape, severity_color};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
 use crate::usage::GrokSnapshot;
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -21,7 +21,7 @@ pub const DEFAULT_FORMAT: &str = "{grok_balance}";
 pub fn build_placeholders(snap: &GrokSnapshot) -> HashMap<&'static str, String> {
     placeholders(vec![
         ("icon", "󰇷".to_string()),
-        ("vendor_short", "grk".to_string()),
+        ("vendor_short", VendorId::Grok.short_name().to_string()),
         ("session_pct", "0".to_string()),
         ("session_reset", "—".to_string()),
         ("weekly_pct", "0".to_string()),

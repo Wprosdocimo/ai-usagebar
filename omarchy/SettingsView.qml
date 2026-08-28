@@ -15,6 +15,7 @@ Column {
   property color urgent: Color.urgent
   property string fontFamily: Style.font.family
   property bool showValue: true
+  property bool showProvider: false
   readonly property color dim: Qt.darker(foreground, 1.45)
 
   property var snapshot: ({ primary_choices: [], keys: [] })
@@ -37,6 +38,7 @@ Column {
   signal fallbackRequested()
   signal nousLoginRequested()
   signal showValueRequested(bool enabled)
+  signal showProviderRequested(bool enabled)
   signal closeRequested()
 
   spacing: Style.space(12)
@@ -221,6 +223,16 @@ Column {
       fontFamily: root.fontFamily
       enabled: !root.saving
       onClicked: root.showValueRequested(!root.showValue)
+    }
+    Toggle {
+      width: parent.width
+      label: "Show provider name in the top bar"
+      description: "Turn this on to prefix the bar entry with the provider's short code — cld, gpt, zai, agy — the way Waybar's {vendor_short} does. Off by default. Applies immediately."
+      checked: root.showProvider
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      enabled: !root.saving
+      onClicked: root.showProviderRequested(!root.showProvider)
     }
   }
 
