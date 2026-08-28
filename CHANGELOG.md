@@ -15,12 +15,12 @@ Each release is also published at
   **Show provider name in the top bar** — a new opt-in toggle beside the
   existing usage-value one, or `omarchy bar set akitaonrails.ai-usagebar
   showProvider true --json` — prefixes the label with the provider's
-  three-letter code, the same one Waybar's `{vendor_short}` prints
-  (`󰚩  cld 29%`, `󰚩  gpt 95%`). It matters most on a bar that cycles several
-  providers, where the percentage alone never said whose it was. Off by
-  default, so an existing bar entry keeps the label it has today; with the
-  usage value turned off the entry reads `󰚩  cld`, and a vertical bar still
-  shows the icon alone.
+  three-letter code, the same one Waybar's `{vendor_short}` prints, so the
+  entry reads `cld 29%` or `gpt 95%` after the icon. It matters most on a bar
+  that cycles several providers, where the percentage alone never said whose
+  it was. Off by default, so an existing bar entry keeps the label it has
+  today; with the usage value turned off the entry keeps the icon and the
+  code alone, and a vertical bar still shows the icon alone.
 - `ai-usagebar usage --json` reports each entry's `short_name`. It is the field
   the toggle above draws, and it is additive like the rest of the report.
 

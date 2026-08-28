@@ -108,9 +108,9 @@ changes provider fetching.
 entry, so the codes never fork from Waybar's `{vendor_short}`: `cld 29%`,
 `gpt 95%`, `agy 81%`. Every account of one provider shares that provider's
 code — the panel and tooltip remain the place that tells `Claude · work` from
-`Claude · personal`. With both toggles on the bar reads `󰚩  cld 29%`; with
-`showValue` off it reads `󰚩  cld`. A vertical bar has room for neither and
-keeps showing the icon alone. Against an `ai-usagebar` older than the
+`Claude · personal`. With both toggles on the bar reads icon + `cld 29%`; with
+`showValue` off it is the icon and `cld`. A vertical bar has room for neither
+and keeps showing the icon alone. Against an `ai-usagebar` older than the
 `short_name` field the tag falls back to the entry id's provider half
 (`anthropic 29%`) until the binary is updated.
 
