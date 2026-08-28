@@ -85,6 +85,7 @@ function normalizeEntry(raw) {
     id: id,
     name: cleanText(raw.name, 240),
     display_name: cleanText(raw.display_name, 240),
+    short_name: cleanText(raw.short_name, 24),
     plan: cleanText(raw.plan, 240),
     status: error !== "" || raw.status === "error" ? "error" : "ready",
     error: error,
@@ -123,6 +124,16 @@ function providerName(entry) {
   var title = cleanText(entry.display_name || entry.name, 240).trim()
   if (title === "") title = baseProvider(entry.id).replace(/_/g, " ") || "AI usage"
   return autoTextSafe(title)
+}
+
+// The Waybar-style provider tag. `VendorId::short_name` in Rust owns the codes
+// and ships them as `short_name`; a binary older than that field has none, so
+// the machine id's vendor half stands in rather than a table living here.
+function providerShort(entry) {
+  if (!entry) return ""
+  var code = cleanText(entry.short_name, 24).trim()
+  if (code === "") code = baseProvider(entry.id).replace(/_/g, "-")
+  return autoTextSafe(code).trim()
 }
 
 function filteredEntries(entries, configuredProvider) {
@@ -189,14 +200,23 @@ function booleanSetting(value, fallback) {
   return fallback === true
 }
 
-function barLabel(alarming, vertical, showValue, loading, hasEntry, summaryText) {
+// `providerLabel` is already resolved by the caller: empty when the opt-in
+// provider switch is off, so the icon-and-value label is unchanged for everyone
+// who never turns it on. A vertical bar has no width for either field and
+// keeps showing the icon alone.
+function barLabel(alarming, vertical, showValue, loading, hasEntry, summaryText,
+                  providerLabel) {
   var icon = "󰚩"
   if (vertical) return alarming ? "󰅙" : icon
   if (loading && !hasEntry) return icon + "  …"
   if (!hasEntry) return alarming ? "󰅙" : icon
-  if (!showValue) return icon
-  var summary = autoTextSafe(summaryText).trim()
-  return summary === "" ? icon : icon + "  " + summary
+  var provider = autoTextSafe(providerLabel).trim()
+  var summary = showValue ? autoTextSafe(summaryText).trim() : ""
+  if (provider === "") return summary === "" ? icon : icon + "  " + summary
+  // One space between tag and value, matching Waybar's
+  // `{vendor_short} {session_pct}%`; the wider gap stays next to the icon.
+  return summary === "" ? icon + "  " + provider
+    : icon + "  " + provider + " " + summary
 }
 
 function headline(entry) {

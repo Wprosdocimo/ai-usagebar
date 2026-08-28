@@ -185,6 +185,33 @@ impl VendorId {
         }
     }
 
+    /// Compact three-letter code for the bar. This is the single source for
+    /// `{vendor_short}` in every renderer, the `usage --json` `short_name`
+    /// field, and any frontend that wants a Waybar-style provider tag; a
+    /// second copy in a placeholder map or a QML file is how the table forks.
+    pub const fn short_name(self) -> &'static str {
+        match self {
+            VendorId::Anthropic => "cld",
+            VendorId::AnthropicApi => "aac",
+            VendorId::Openai => "gpt",
+            VendorId::Zai => "zai",
+            VendorId::Openrouter => "opr",
+            VendorId::Deepseek => "dsk",
+            VendorId::Kimi => "kmi",
+            VendorId::Kilo => "klo",
+            VendorId::Novita => "nvt",
+            VendorId::Moonshot => "msh",
+            VendorId::Grok => "grk",
+            VendorId::Supergrok => "sgk",
+            VendorId::Antigravity => "agy",
+            VendorId::Cursor => "cur",
+            VendorId::Minimax => "mmx",
+            VendorId::Kiro => "kir",
+            VendorId::NousResearch => "nrs",
+            VendorId::OpenCodeGo => "ocg",
+        }
+    }
+
     pub fn all() -> &'static [VendorId] {
         &[
             VendorId::Anthropic,
@@ -258,6 +285,28 @@ mod tests {
         assert_eq!(VendorId::Anthropic.display_name(), "Claude");
         assert_eq!(VendorId::Openai.display_name(), "Codex");
         assert_eq!(VendorId::Zai.display_name(), "Z.AI");
+    }
+
+    /// `{vendor_short}` is a documented format placeholder and now also rides
+    /// the `usage --json` report, so a duplicate or a re-typed code would make
+    /// two providers indistinguishable in a bar that shows nothing else.
+    #[test]
+    fn every_vendor_short_name_is_a_unique_three_letter_code() {
+        let mut seen = std::collections::BTreeSet::new();
+        for vendor in VendorId::all() {
+            let short = vendor.short_name();
+            assert_eq!(short.len(), 3, "{} is not three letters", vendor.slug());
+            assert!(
+                short.chars().all(|c| c.is_ascii_lowercase()),
+                "{} is not lowercase ascii",
+                vendor.slug()
+            );
+            assert!(seen.insert(short), "{short} is used by two vendors");
+        }
+        assert_eq!(VendorId::Anthropic.short_name(), "cld");
+        assert_eq!(VendorId::Openai.short_name(), "gpt");
+        assert_eq!(VendorId::Zai.short_name(), "zai");
+        assert_eq!(VendorId::Antigravity.short_name(), "agy");
     }
 
     #[test]

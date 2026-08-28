@@ -12,7 +12,7 @@ use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
 use crate::usage::AnthropicApiSnapshot;
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -37,7 +37,10 @@ pub fn build_placeholders(snap: &AnthropicApiSnapshot) -> HashMap<&'static str, 
     let pct = snap.pct().unwrap_or(0);
     placeholders(vec![
         ("icon", "󰢗".to_string()),
-        ("vendor_short", "aac".to_string()),
+        (
+            "vendor_short",
+            VendorId::AnthropicApi.short_name().to_string(),
+        ),
         // Cross-vendor aliases — spend% maps to the session/weekly slots.
         ("session_pct", pct.to_string()),
         ("session_reset", "—".to_string()),
