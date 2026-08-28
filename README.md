@@ -211,7 +211,7 @@ come from environment variables or `config.toml`.
 | Z.AI | API key (`ZAI_API_KEY` env or `[zai] api_key` in config) | Set either. |
 | OpenRouter | API key (`OPENROUTER_API_KEY` env or `[openrouter] api_key` in config) | Set either. Named keys are supported. |
 | DeepSeek | API key (`DEEPSEEK_API_KEY` or config) | Set either and opt in. |
-| Kimi | API key (`KIMI_API_KEY` or config) | Set either and opt in. |
+| Kimi | Existing Kimi Code CLI login **or** API key (`KIMI_API_KEY` or config) | Opt in, then either log in with `kimi` (nothing to paste) or set an API key, which wins when present. A Kimi For Coding subscription can issue one at kimi.com/code/console. |
 | Kilo | API key (`KILO_API_KEY` env or `[kilo] api_key` in config) | Set either. Opt-in. For a team balance, also set `[kilo] organization_id`; omit it for the personal balance. |
 | Novita | API key (`NOVITA_API_KEY` env or `[novita] api_key` in config) | Set either. Opt-in. |
 | Moonshot | API key (`MOONSHOT_API_KEY` or config) | Opt in. Set region `cn` for CNY; `global` uses USD. |
@@ -276,6 +276,11 @@ installs are unaffected until you opt in. Use either method:
 
 The primary-vendor selector only offers vendors that are currently enabled, so a
 vendor you haven't opted into cannot be set as primary.
+
+Vendors that authenticate through a local login rather than a key — Cursor,
+Kiro CLI, SuperGrok, Antigravity, and Kimi when you have a Kimi For Coding
+subscription — have no key to save, so enable them with `enabled = true` in
+`config.toml`.
 
 ### Credential resolution order (for API-key vendors)
 

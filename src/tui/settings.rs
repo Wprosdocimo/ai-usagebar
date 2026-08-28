@@ -2,7 +2,10 @@
 //! the primary vendor and paste an API key for any key-authenticated vendor
 //! (including Z.AI, Kimi, MiniMax, and the balance vendors) without hand-editing
 //! config.toml. Anthropic, OpenAI, Cursor, and Antigravity authenticate through
-//! local product state, so they have no key field here.
+//! local product state, so they have no key field here. Kimi keeps its key
+//! field because a platform key is still one of its two credentials, but a
+//! subscriber whose credential is the Kimi Code CLI login has nothing to paste
+//! and enables `[kimi]` in config.toml instead.
 //!
 //! Persistence uses `toml_edit` so the existing config keeps its comments,
 //! whitespace, and unrelated fields. Writing a key also flips that vendor's
