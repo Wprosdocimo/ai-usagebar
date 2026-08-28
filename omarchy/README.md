@@ -46,7 +46,9 @@ omarchy plugin remove akitaonrails.ai-usagebar
 - Panel: click the gear or press `s` to open the native QML settings page.
   Its **Show usage value in the top bar** toggle switches between the normal
   icon-and-value label and a compact icon-only label without hiding panel or
-  tooltip details.
+  tooltip details. Its **Show provider name in the top bar** toggle adds the
+  provider's three-letter code in front of that value — the same code Waybar's
+  `{vendor_short}` prints — and is off by default.
   `h`/`l` or Left/Right switches provider, `j`/`k` or Up/Down scrolls, `r`,
   Enter, or Space refreshes, Tab moves to the neighboring bar panel, and Esc
   closes.
@@ -91,12 +93,26 @@ omarchy bar set akitaonrails.ai-usagebar refreshIntervalSec 300 --json
 
 # Booleans also need --json. The default is true for drop-in compatibility.
 omarchy bar set akitaonrails.ai-usagebar showValue false --json
+
+# Opt in to the Waybar-style provider tag. The default is false.
+omarchy bar set akitaonrails.ai-usagebar showProvider true --json
 ```
 
 The refresh interval is clamped to 30–3600 seconds. The `provider` setting
 prefers an exact entry id; if there is no exact match, a base id such as
-`anthropic` selects all accounts for that provider. `showValue` changes only
-the top-bar label; it never hides report details or changes provider fetching.
+`anthropic` selects all accounts for that provider. `showValue` and
+`showProvider` change only the top-bar label; neither hides report details or
+changes provider fetching.
+
+`showProvider` draws the `short_name` the Rust report ships for the selected
+entry, so the codes never fork from Waybar's `{vendor_short}`: `cld 29%`,
+`gpt 95%`, `agy 81%`. Every account of one provider shares that provider's
+code — the panel and tooltip remain the place that tells `Claude · work` from
+`Claude · personal`. With both toggles on the bar reads icon + `cld 29%`; with
+`showValue` off it is the icon and `cld`. A vertical bar has room for neither
+and keeps showing the icon alone. Against an `ai-usagebar` older than the
+`short_name` field the tag falls back to the entry id's provider half
+(`anthropic 29%`) until the binary is updated.
 
 ## Development checks
 

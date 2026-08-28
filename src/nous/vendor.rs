@@ -4,10 +4,12 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
+use crate::vendor::VendorId;
+
 use super::types::AccountSnapshot;
 
 pub const DISPLAY_NAME: &str = "Nous Research";
-pub const VENDOR_SHORT: &str = "nrs";
+pub const VENDOR_SHORT: &str = VendorId::NousResearch.short_name();
 pub const DEFAULT_FORMAT: &str = "{nous_pct}% · {nous_renewal}";
 pub const NEUTRAL_UNAVAILABLE: &str = "—";
 

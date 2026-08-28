@@ -11,6 +11,36 @@ Each release is also published at
 
 ### Added
 
+- Multiple OpenAI (Codex) logins, via `[[openai.accounts]]` (#134). Each entry
+  is a label plus its own `codex_auth_path`, the same shape
+  `[[anthropic.accounts]]` uses and for the same reason: Codex is an OAuth
+  vendor, so an account is a credential file and refreshes write back into
+  whichever one they came from. Named accounts are selected with
+  `--account <label>` and cached separately under
+  `~/.cache/ai-usagebar/openai/<label>`, so two subscriptions can never serve
+  each other's usage. A config without the array behaves exactly as before.
+
+- The Omarchy Quattro plugin can show which provider the bar entry is about.
+  **Show provider name in the top bar** — a new opt-in toggle beside the
+  existing usage-value one, or `omarchy bar set akitaonrails.ai-usagebar
+  showProvider true --json` — prefixes the label with the provider's
+  three-letter code, the same one Waybar's `{vendor_short}` prints, so the
+  entry reads `cld 29%` or `gpt 95%` after the icon. It matters most on a bar
+  that cycles several providers, where the percentage alone never said whose
+  it was. Off by default, so an existing bar entry keeps the label it has
+  today; with the usage value turned off the entry keeps the icon and the
+  code alone, and a vertical bar still shows the icon alone.
+- `ai-usagebar usage --json` reports each entry's `short_name`. It is the field
+  the toggle above draws, and it is additive like the rest of the report.
+
+### Changed
+
+- `{vendor_short}` is now `VendorId::short_name` for every provider instead of
+  a literal repeated in eighteen renderers, so the report, the placeholder and
+  the native panels cannot drift apart. The codes themselves are unchanged, and
+  a test now rejects a duplicate or a non-three-letter one.
+- The `{vendor_short}` reference table lists Nous Research (`nrs`) and OpenCode
+  Go (`ocg`), which both shipped codes without ever being written down.
 - Kimi accepts a **Kimi For Coding subscription** as a credential: when no
   `KIMI_API_KEY` (or inline `api_key`) is set, the vendor uses the OAuth
   session the Kimi Code CLI already stored at

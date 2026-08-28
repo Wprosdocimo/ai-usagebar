@@ -11,7 +11,7 @@ use crate::pango::{color_span, escape, severity_color};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
 use crate::usage::NovitaSnapshot;
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -21,7 +21,7 @@ pub const DEFAULT_FORMAT: &str = "{nv_balance}";
 pub fn build_placeholders(snap: &NovitaSnapshot) -> HashMap<&'static str, String> {
     placeholders(vec![
         ("icon", "󰄔".to_string()),
-        ("vendor_short", "nvt".to_string()),
+        ("vendor_short", VendorId::Novita.short_name().to_string()),
         // Cross-vendor aliases — Novita has no rate-limit windows.
         ("session_pct", "0".to_string()),
         ("session_reset", "—".to_string()),

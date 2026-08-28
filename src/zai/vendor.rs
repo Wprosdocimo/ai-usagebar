@@ -11,7 +11,7 @@ use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, WindowRow, push_window_with_row, render_bordered};
 use crate::usage::{UsageWindow, ZaiSnapshot};
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -46,7 +46,7 @@ fn build_placeholders_with_tolerance(
     let mcp = window_pacing(snap.mcp.as_ref(), pace_tolerance, now);
     placeholders(vec![
         ("icon", "󰚩".to_string()),
-        ("vendor_short", "zai".to_string()),
+        ("vendor_short", VendorId::Zai.short_name().to_string()),
         // Cross-vendor aliases for scroll-cycle friendly formats.
         ("session_pct", session_pct.to_string()),
         (

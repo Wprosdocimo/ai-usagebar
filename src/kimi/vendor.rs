@@ -11,7 +11,7 @@ use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, WindowRow, push_window_with_row, render_bordered};
 use crate::usage::{KimiSnapshot, UsageWindow};
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::{FetchOutcome, SCHEMA_DRIFT_MESSAGE};
@@ -66,7 +66,7 @@ pub fn build_placeholders(
     let window_pct = snap.window_pct();
     placeholders(vec![
         ("icon", "󰚩".to_string()),
-        ("vendor_short", "kmi".to_string()),
+        ("vendor_short", VendorId::Kimi.short_name().to_string()),
         // Cross-vendor aliases.
         ("plan", plan.to_string()),
         ("weekly_pct", weekly_pct.to_string()),

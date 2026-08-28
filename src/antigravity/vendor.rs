@@ -18,7 +18,7 @@ use crate::pango::{color_span, escape, severity_color};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, push_window, render_bordered};
 use crate::usage::{AntigravitySnapshot, UsageWindow};
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 pub const DEFAULT_FORMAT: &str = "{icon} {session_pct}% · {weekly_pct}%";
@@ -78,7 +78,10 @@ pub fn build_placeholders(
 
     placeholders(vec![
         ("icon", "󰧑".to_string()),
-        ("vendor_short", "agy".to_string()),
+        (
+            "vendor_short",
+            VendorId::Antigravity.short_name().to_string(),
+        ),
         ("plan", snap.plan.clone()),
         // Naming the primary rows is what puts the native dropdown into its
         // grouped layout; no other vendor emits these.

@@ -12,7 +12,7 @@ use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, push_window, render_bordered};
 use crate::usage::{OpenAiSnapshot, OpenAiSource, UsageWindow};
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -53,7 +53,7 @@ pub fn build_placeholders(
 
     placeholders(vec![
         ("icon", "󱢆".to_string()),
-        ("vendor_short", "gpt".to_string()),
+        ("vendor_short", VendorId::Openai.short_name().to_string()),
         // Cross-vendor aliases — same names work across all vendors so a
         // single `--format '{vendor_short} {session_pct}% · {session_reset}'`
         // renders correctly during scroll-cycle.

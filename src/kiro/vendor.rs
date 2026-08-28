@@ -13,7 +13,7 @@ use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, render_bordered};
 use crate::usage::KiroSnapshot;
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -42,7 +42,7 @@ pub fn build_placeholders(
     let reset = countdown::format(snap.reset_at, now);
     placeholders(vec![
         ("icon", DEFAULT_ICON.to_string()),
-        ("vendor_short", "kir".to_string()),
+        ("vendor_short", VendorId::Kiro.short_name().to_string()),
         // Cross-vendor aliases: one pool, so it fills both generic slots.
         ("plan", snap.plan.clone()),
         ("session_pct", pct.to_string()),

@@ -16,7 +16,7 @@ use crate::pango::{color_span, escape, severity_color, severity_for};
 use crate::theme::Theme;
 use crate::tooltip::{Line as TooltipLine, WindowRow, push_window_with_row, render_bordered};
 use crate::usage::{MinimaxSnapshot, UsageWindow};
-use crate::vendor::{RenderOpts, VendorOutcome};
+use crate::vendor::{RenderOpts, VendorId, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
 use super::fetch::FetchOutcome;
@@ -68,7 +68,7 @@ fn build_placeholders_with_tolerance(
 
     placeholders(vec![
         ("icon", "󰚩".to_string()),
-        ("vendor_short", "mmx".to_string()),
+        ("vendor_short", VendorId::Minimax.short_name().to_string()),
         // Cross-vendor aliases — what the desktop surfaces read.
         ("plan", snap.plan.clone()),
         ("session_pct", session_pct.to_string()),
