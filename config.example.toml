@@ -100,6 +100,15 @@ enabled = true
 # consumes it: OpenAI usage comes only from Codex OAuth. Left commented out so
 # it isn't mistaken for a working alternative to `codex login`.
 # admin_key_env = "OPENAI_ADMIN_KEY"
+# Extra Codex logins, each its own auth.json — the same shape as
+# [[anthropic.accounts]], because Codex is an OAuth vendor too. Create a second
+# login with `CODEX_HOME=~/.codex-work codex login` and point at what it wrote.
+# Named accounts get isolated caches (~/.cache/ai-usagebar/openai/<label>) and
+# are selected with `--account <label>`; without it you get the default login
+# above, exactly as before.
+# [[openai.accounts]]
+# label = "work"
+# codex_auth_path = "~/.config/ai-usagebar/accounts/work-codex/auth.json"
 
 [zai]
 enabled = true

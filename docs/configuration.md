@@ -125,3 +125,17 @@ enabled = true             # disabled by default; enable once you've run `kiro-c
 For more than one OpenRouter key, see the
 [OpenRouter account guide](openrouter-accounts.md). The existing singular
 `[openrouter]` key remains the default account and needs no migration.
+
+For more than one Codex login, add `[[openai.accounts]]` — a label and that
+login's own `auth.json`, the same shape `[[anthropic.accounts]]` uses:
+
+```toml
+[[openai.accounts]]
+label = "work"
+codex_auth_path = "~/.config/ai-usagebar/accounts/work-codex/auth.json"
+```
+
+Create the second login with `CODEX_HOME=~/.codex-work codex login` and point
+`codex_auth_path` at the file it writes. Select it with `--account work`; each
+account caches separately under `~/.cache/ai-usagebar/openai/<label>`. The
+singular `codex_auth_path` remains the default account and needs no migration.

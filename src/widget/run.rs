@@ -582,13 +582,25 @@ async fn anthropic_api_output(cli: &Cli, config: &Config) -> Result<WaybarOutput
     ))
 }
 
+/// Resolve a Codex login and its cache as one identity, the way
+/// [`openrouter_target`] does for a key. The default login keeps the historical
+/// vendor-root cache; each named account is isolated below `openai/<label>`, so
+/// two ChatGPT subscriptions never serve each other's usage from a warm cache.
+fn openai_target(cli: &Cli, config: &Config) -> Result<(std::path::PathBuf, Cache)> {
+    let label = cli.account.as_deref();
+    let creds_path = config.openai.resolve_auth_path(label)?;
+    let cache = match (cli.cache_dir.as_deref(), label) {
+        (Some(root), Some(label)) => Cache::at(root.join("openai").join(label)),
+        (Some(root), None) => Cache::at(root.join("openai")),
+        (None, Some(label)) => Cache::for_vendor_account("openai", label)?,
+        (None, None) => Cache::for_vendor("openai")?,
+    };
+    Ok((creds_path, cache))
+}
+
 async fn openai_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
     let client = http_client()?;
-    let cache = vendor_cache(cli, "openai")?;
-    let creds_path = match config.openai.codex_auth_path.as_deref() {
-        Some(p) => p.to_path_buf(),
-        None => openai::creds::default_path()?,
-    };
+    let (creds_path, cache) = openai_target(cli, config)?;
     let endpoints = openai::fetch::Endpoints::default();
     let outcome =
         match openai::fetch_snapshot(&client, &creds_path, &cache, &endpoints, DEFAULT_TTL).await {

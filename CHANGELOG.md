@@ -11,6 +11,15 @@ Each release is also published at
 
 ### Added
 
+- Multiple OpenAI (Codex) logins, via `[[openai.accounts]]` (#134). Each entry
+  is a label plus its own `codex_auth_path`, the same shape
+  `[[anthropic.accounts]]` uses and for the same reason: Codex is an OAuth
+  vendor, so an account is a credential file and refreshes write back into
+  whichever one they came from. Named accounts are selected with
+  `--account <label>` and cached separately under
+  `~/.cache/ai-usagebar/openai/<label>`, so two subscriptions can never serve
+  each other's usage. A config without the array behaves exactly as before.
+
 - The Omarchy Quattro plugin can show which provider the bar entry is about.
   **Show provider name in the top bar** — a new opt-in toggle beside the
   existing usage-value one, or `omarchy bar set akitaonrails.ai-usagebar

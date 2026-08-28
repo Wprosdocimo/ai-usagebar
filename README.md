@@ -540,6 +540,27 @@ If you'd rather see them all at once:
 
 > Why 300s? The Anthropic and OpenAI Codex endpoints are undocumented and rate-limit aggressively below ~300s. The cache TTL is 60s so multi-monitor instances coexist, but Waybar's polling interval should stay at 300s.
 
+### Multiple Codex accounts
+
+Two ChatGPT subscriptions, each its own login:
+
+```bash
+CODEX_HOME=~/.codex-work codex login
+```
+
+```toml
+[[openai.accounts]]
+label = "work"
+codex_auth_path = "~/.codex-work/auth.json"
+```
+
+```bash
+ai-usagebar --vendor openai --account work
+```
+
+Each account keeps its own cache and refreshes independently. Without
+`--account`, the default `codex_auth_path` login is used exactly as before.
+
 ### Multiple Claude accounts
 
 Named accounts appear as separate TUI tabs and report entries. The recommended

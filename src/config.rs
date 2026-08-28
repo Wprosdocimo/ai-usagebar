@@ -453,6 +453,12 @@ pub struct OpenAiConfig {
     pub enabled: bool,
     /// Override the Codex auth file path (defaults to `~/.codex/auth.json`).
     pub codex_auth_path: Option<PathBuf>,
+    /// Extra Codex logins, each its own `auth.json`. Same shape as
+    /// [`AnthropicAccount`] and for the same reason: Codex is an OAuth vendor,
+    /// so an account *is* a credential file, and `openai::creds::write_back`
+    /// refreshes into whichever one it read.
+    #[serde(default)]
+    pub accounts: Vec<OpenAiAccount>,
     /// Reserved, and inert: names the env var an API-key-only path *would*
     /// read (admin key → `/v1/organization/costs`). Nothing consumes it —
     /// OpenAI usage comes solely from Codex OAuth. Kept because that path is
@@ -463,11 +469,56 @@ pub struct OpenAiConfig {
     pub admin_key_env: String,
 }
 
+/// One extra Codex login.
+///
+/// ```toml
+/// [[openai.accounts]]
+/// label = "work"
+/// codex_auth_path = "~/.config/ai-usagebar/accounts/work-codex/auth.json"
+/// ```
+///
+/// A second login is made with `CODEX_HOME=~/.codex-work codex login`; point
+/// `codex_auth_path` at the `auth.json` it writes.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OpenAiAccount {
+    /// Stable name used on the CLI (`--account <label>`) and as the cache
+    /// subdir (`~/.cache/ai-usagebar/openai/<label>`).
+    pub label: String,
+    /// Codex OAuth file for this account. Refreshed tokens are written back
+    /// here, so each account keeps itself alive independently.
+    pub codex_auth_path: PathBuf,
+}
+
+impl OpenAiConfig {
+    /// The auth file for `label`, or the singular/default one when `label` is
+    /// `None`. An unknown label is an error rather than a silent fall back to
+    /// the default account, which would report the wrong login's usage.
+    pub fn resolve_auth_path(&self, label: Option<&str>) -> Result<PathBuf> {
+        let Some(label) = label else {
+            return match &self.codex_auth_path {
+                Some(path) => Ok(path.clone()),
+                None => crate::openai::creds::default_path(),
+            };
+        };
+        self.accounts
+            .iter()
+            .find(|account| account.label == label)
+            .map(|account| account.codex_auth_path.clone())
+            .ok_or_else(|| {
+                AppError::Credentials(format!(
+                    "no OpenAI account named {label:?}. Add it under \
+                     [[openai.accounts]], or drop --account to use the default login."
+                ))
+            })
+    }
+}
+
 impl Default for OpenAiConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             codex_auth_path: None,
+            accounts: Vec::new(),
             admin_key_env: "OPENAI_ADMIN_KEY".to_string(),
         }
     }
@@ -1232,6 +1283,73 @@ mod tests {
         f.write_all(s.as_bytes()).unwrap();
         f.flush().unwrap();
         f
+    }
+
+    /// The back-compat guarantee #134 asks for: a config with no
+    /// `[[openai.accounts]]` resolves exactly what it resolved before, whether
+    /// it sets `codex_auth_path` or leaves it to the default.
+    #[test]
+    fn openai_without_accounts_resolves_the_singular_path() {
+        let explicit = OpenAiConfig {
+            codex_auth_path: Some(PathBuf::from("/tmp/codex/auth.json")),
+            ..OpenAiConfig::default()
+        };
+        assert_eq!(
+            explicit.resolve_auth_path(None).unwrap(),
+            PathBuf::from("/tmp/codex/auth.json")
+        );
+
+        let bare = OpenAiConfig::default();
+        assert_eq!(
+            bare.resolve_auth_path(None).unwrap(),
+            crate::openai::creds::default_path().unwrap(),
+            "no codex_auth_path must still mean ~/.codex/auth.json"
+        );
+    }
+
+    /// Each named account resolves its own file, and the default login is still
+    /// reachable alongside them.
+    #[test]
+    fn openai_named_accounts_resolve_their_own_auth_file() {
+        let config: Config = toml::from_str(
+            r#"
+            [openai]
+            codex_auth_path = "/tmp/personal/auth.json"
+            [[openai.accounts]]
+            label = "work"
+            codex_auth_path = "/tmp/work/auth.json"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.openai.resolve_auth_path(Some("work")).unwrap(),
+            PathBuf::from("/tmp/work/auth.json")
+        );
+        assert_eq!(
+            config.openai.resolve_auth_path(None).unwrap(),
+            PathBuf::from("/tmp/personal/auth.json")
+        );
+    }
+
+    /// An unknown label must fail rather than quietly fall back to the default
+    /// login — reporting the wrong subscription's usage is worse than an error.
+    #[test]
+    fn an_unknown_openai_account_is_an_error_not_a_fallback() {
+        let config = OpenAiConfig {
+            codex_auth_path: Some(PathBuf::from("/tmp/personal/auth.json")),
+            accounts: vec![OpenAiAccount {
+                label: "work".into(),
+                codex_auth_path: PathBuf::from("/tmp/work/auth.json"),
+            }],
+            ..OpenAiConfig::default()
+        };
+        let err = config
+            .resolve_auth_path(Some("nope"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nope"), "{err}");
+        assert!(err.contains("[[openai.accounts]]"), "{err}");
     }
 
     #[test]
