@@ -488,9 +488,9 @@ pub struct OpenCodeGoConfig {
     pub api_key: Option<String>,
 }
 
-/// Command Code reads the OAuth credential whichever local agent harness
-/// already wrote — the official CLI, pi, or omp — so it has no API key of its
-/// own. `auth_paths` overrides that search list for a non-standard install.
+/// Command Code reads the OAuth credential from the official CLI or pi, so it
+/// has no API key of its own. `auth_paths` overrides that search list for a
+/// non-standard install.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CommandCodeConfig {

@@ -261,10 +261,10 @@ the bar and the meters show are derived from those figures.
 Command Code appears in the provider selector but not in the key list, the same
 way Claude, Codex, Cursor and Kiro do — enable `[commandcode]` and it works.
 
-Credentials are reused, never issued. Whichever local harness is signed in
-supplies the OAuth token — `~/.commandcode/auth.json` from the official CLI
-first, then `~/.omp/agent/auth.json`, then `~/.pi/agent/auth.json` — and
-`COMMANDCODE_API_KEY` outranks all three. **The token is only ever read.**
+Credentials are reused, never issued. The OAuth token comes from
+`~/.commandcode/auth.json` from the official CLI first, then
+`~/.pi/agent/auth.json`; `COMMANDCODE_API_KEY` outranks both. **The token is
+only ever read.**
 Refreshing it belongs to the CLI that owns the file, and writing back from here
 would race the harnesses that share it; an expired token is reported as expired
 instead. Set `[commandcode] auth_paths` to search somewhere else entirely.

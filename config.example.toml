@@ -301,9 +301,8 @@ enabled = false
 # Override where the credential is looked for. Leave commented out to search,
 # in order:
 #   ~/.commandcode/auth.json   (official command-code CLI)
-#   ~/.omp/agent/auth.json
 #   ~/.pi/agent/auth.json
-# COMMANDCODE_API_KEY in the environment outranks all of them.
+# COMMANDCODE_API_KEY in the environment outranks both.
 # auth_paths = ["~/.commandcode/auth.json"]
 
 [opencode-go]

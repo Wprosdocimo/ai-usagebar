@@ -37,10 +37,11 @@ Each release is also published at
   the 5-hour and weekly rolling spend windows — priced in dollars, as Command
   Code meters spend rather than tokens — plus the plan and the monthly credit
   remaining. Like Cursor and Kiro CLI it needs no key of its own: it reuses the
-  OAuth credential whichever local harness is already signed in
-  (`~/.commandcode/auth.json`, then omp's and pi's), with `COMMANDCODE_API_KEY`
-  as an override. The credential is only ever read — refreshing it belongs to
-  the CLI that owns the file — so an expired token is reported as expired
+  OAuth credential from either the official CLI or pi
+  (`~/.commandcode/auth.json`, then `~/.pi/agent/auth.json`), with
+  `COMMANDCODE_API_KEY` as an override. The credential is only ever read —
+  refreshing it belongs to the CLI that owns the file — so an expired token is
+  reported as expired
   rather than silently rewritten.
 
 ## [1.7.0] — 2026-08-25

@@ -14,11 +14,7 @@ use crate::cache::home_dir;
 use crate::error::{AppError, Result};
 
 /// Files searched in order; the first holding a live credential wins.
-pub const AUTH_FILES: &[&str] = &[
-    OFFICIAL_AUTH_FILE, // official command-code CLI
-    ".omp/agent/auth.json",
-    ".pi/agent/auth.json",
-];
+pub const AUTH_FILES: &[&str] = &[OFFICIAL_AUTH_FILE, ".pi/agent/auth.json"];
 
 /// The Command Code CLI's own file — the only one whose whole contents belong
 /// to Command Code. The others are shared harness keystores, which is why the
@@ -122,11 +118,15 @@ fn message_for(paths: &[PathBuf]) -> String {
             .ok()
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .and_then(|value| {
-                let object = value.as_object()?.clone();
+                let object = value.as_object()?;
+                let generic = path
+                    .ends_with(OFFICIAL_AUTH_FILE)
+                    .then(|| object.get("apiKey"))
+                    .flatten();
                 let found = CREDENTIAL_KEYS
                     .iter()
                     .filter_map(|key| object.get(*key))
-                    .chain(object.get("apiKey"))
+                    .chain(generic)
                     .filter_map(candidate)
                     .any(|found| found.expires_ms.is_some_and(is_past));
                 Some(found)
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_pi_and_omp_oauth_shape() {
+    fn reads_the_pi_oauth_shape() {
         let dir = tempfile::tempdir().unwrap();
         let path = write(
             dir.path(),
@@ -326,13 +326,33 @@ mod tests {
 
         let absent = resolve_from(None, &[dir.path().join("absent.json")]).unwrap_err();
         assert!(absent.to_string().contains("not signed in"), "{absent}");
+
+        let shared_dir = dir.path().join(".pi/agent");
+        std::fs::create_dir_all(&shared_dir).unwrap();
+        let unrelated = write(
+            &shared_dir,
+            "auth.json",
+            serde_json::json!({
+                "apiKey": {"access": "other", "expires": past_ms()}
+            }),
+        );
+        let signed_out = resolve_from(None, &[unrelated]).unwrap_err();
+        assert!(
+            signed_out.to_string().contains("not signed in"),
+            "an unrelated expired apiKey must not be treated as Command Code: {signed_out}"
+        );
     }
 
     #[test]
-    fn default_paths_cover_every_known_harness() {
+    fn default_paths_only_include_verified_credential_files() {
         let paths = default_paths().unwrap();
 
+        assert_eq!(
+            AUTH_FILES,
+            &[".commandcode/auth.json", ".pi/agent/auth.json"]
+        );
         assert_eq!(paths.len(), AUTH_FILES.len());
-        assert!(paths[0].ends_with(".commandcode/auth.json"));
+        assert!(paths[0].ends_with(AUTH_FILES[0]));
+        assert!(paths[1].ends_with(AUTH_FILES[1]));
     }
 }
