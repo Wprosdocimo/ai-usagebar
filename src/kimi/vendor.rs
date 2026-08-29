@@ -37,7 +37,9 @@ pub fn warning_kind(code: u16, message: &str) -> WarningKind {
     }
 }
 
-pub const DEFAULT_FORMAT: &str = "{kimi_weekly_pct}% · {kimi_weekly_reset}";
+/// Kimi has two independent quota percentages. Keep both on the individual
+/// widget in the same order as the detail panel: current 5h window, then 7d.
+pub const DEFAULT_FORMAT: &str = "5h {kimi_window_pct}% · 7d {kimi_weekly_pct}%";
 
 /// Kimi reports the weekly quota's reset instant but never its length; the
 /// subscription bucket rolls every 7 days.
@@ -306,18 +308,14 @@ mod tests {
     }
 
     #[test]
-    fn default_render_has_exactly_one_percent() {
+    fn default_render_has_one_percent_for_each_quota() {
         let snap = sample_snap();
         let outcome = sample_outcome(snap.clone());
         let out = render(&outcome, &snap, &Theme::default(), &opts(), now());
-        // "26%" should appear exactly once and there must be no double percent.
+        assert!(out.text.contains("15%"), "text: {}", out.text);
         assert!(out.text.contains("26%"), "text: {}", out.text);
-        assert!(
-            !out.text.contains("%%"),
-            "double percent in text: {}",
-            out.text
-        );
-        assert_eq!(out.text.matches('%').count(), 1, "text: {}", out.text);
+        assert!(!out.text.contains("%%"), "text: {}", out.text);
+        assert_eq!(out.text.matches('%').count(), 2, "text: {}", out.text);
     }
 
     #[test]
@@ -567,13 +565,12 @@ mod tests {
         }
     }
 
-    /// `{pct}% · {reset}` is what every other percentage vendor puts on the
-    /// bar; Kimi printed a bare `26%`.
+    /// Kimi's compact surface must not discard either independent quota.
     #[test]
-    fn default_bar_text_pairs_the_percentage_with_its_reset() {
+    fn default_bar_text_shows_the_rolling_and_weekly_quotas() {
         let snap = sample_snap();
         let outcome = sample_outcome(snap.clone());
         let out = render(&outcome, &snap, &Theme::default(), &opts(), now());
-        assert!(out.text.contains("26% · 4d 0h"), "{}", out.text);
+        assert!(out.text.contains("5h 15% · 7d 26%"), "{}", out.text);
     }
 }

@@ -617,13 +617,25 @@ async fn anthropic_api_output(cli: &Cli, config: &Config) -> Result<WaybarOutput
     ))
 }
 
+/// Resolve a Codex login and its cache as one identity, the way
+/// [`openrouter_target`] does for a key. The default login keeps the historical
+/// vendor-root cache; each named account is isolated below `openai/<label>`, so
+/// two ChatGPT subscriptions never serve each other's usage from a warm cache.
+fn openai_target(cli: &Cli, config: &Config) -> Result<(std::path::PathBuf, Cache)> {
+    let label = cli.account.as_deref();
+    let creds_path = config.openai.resolve_auth_path(label)?;
+    let cache = match (cli.cache_dir.as_deref(), label) {
+        (Some(root), Some(label)) => Cache::at(root.join("openai").join(label)),
+        (Some(root), None) => Cache::at(root.join("openai")),
+        (None, Some(label)) => Cache::for_vendor_account("openai", label)?,
+        (None, None) => Cache::for_vendor("openai")?,
+    };
+    Ok((creds_path, cache))
+}
+
 async fn openai_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
     let client = http_client()?;
-    let cache = vendor_cache(cli, "openai")?;
-    let creds_path = match config.openai.codex_auth_path.as_deref() {
-        Some(p) => p.to_path_buf(),
-        None => openai::creds::default_path()?,
-    };
+    let (creds_path, cache) = openai_target(cli, config)?;
     let endpoints = openai::fetch::Endpoints::default();
     let outcome =
         match openai::fetch_snapshot(&client, &creds_path, &cache, &endpoints, DEFAULT_TTL).await {
@@ -759,20 +771,22 @@ async fn deepseek_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
 }
 
 async fn kimi_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
-    let api_key = crate::config::resolve_api_key(
-        "Kimi",
-        &config.kimi.api_key_env,
-        config.kimi.api_key.as_deref(),
-    )?;
+    let (auth, endpoints) = kimi::resolve_auth(&config.kimi)?;
     let client = http_client()?;
     let cache = vendor_cache(cli, "kimi")?;
-    let endpoints = kimi::fetch::Endpoints::default();
-    let outcome =
-        match kimi::fetch_snapshot(&client, &api_key, &cache, &endpoints, DEFAULT_TTL).await {
-            Ok(o) => o,
-            Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
-            Err(e) => return Err(e),
-        };
+    let outcome = match kimi::fetch::fetch_snapshot_with_auth(
+        &client,
+        &auth,
+        &cache,
+        &endpoints,
+        DEFAULT_TTL,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
+        Err(e) => return Err(e),
+    };
 
     let theme = theme_from_cli(cli);
     let snap = outcome.snapshot.clone();

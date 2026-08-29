@@ -454,6 +454,12 @@ pub struct OpenAiConfig {
     pub enabled: bool,
     /// Override the Codex auth file path (defaults to `~/.codex/auth.json`).
     pub codex_auth_path: Option<PathBuf>,
+    /// Extra Codex logins, each its own `auth.json`. Same shape as
+    /// [`AnthropicAccount`] and for the same reason: Codex is an OAuth vendor,
+    /// so an account *is* a credential file, and `openai::creds::write_back`
+    /// refreshes into whichever one it read.
+    #[serde(default)]
+    pub accounts: Vec<OpenAiAccount>,
     /// Reserved, and inert: names the env var an API-key-only path *would*
     /// read (admin key → `/v1/organization/costs`). Nothing consumes it —
     /// OpenAI usage comes solely from Codex OAuth. Kept because that path is
@@ -464,11 +470,56 @@ pub struct OpenAiConfig {
     pub admin_key_env: String,
 }
 
+/// One extra Codex login.
+///
+/// ```toml
+/// [[openai.accounts]]
+/// label = "work"
+/// codex_auth_path = "~/.config/ai-usagebar/accounts/work-codex/auth.json"
+/// ```
+///
+/// A second login is made with `CODEX_HOME=~/.codex-work codex login`; point
+/// `codex_auth_path` at the `auth.json` it writes.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OpenAiAccount {
+    /// Stable name used on the CLI (`--account <label>`) and as the cache
+    /// subdir (`~/.cache/ai-usagebar/openai/<label>`).
+    pub label: String,
+    /// Codex OAuth file for this account. Refreshed tokens are written back
+    /// here, so each account keeps itself alive independently.
+    pub codex_auth_path: PathBuf,
+}
+
+impl OpenAiConfig {
+    /// The auth file for `label`, or the singular/default one when `label` is
+    /// `None`. An unknown label is an error rather than a silent fall back to
+    /// the default account, which would report the wrong login's usage.
+    pub fn resolve_auth_path(&self, label: Option<&str>) -> Result<PathBuf> {
+        let Some(label) = label else {
+            return match &self.codex_auth_path {
+                Some(path) => Ok(path.clone()),
+                None => crate::openai::creds::default_path(),
+            };
+        };
+        self.accounts
+            .iter()
+            .find(|account| account.label == label)
+            .map(|account| account.codex_auth_path.clone())
+            .ok_or_else(|| {
+                AppError::Credentials(format!(
+                    "no OpenAI account named {label:?}. Add it under \
+                     [[openai.accounts]], or drop --account to use the default login."
+                ))
+            })
+    }
+}
+
 impl Default for OpenAiConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             codex_auth_path: None,
+            accounts: Vec::new(),
             admin_key_env: "OPENAI_ADMIN_KEY".to_string(),
         }
     }
@@ -635,7 +686,18 @@ impl Default for DeepseekConfig {
 pub struct KimiConfig {
     pub enabled: bool,
     pub api_key_env: String,
+    /// Optional: with no key set, the vendor falls back to the Kimi Code CLI's
+    /// own OAuth login, which is what a subscriber already has locally.
     pub api_key: Option<String>,
+    /// Override for kimi-code's credential file (default
+    /// `~/.kimi-code/credentials/kimi-code.json`), mirroring `[cursor] db_path`
+    /// and `[kiro] db_path`. Useful with a relocated `KIMI_CODE_HOME`.
+    pub credentials_path: Option<PathBuf>,
+    /// `"auto"` follows kimi-code's own install marker (`~/.kimi-code/region`);
+    /// `"cn"` pins `api.kimi.com` / `auth.kimi.com`, `"global"` pins
+    /// `api.kimi.ai` / `auth.kimi.ai`. A token minted by one deployment means
+    /// nothing to the other, so this picks the instance, not a currency.
+    pub region: String,
 }
 
 impl Default for KimiConfig {
@@ -644,6 +706,8 @@ impl Default for KimiConfig {
             enabled: false,
             api_key_env: "KIMI_API_KEY".to_string(),
             api_key: None,
+            credentials_path: None,
+            region: "auto".to_string(),
         }
     }
 }
@@ -895,24 +959,29 @@ pub fn resolve_api_key(
     resolve_api_key_in_section(vendor_label, &section, env_var_name, inline)
 }
 
+/// The env-then-inline lookup without the "or fail" ending, for vendors where
+/// an absent API key is a legitimate state rather than an error — Kimi accepts
+/// a Kimi Code CLI subscription login instead.
+pub fn optional_api_key(env_var_name: &str, inline: Option<&str>) -> Option<String> {
+    if is_valid_env_var_name(env_var_name)
+        && let Ok(v) = std::env::var(env_var_name)
+        && !v.is_empty()
+    {
+        return Some(v);
+    }
+    inline.filter(|v| !v.is_empty()).map(str::to_string)
+}
+
 fn resolve_api_key_in_section(
     vendor_label: &str,
     section: &str,
     env_var_name: &str,
     inline: Option<&str>,
 ) -> crate::error::Result<String> {
+    if let Some(key) = optional_api_key(env_var_name, inline) {
+        return Ok(key);
+    }
     let valid_env_name = is_valid_env_var_name(env_var_name);
-    if valid_env_name
-        && let Ok(v) = std::env::var(env_var_name)
-        && !v.is_empty()
-    {
-        return Ok(v);
-    }
-    if let Some(v) = inline
-        && !v.is_empty()
-    {
-        return Ok(v.to_string());
-    }
     let advice = if valid_env_name {
         "set an API key in a valid environment variable or set `api_key`"
     } else {
@@ -970,6 +1039,7 @@ impl Config {
         expand_tilde_opt(&mut self.cursor.db_path);
         expand_tilde_opt(&mut self.cursor.agent_auth_path);
         expand_tilde_opt(&mut self.kiro.db_path);
+        expand_tilde_opt(&mut self.kimi.credentials_path);
         self.supergrok.grok_binary = expand_tilde(&self.supergrok.grok_binary);
         expand_tilde_opt(&mut self.supergrok.auth_path);
         expand_tilde_opt(&mut self.supergrok.config_path);
@@ -1089,6 +1159,14 @@ impl Config {
                  remove it to show spend without a limit"
                     .into(),
             ));
+        }
+        if crate::kimi::oauth::Region::parse(&self.kimi.region).is_none()
+            && !self.kimi.region.eq_ignore_ascii_case("auto")
+        {
+            return Err(AppError::Other(format!(
+                "[kimi] region must be \"auto\", \"cn\", or \"global\", got {:?}",
+                self.kimi.region
+            )));
         }
         if !self.minimax.region.eq_ignore_ascii_case("global")
             && !self.minimax.region.eq_ignore_ascii_case("cn")
@@ -1244,6 +1322,73 @@ mod tests {
         f.write_all(s.as_bytes()).unwrap();
         f.flush().unwrap();
         f
+    }
+
+    /// The back-compat guarantee #134 asks for: a config with no
+    /// `[[openai.accounts]]` resolves exactly what it resolved before, whether
+    /// it sets `codex_auth_path` or leaves it to the default.
+    #[test]
+    fn openai_without_accounts_resolves_the_singular_path() {
+        let explicit = OpenAiConfig {
+            codex_auth_path: Some(PathBuf::from("/tmp/codex/auth.json")),
+            ..OpenAiConfig::default()
+        };
+        assert_eq!(
+            explicit.resolve_auth_path(None).unwrap(),
+            PathBuf::from("/tmp/codex/auth.json")
+        );
+
+        let bare = OpenAiConfig::default();
+        assert_eq!(
+            bare.resolve_auth_path(None).unwrap(),
+            crate::openai::creds::default_path().unwrap(),
+            "no codex_auth_path must still mean ~/.codex/auth.json"
+        );
+    }
+
+    /// Each named account resolves its own file, and the default login is still
+    /// reachable alongside them.
+    #[test]
+    fn openai_named_accounts_resolve_their_own_auth_file() {
+        let config: Config = toml::from_str(
+            r#"
+            [openai]
+            codex_auth_path = "/tmp/personal/auth.json"
+            [[openai.accounts]]
+            label = "work"
+            codex_auth_path = "/tmp/work/auth.json"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.openai.resolve_auth_path(Some("work")).unwrap(),
+            PathBuf::from("/tmp/work/auth.json")
+        );
+        assert_eq!(
+            config.openai.resolve_auth_path(None).unwrap(),
+            PathBuf::from("/tmp/personal/auth.json")
+        );
+    }
+
+    /// An unknown label must fail rather than quietly fall back to the default
+    /// login — reporting the wrong subscription's usage is worse than an error.
+    #[test]
+    fn an_unknown_openai_account_is_an_error_not_a_fallback() {
+        let config = OpenAiConfig {
+            codex_auth_path: Some(PathBuf::from("/tmp/personal/auth.json")),
+            accounts: vec![OpenAiAccount {
+                label: "work".into(),
+                codex_auth_path: PathBuf::from("/tmp/work/auth.json"),
+            }],
+            ..OpenAiConfig::default()
+        };
+        let err = config
+            .resolve_auth_path(Some("nope"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nope"), "{err}");
+        assert!(err.contains("[[openai.accounts]]"), "{err}");
     }
 
     #[test]
@@ -1437,6 +1582,59 @@ enabled = false
             let error = Config::load_from(file.path()).unwrap_err().to_string();
             assert!(error.contains("[minimax] region"), "{error}");
         }
+    }
+
+    #[test]
+    fn kimi_region_accepts_auto_and_both_deployments() {
+        for region in ["auto", "AUTO", "cn", "mainland-cn", "global"] {
+            let file = write_toml(&format!("[kimi]\nregion = {region:?}\n"));
+            assert_eq!(Config::load_from(file.path()).unwrap().kimi.region, region);
+        }
+
+        for region in ["", "us", "oversea"] {
+            let file = write_toml(&format!("[kimi]\nregion = {region:?}\n"));
+            let error = Config::load_from(file.path()).unwrap_err().to_string();
+            assert!(error.contains("[kimi] region"), "{error}");
+        }
+    }
+
+    #[test]
+    fn kimi_defaults_to_auto_region_and_no_credential_override() {
+        let defaults = KimiConfig::default();
+        assert_eq!(defaults.region, "auto");
+        assert_eq!(defaults.credentials_path, None);
+        assert!(!defaults.enabled);
+    }
+
+    #[test]
+    fn kimi_credentials_path_expands_a_tilde() {
+        let file = write_toml("[kimi]\ncredentials_path = \"~/kimi/creds.json\"\n");
+        let path = Config::load_from(file.path())
+            .unwrap()
+            .kimi
+            .credentials_path
+            .unwrap();
+        assert!(!path.starts_with("~"), "{}", path.display());
+        assert!(path.ends_with("kimi/creds.json"), "{}", path.display());
+    }
+
+    #[test]
+    fn optional_api_key_reports_absence_instead_of_failing() {
+        assert_eq!(
+            optional_api_key("KIMI_API_KEY_DEFINITELY_UNSET", Some("inline")),
+            Some("inline".to_string())
+        );
+        assert_eq!(
+            optional_api_key("KIMI_API_KEY_DEFINITELY_UNSET", None),
+            None
+        );
+        assert_eq!(optional_api_key("KIMI_API_KEY_UNSET", Some("")), None);
+        // An unusable `api_key_env` still lets an inline key through, exactly
+        // as `resolve_api_key` does.
+        assert_eq!(
+            optional_api_key("9INVALID", Some("inline")),
+            Some("inline".to_string())
+        );
     }
 
     #[test]

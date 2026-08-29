@@ -9,7 +9,29 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- Z.AI's rows in the native panels — Omarchy Quattro, GNOME, KDE and the TUI —
+  carry the pace footnote every other percentage vendor's rows carry
+  (`60% elapsed · 20pts under`) instead of a bare `Resets in 2h 00m`. GLM's
+  session, weekly and monthly MCP windows each report a duration and a reset,
+  so all three pace, off the same `pacing::calc` the `{zai_*_pace}`
+  placeholders already use. Each surface keeps its own way of showing it, so
+  nothing else moves: the arrow stays the widget's, the bar tick the macOS
+  menu bar's, the footnote the panels'.
+
+## [1.8.0] — 2026-08-28
+
 ### Added
+
+- Multiple OpenAI (Codex) logins, via `[[openai.accounts]]` (#134). Each entry
+  is a label plus its own `codex_auth_path`, the same shape
+  `[[anthropic.accounts]]` uses and for the same reason: Codex is an OAuth
+  vendor, so an account is a credential file and refreshes write back into
+  whichever one they came from. Named accounts are selected with
+  `--account <label>` and cached separately under
+  `~/.cache/ai-usagebar/openai/<label>`, so two subscriptions can never serve
+  each other's usage. A config without the array behaves exactly as before.
 
 - The Omarchy Quattro plugin can show which provider the bar entry is about.
   **Show provider name in the top bar** — a new opt-in toggle beside the
@@ -32,6 +54,47 @@ Each release is also published at
   a test now rejects a duplicate or a non-three-letter one.
 - The `{vendor_short}` reference table lists Nous Research (`nrs`) and OpenCode
   Go (`ocg`), which both shipped codes without ever being written down.
+- Kimi accepts a **Kimi For Coding subscription** as a credential: when no
+  `KIMI_API_KEY` (or inline `api_key`) is set, the vendor uses the OAuth
+  session the Kimi Code CLI already stored at
+  `~/.kimi-code/credentials/kimi-code.json` — so a subscriber who works through
+  the CLI has nothing to create, paste, or rotate by hand. Same
+  `/coding/v1/usages` endpoint, same weekly + 5h windows; an API key still takes
+  precedence when one is set. New optional `[kimi] credentials_path` (for
+  a relocated `KIMI_CODE_HOME`) and `[kimi] region` — `auto` follows
+  kimi-code's own `~/.kimi-code/region` marker, `cn` pins `api.kimi.com`,
+  `global` pins `api.kimi.ai`.
+
+  The CLI's access token lives 15 minutes, so ai-usagebar refreshes it against
+  `auth.kimi.com/api/oauth/token` and writes the rotated pair **back into
+  kimi-code's own credential file** (atomically, mode 0600) rather than into a
+  private sidecar the way the Kiro vendor does. Kimi rotates the refresh token
+  on every grant: a private copy would leave the CLI holding a superseded token
+  after each widget tick and log the user out of their own CLI. The refresh
+  runs under kimi-code's own `proper-lockfile` protocol so the two clients
+  never rotate at once, and the file is re-read inside the lock so a refresh
+  that landed while waiting is used instead of being redone.
+
+- Kimi's plan label now reads the subscription's own tier name ("Andante",
+  "Moderato", "Allegretto", "Allegro") from `/coding/v1/me`, fetched
+  concurrently with `/usages` so a widget tick still costs one round-trip.
+  `/usages` only carries the `LEVEL_*` wire enum, which was what the bar used
+  to show. When `/me` is unreachable or the account has no coding profile, the
+  enum is humanized instead (`LEVEL_INTERMEDIATE` → `Intermediate`) — never
+  mapped to an invented tier name. A still-fresh cache entry holding a raw
+  `LEVEL_*` plan is refreshed once rather than waiting out its TTL. The
+  profile response's personal fields (email, phone, nickname) are never
+  deserialized, so they cannot reach a snapshot, the cache, or an error
+  message.
+
+### Changed
+
+- Kimi's default widget format now shows both independent quotas —
+  `5h X% · 7d Y%` — instead of a single percentage that silently discarded
+  one of them. A custom `format` in config.toml is untouched. The TUI panel's
+  value column shows the same `{pct}%` every other vendor shows instead of
+  raw request counts; the counts move to the footnote next to the remaining
+  figure and the reset countdown.
 - **Command Code** (`commandcode.ai`) is supported as a vendor, selectable with
   `--vendor commandcode` and enabled with `[commandcode]` in config. It shows
   the 5-hour and weekly rolling spend windows — priced in dollars, as Command
@@ -1741,7 +1804,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/akitaonrails/ai-usagebar/compare/v1.5.1...v1.5.2

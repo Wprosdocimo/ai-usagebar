@@ -59,9 +59,16 @@ api_key_env = "DEEPSEEK_API_KEY"
 # api_key = "sk-..."       # used if DEEPSEEK_API_KEY is unset; chmod 600 the file!
 
 [kimi]
-enabled = true             # disabled by default; enable once you add an API key
+enabled = true             # disabled by default; a Kimi Code CLI login is enough
+# Log in with `kimi` and ai-usagebar reads the OAuth session the CLI already
+# stored, refreshing it in place when it expires — no key to create or paste.
+# An API key still wins when one is set; a Kimi For Coding subscription can
+# issue one at kimi.com/code/console, and a platform key works too.
 api_key_env = "KIMI_API_KEY"
 # api_key = "sk-..."       # used if KIMI_API_KEY is unset; chmod 600 the file!
+# credentials_path = "~/.kimi-code/credentials/kimi-code.json"  # CLI login file
+# region = "auto"          # auto follows ~/.kimi-code/region
+#                          # cn -> api.kimi.com | global -> api.kimi.ai
 
 [minimax]
 enabled = true             # disabled by default; enable once you add an API key
@@ -125,3 +132,17 @@ enabled = true             # disabled by default; enable once you've run `kiro-c
 For more than one OpenRouter key, see the
 [OpenRouter account guide](openrouter-accounts.md). The existing singular
 `[openrouter]` key remains the default account and needs no migration.
+
+For more than one Codex login, add `[[openai.accounts]]` — a label and that
+login's own `auth.json`, the same shape `[[anthropic.accounts]]` uses:
+
+```toml
+[[openai.accounts]]
+label = "work"
+codex_auth_path = "~/.config/ai-usagebar/accounts/work-codex/auth.json"
+```
+
+Create the second login with `CODEX_HOME=~/.codex-work codex login` and point
+`codex_auth_path` at the file it writes. Select it with `--account work`; each
+account caches separately under `~/.cache/ai-usagebar/openai/<label>`. The
+singular `codex_auth_path` remains the default account and needs no migration.
