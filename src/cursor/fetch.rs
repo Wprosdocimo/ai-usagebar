@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
+use crate::cache::{Cache, acquire_lock_async};
 use crate::error::{AppError, Result};
 use crate::usage::CursorSnapshot;
 use crate::vendor::{MAX_BODY_BYTES, read_body_capped};
@@ -36,13 +36,9 @@ impl Default for Endpoints {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FetchOutcome {
-    pub snapshot: CursorSnapshot,
-    pub stale: bool,
-    pub last_error: Option<(u16, String)>,
-    pub cache_age: Option<Duration>,
-}
+/// This vendor's [`Outcome`](crate::outcome::Outcome) — the shared shape,
+/// specialised to its snapshot.
+pub type FetchOutcome = crate::outcome::Outcome<CursorSnapshot>;
 
 /// Cache-aware fetch. `db_path` is Cursor's `state.vscdb` — the caller resolves
 /// `[cursor] db_path` (config override) vs [`db::default_db_path`], the same
@@ -99,12 +95,7 @@ async fn fetch_snapshot_at(
         Ok(snap) => {
             let bytes = serde_json::to_vec(&snap_to_json(&snap, &auth.account_key))?;
             cache.write_payload(&bytes)?;
-            Ok(FetchOutcome {
-                snapshot: snap,
-                stale: false,
-                last_error: None,
-                cache_age: Some(Duration::ZERO),
-            })
+            Ok(crate::outcome::Outcome::fresh(snap))
         }
         Err(e) if e.is_transient() => fallback_silent(cache, &auth.account_key, now, e),
         Err(e) => {
@@ -123,13 +114,9 @@ fn fallback_silent(
     now: DateTime<Utc>,
     original: AppError,
 ) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    match reuse_cache(&bytes, cache, true, account, now) {
-        Ok(outcome) => Ok(outcome),
-        Err(_) => Err(original),
-    }
+    crate::outcome::fallback(cache, None, original, |bytes| {
+        parse_cache_at(bytes, account, now)
+    })
 }
 
 fn fallback_with_error(
@@ -138,16 +125,10 @@ fn fallback_with_error(
     now: DateTime<Utc>,
     original: AppError,
 ) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    match reuse_cache(&bytes, cache, true, account, now) {
-        Ok(mut outcome) => {
-            outcome.last_error = error_to_pair(&original);
-            Ok(outcome)
-        }
-        Err(_) => Err(original),
-    }
+    let last_error = error_to_pair(&original);
+    crate::outcome::fallback(cache, last_error, original, |bytes| {
+        parse_cache_at(bytes, account, now)
+    })
 }
 
 /// Never surface upstream bodies for auth failures: the request carried a
@@ -171,12 +152,7 @@ fn reuse_cache(
     now: DateTime<Utc>,
 ) -> Result<FetchOutcome> {
     let snap = parse_cache_at(bytes, account, now)?;
-    Ok(FetchOutcome {
-        snapshot: snap,
-        stale,
-        last_error: cache.read_last_error(),
-        cache_age: cache.payload_age(),
-    })
+    Ok(crate::outcome::Outcome::cached(snap, cache, stale))
 }
 
 fn parse_cache_at(bytes: &[u8], account: &str, now: DateTime<Utc>) -> Result<CursorSnapshot> {

@@ -39,6 +39,7 @@ pub mod novita;
 pub mod openai;
 pub mod opencode_go;
 pub mod openrouter;
+pub mod outcome;
 pub mod pacing;
 pub mod pango;
 pub mod report;

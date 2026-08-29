@@ -7,7 +7,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
+use crate::cache::{Cache, acquire_lock_async};
 use crate::error::{AppError, Result};
 use crate::usage::{SuperGrokPeriod, SuperGrokSnapshot};
 
@@ -17,13 +17,9 @@ use super::{acp, scope, types};
 const LOCK_TIMEOUT: Duration = Duration::from_secs(15);
 const CACHE_SCHEMA: u8 = 2;
 
-#[derive(Debug, Clone)]
-pub struct FetchOutcome {
-    pub snapshot: SuperGrokSnapshot,
-    pub stale: bool,
-    pub last_error: Option<(u16, String)>,
-    pub cache_age: Option<Duration>,
-}
+/// This vendor's [`Outcome`](crate::outcome::Outcome) — the shared shape,
+/// specialised to its snapshot.
+pub type FetchOutcome = crate::outcome::Outcome<SuperGrokSnapshot>;
 
 pub async fn fetch_snapshot(
     grok_binary: &Path,
@@ -207,6 +203,10 @@ fn reuse_cache(
     })
 }
 
+/// SuperGrok adds one rule to the shared policy: a cached snapshot whose
+/// billing period has already ended is not a stale figure, it is a wrong one,
+/// so it is rejected the same way an unparseable payload is — by failing the
+/// parse, which makes `outcome::fallback` return the original error.
 fn fallback(
     cache: &Cache,
     account_scope: Option<&str>,
@@ -216,19 +216,21 @@ fn fallback(
     let Some(account_scope) = account_scope else {
         return Err(original);
     };
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    match reuse_cache(&bytes, cache, true, account_scope) {
-        Ok(mut outcome) if !period_has_ended(&outcome.snapshot, now) => {
-            let error = error_to_pair(&original);
-            cache.mark_stale();
-            cache.write_last_error(error.0, &error.1);
-            outcome.last_error = Some(error);
-            Ok(outcome)
+    let error = error_to_pair(&original);
+    let outcome = crate::outcome::fallback(cache, Some(error.clone()), original, |bytes| {
+        let snapshot = parse_cache(bytes, account_scope)?;
+        if period_has_ended(&snapshot, now) {
+            return Err(AppError::Schema(
+                "cached SuperGrok period has already ended".into(),
+            ));
         }
-        _ => Err(original),
-    }
+        Ok(snapshot)
+    })?;
+    // Only once a figure is actually going on screen is the failure worth
+    // recording beside it.
+    cache.mark_stale();
+    cache.write_last_error(error.0, &error.1);
+    Ok(outcome)
 }
 
 fn error_to_pair(error: &AppError) -> (u16, String) {

@@ -451,12 +451,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 DEFAULT_TTL,
             )
             .await?;
-            Ok(crate::vendor::VendorOutcome {
-                snapshot: crate::usage::VendorSnapshot::Anthropic(outcome.snapshot),
-                stale: outcome.stale,
-                last_error: outcome.last_error,
-                cache_age: outcome.cache_age,
-            })
+            Ok(outcome.map(crate::usage::VendorSnapshot::Anthropic))
         }
         VendorId::AnthropicApi => {
             let key = crate::config::resolve_api_key(
@@ -705,12 +700,10 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 Utc::now(),
             )
             .await?;
-            Ok(crate::vendor::VendorOutcome {
-                snapshot: crate::usage::VendorSnapshot::NousResearch(account),
-                stale: false,
-                last_error: None,
-                cache_age: Some(Duration::ZERO),
-            })
+            // Nous keeps no cache of its own, so every read is a live one.
+            Ok(crate::outcome::Outcome::fresh(
+                crate::usage::VendorSnapshot::NousResearch(account),
+            ))
         }
         VendorId::OpenCodeGo => {
             let api_key = crate::config::resolve_api_key(

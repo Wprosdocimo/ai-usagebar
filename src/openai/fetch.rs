@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
+use crate::cache::{Cache, acquire_lock_async};
 use crate::error::{AppError, Result};
 use crate::usage::OpenAiSnapshot;
 
@@ -35,13 +35,9 @@ impl Default for Endpoints {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FetchOutcome {
-    pub snapshot: OpenAiSnapshot,
-    pub stale: bool,
-    pub last_error: Option<(u16, String)>,
-    pub cache_age: Option<Duration>,
-}
+/// This vendor's [`Outcome`](crate::outcome::Outcome) — the shared shape,
+/// specialised to its snapshot.
+pub type FetchOutcome = crate::outcome::Outcome<OpenAiSnapshot>;
 
 pub async fn fetch_snapshot(
     client: &reqwest::Client,
@@ -131,12 +127,7 @@ pub async fn fetch_snapshot(
         Ok(Ok(bytes)) => {
             cache.write_payload(&bytes)?;
             let snap = parse_payload(&bytes, plan_hint.as_deref())?;
-            Ok(FetchOutcome {
-                snapshot: snap,
-                stale: false,
-                last_error: None,
-                cache_age: Some(Duration::ZERO),
-            })
+            Ok(crate::outcome::Outcome::fresh(snap))
         }
         Ok(Err(AppError::Http { status, body })) => {
             cache.mark_stale();
@@ -169,30 +160,18 @@ fn reuse(
     plan_hint: Option<&str>,
 ) -> Result<FetchOutcome> {
     let snap = parse_payload(&bytes, plan_hint)?;
-    Ok(FetchOutcome {
-        snapshot: snap,
-        stale,
-        last_error: cache.read_last_error(),
-        cache_age: cache.payload_age(),
-    })
+    Ok(crate::outcome::Outcome::cached(snap, cache, stale))
 }
 
-/// On failure we show the last good figure with the error alongside it. With
-/// nothing usable cached there is nothing to show, so the **original** error is
-/// returned rather than a generic "no usable cache" that hides what went wrong
-/// — a cold cache and an expired key would otherwise look identical.
 fn fallback(
     cache: &Cache,
     plan_hint: Option<&str>,
     last_error: Option<(u16, String)>,
     original: AppError,
 ) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    let mut out = reuse(bytes, cache, true, plan_hint)?;
-    out.last_error = last_error;
-    Ok(out)
+    crate::outcome::fallback(cache, last_error, original, |bytes| {
+        parse_payload(bytes, plan_hint)
+    })
 }
 
 fn fallback_silent(
@@ -200,29 +179,27 @@ fn fallback_silent(
     plan_hint: Option<&str>,
     original: AppError,
 ) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    reuse(bytes, cache, true, plan_hint)
+    crate::outcome::fallback(cache, None, original, |bytes| {
+        parse_payload(bytes, plan_hint)
+    })
 }
 
+/// The one place a *synthesized* error beats the original: the refresh failed,
+/// and "run `codex login` to re-auth" tells the user what to do about it,
+/// which the underlying OAuth error does not.
 fn handle_auth_failure(
     cache: &Cache,
     plan_hint: Option<&str>,
     transient: bool,
 ) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return if transient {
-            Err(AppError::Transport(
-                "openai: no cache and refresh failed transiently".into(),
-            ))
-        } else {
-            Err(AppError::Credentials(
-                "openai: token refresh failed; run `codex login` to re-auth".into(),
-            ))
-        };
+    let original = if transient {
+        AppError::Transport("openai: no cache and refresh failed transiently".into())
+    } else {
+        AppError::Credentials("openai: token refresh failed; run `codex login` to re-auth".into())
     };
-    reuse(bytes, cache, true, plan_hint)
+    crate::outcome::fallback(cache, None, original, |bytes| {
+        parse_payload(bytes, plan_hint)
+    })
 }
 
 fn parse_payload(bytes: &[u8], plan_hint: Option<&str>) -> Result<OpenAiSnapshot> {

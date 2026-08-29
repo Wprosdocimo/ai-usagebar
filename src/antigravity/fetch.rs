@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
+use crate::cache::{Cache, acquire_lock_async};
 use crate::error::{AppError, Result};
 use crate::usage::{AntigravitySnapshot, UsageWindow};
 
@@ -30,22 +30,13 @@ const STATUS_RPC: &str = "exa.language_server_pb.LanguageServerService/GetUserSt
 
 const DEFAULT_PLAN: &str = "Antigravity";
 
-#[derive(Debug, Clone)]
-pub struct FetchOutcome {
-    pub snapshot: AntigravitySnapshot,
-    pub stale: bool,
-    pub last_error: Option<(u16, String)>,
-    pub cache_age: Option<Duration>,
-}
+/// This vendor's [`Outcome`](crate::outcome::Outcome) — the shared shape,
+/// specialised to its snapshot.
+pub type FetchOutcome = crate::outcome::Outcome<AntigravitySnapshot>;
 
 impl From<FetchOutcome> for crate::vendor::VendorOutcome {
     fn from(o: FetchOutcome) -> Self {
-        Self {
-            snapshot: crate::usage::VendorSnapshot::Antigravity(o.snapshot),
-            stale: o.stale,
-            last_error: o.last_error,
-            cache_age: o.cache_age,
-        }
+        o.map(crate::usage::VendorSnapshot::Antigravity)
     }
 }
 
@@ -85,12 +76,7 @@ pub async fn fetch_snapshot_at(
         Ok(snap) => {
             let bytes = serde_json::to_vec(&snap_to_json(&snap))?;
             cache.write_payload(&bytes)?;
-            Ok(FetchOutcome {
-                snapshot: snap,
-                stale: false,
-                last_error: None,
-                cache_age: Some(Duration::ZERO),
-            })
+            Ok(crate::outcome::Outcome::fresh(snap))
         }
         Err(e) if e.is_transient() => fallback_silent(cache, now, e),
         Err(AppError::Http { status, body }) => {
@@ -911,10 +897,9 @@ fn parse_proc_net_line(line: &str) -> Option<(u16, u64)> {
 // ---------------------------------------------------------------------------
 
 fn fallback_silent(cache: &Cache, now: DateTime<Utc>, original: AppError) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    reuse_cache(bytes, cache, true, None, now).or(Err(original))
+    crate::outcome::fallback(cache, None, original, |bytes| {
+        parse_cache_at(bytes, None, now)
+    })
 }
 
 /// Serve the stale cache when there is one. With no cache to fall back on,
@@ -927,14 +912,9 @@ fn fallback_with_error(
     reason: AppError,
     now: DateTime<Utc>,
 ) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(reason);
-    };
-    let Ok(mut outcome) = reuse_cache(bytes, cache, true, None, now) else {
-        return Err(reason);
-    };
-    outcome.last_error = last_error;
-    Ok(outcome)
+    crate::outcome::fallback(cache, last_error, reason, |bytes| {
+        parse_cache_at(bytes, None, now)
+    })
 }
 
 fn reuse_cache(
@@ -945,12 +925,7 @@ fn reuse_cache(
     now: DateTime<Utc>,
 ) -> Result<FetchOutcome> {
     let snap = parse_cache_at(&bytes, account, now)?;
-    Ok(FetchOutcome {
-        snapshot: snap,
-        stale,
-        last_error: cache.read_last_error(),
-        cache_age: cache.payload_age(),
-    })
+    Ok(crate::outcome::Outcome::cached(snap, cache, stale))
 }
 
 /// `account` is the fingerprint of the currently signed-in account, or `None`

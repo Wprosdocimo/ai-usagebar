@@ -194,12 +194,9 @@ async fn nous_output(cli: &Cli) -> Result<WaybarOutput> {
         crate::nous::fetch::fetch_account_with_refresh(&client, &store, &endpoints, Utc::now())
             .await?;
     let snapshot = account.clone();
-    let outcome = VendorOutcome {
-        snapshot: crate::usage::VendorSnapshot::NousResearch(account),
-        stale: false,
-        last_error: None,
-        cache_age: Some(Duration::ZERO),
-    };
+    // Nous keeps no cache of its own, so every read is a live one.
+    let outcome =
+        crate::outcome::Outcome::fresh(crate::usage::VendorSnapshot::NousResearch(account));
     let theme = theme_from_cli(cli);
     Ok(crate::nous::vendor::render(
         &outcome,

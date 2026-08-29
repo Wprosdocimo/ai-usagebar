@@ -21,12 +21,7 @@ const UNAVAILABLE: &str = "—";
 
 impl From<FetchOutcome> for VendorOutcome {
     fn from(outcome: FetchOutcome) -> Self {
-        Self {
-            snapshot: crate::usage::VendorSnapshot::OpenCodeGo(outcome.snapshot),
-            stale: outcome.stale,
-            last_error: outcome.last_error,
-            cache_age: outcome.cache_age,
-        }
+        outcome.map(crate::usage::VendorSnapshot::OpenCodeGo)
     }
 }
 

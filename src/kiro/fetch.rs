@@ -12,7 +12,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::cache::{Cache, MAX_STALE, acquire_lock_async, atomic_write};
+use crate::cache::{Cache, acquire_lock_async, atomic_write};
 use crate::error::{AppError, Result};
 use crate::usage::KiroSnapshot;
 use crate::vendor::{MAX_BODY_BYTES, read_body_capped};
@@ -57,13 +57,9 @@ struct PersistedOAuth {
     expires_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
-pub struct FetchOutcome {
-    pub snapshot: KiroSnapshot,
-    pub stale: bool,
-    pub last_error: Option<(u16, String)>,
-    pub cache_age: Option<Duration>,
-}
+/// This vendor's [`Outcome`](crate::outcome::Outcome) — the shared shape,
+/// specialised to its snapshot.
+pub type FetchOutcome = crate::outcome::Outcome<KiroSnapshot>;
 
 /// Cache-aware fetch. `db_path` is kiro-cli's `data.sqlite3` — the caller
 /// resolves `[kiro] db_path` (config override) vs [`db::default_db_path`],
@@ -119,12 +115,7 @@ async fn fetch_snapshot_at(
         Ok(snap) => {
             let bytes = serde_json::to_vec(&snap_to_json(&snap, &creds.account_key))?;
             cache.write_payload(&bytes)?;
-            Ok(FetchOutcome {
-                snapshot: snap,
-                stale: false,
-                last_error: None,
-                cache_age: Some(Duration::ZERO),
-            })
+            Ok(crate::outcome::Outcome::fresh(snap))
         }
         Err(e) if e.is_transient() => fallback_silent(cache, &creds.account_key, now, e),
         Err(e) => {
@@ -143,13 +134,9 @@ fn fallback_silent(
     now: DateTime<Utc>,
     original: AppError,
 ) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    match reuse_cache(&bytes, cache, true, account, now) {
-        Ok(outcome) => Ok(outcome),
-        Err(_) => Err(original),
-    }
+    crate::outcome::fallback(cache, None, original, |bytes| {
+        parse_cache_at(bytes, account, now)
+    })
 }
 
 fn fallback_with_error(
@@ -158,16 +145,10 @@ fn fallback_with_error(
     now: DateTime<Utc>,
     original: AppError,
 ) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    match reuse_cache(&bytes, cache, true, account, now) {
-        Ok(mut outcome) => {
-            outcome.last_error = error_to_pair(&original);
-            Ok(outcome)
-        }
-        Err(_) => Err(original),
-    }
+    let last_error = error_to_pair(&original);
+    crate::outcome::fallback(cache, last_error, original, |bytes| {
+        parse_cache_at(bytes, account, now)
+    })
 }
 
 /// Never surface upstream bodies for auth failures: a 401/403 from an
@@ -192,12 +173,7 @@ fn reuse_cache(
     now: DateTime<Utc>,
 ) -> Result<FetchOutcome> {
     let snap = parse_cache_at(bytes, account, now)?;
-    Ok(FetchOutcome {
-        snapshot: snap,
-        stale,
-        last_error: cache.read_last_error(),
-        cache_age: cache.payload_age(),
-    })
+    Ok(crate::outcome::Outcome::cached(snap, cache, stale))
 }
 
 fn parse_cache_at(bytes: &[u8], account: &str, now: DateTime<Utc>) -> Result<KiroSnapshot> {

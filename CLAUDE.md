@@ -124,6 +124,22 @@ patch version instead.
   the user's choice (and `chmod 600`ed by the Settings overlay), but
   **never commit** a real key. The `.gitignore` covers `.env`,
   `*.credentials.json`, and `.claude/`.
+- **One fetch outcome, one fallback policy.** `outcome::Outcome<T>` is the
+  four-field record every vendor returns (`VendorOutcome` is
+  `Outcome<VendorSnapshot>`; each vendor's `FetchOutcome` is an alias, so
+  `outcome.map(VendorSnapshot::Whichever)` is the whole conversion). Build one
+  with `Outcome::fresh` off the wire or `Outcome::cached` out of the cache.
+  `outcome::fallback` owns what a *failed* refresh means: serve the last good
+  payload, or return the error that caused the failure — never a synthesized
+  message about the cache, because with no figure on screen the error is the
+  whole output. A cached payload that will not parse counts as nothing to
+  show and also reports the original. Each vendor supplies only a closure that
+  parses its own cache format. A guard test forbids a second caller of
+  `Cache::fallback_payload`: that function is the entry point to this decision,
+  and eighteen private copies of it had already drifted into two generations
+  that disagreed for five vendors. The one sanctioned synthesized error is
+  `handle_auth_failure`'s — "run `claude`/`codex login` to re-auth" is
+  actionable where the underlying OAuth error is not.
 - **Frontend adapters stay thin.** Provider fetching, credentials, canonical
   product names, metric projection, and reset metadata belong in Rust.
   `VendorId::display_name` is the shared label source; do not add a complete

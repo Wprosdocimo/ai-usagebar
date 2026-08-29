@@ -9,6 +9,14 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Changed
+
+- Internal: the four-field record every vendor fetch returns, and the policy
+  around it, is now `outcome::Outcome<T>` instead of eighteen private copies
+  (#136). No behaviour changes — the copies had already been reconciled in
+  1.9.0 — but the reconciliation is now structural rather than repeated, and a
+  guard test forbids a second reader of the stale payload. Net −508 lines.
+
 ## [1.9.0] — 2026-08-28
 
 ### Added

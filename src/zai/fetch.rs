@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
+use crate::cache::{Cache, acquire_lock_async};
 use crate::error::{AppError, Result};
 use crate::usage::ZaiSnapshot;
 
@@ -27,13 +27,9 @@ impl Default for Endpoints {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FetchOutcome {
-    pub snapshot: ZaiSnapshot,
-    pub stale: bool,
-    pub last_error: Option<(u16, String)>,
-    pub cache_age: Option<Duration>,
-}
+/// This vendor's [`Outcome`](crate::outcome::Outcome) — the shared shape,
+/// specialised to its snapshot.
+pub type FetchOutcome = crate::outcome::Outcome<ZaiSnapshot>;
 
 pub async fn fetch_snapshot(
     client: &reqwest::Client,
@@ -60,12 +56,9 @@ pub async fn fetch_snapshot(
             // `success: false` can never overwrite the last good payload nor
             // clear the recorded error.
             cache.write_payload(&bytes)?;
-            Ok(FetchOutcome {
-                snapshot: env.into_snapshot(config_plan_tier),
-                stale: false,
-                last_error: None,
-                cache_age: Some(Duration::ZERO),
-            })
+            Ok(crate::outcome::Outcome::fresh(
+                env.into_snapshot(config_plan_tier),
+            ))
         }
         Err(e) if e.is_transient() => fallback_silent(cache, config_plan_tier, e),
         Err(AppError::Http { status, body }) => {
@@ -87,40 +80,33 @@ pub async fn fetch_snapshot(
 }
 
 fn reuse(bytes: Vec<u8>, cache: &Cache, stale: bool, tier: Option<&str>) -> Result<FetchOutcome> {
-    let env: Envelope = serde_json::from_slice(&bytes)?;
+    Ok(crate::outcome::Outcome::cached(
+        parse_cache(&bytes, tier)?,
+        cache,
+        stale,
+    ))
+}
+
+fn parse_cache(bytes: &[u8], tier: Option<&str>) -> Result<ZaiSnapshot> {
+    let env: Envelope = serde_json::from_slice(bytes)?;
     // A cached failure envelope is not usage data, even if it parses.
     env.check_ok()?;
-    Ok(FetchOutcome {
-        snapshot: env.into_snapshot(tier),
-        stale,
-        last_error: cache.read_last_error(),
-        cache_age: cache.payload_age(),
-    })
+    Ok(env.into_snapshot(tier))
 }
 
 fn fallback_silent(cache: &Cache, tier: Option<&str>, original: AppError) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    reuse(bytes, cache, true, tier)
+    crate::outcome::fallback(cache, None, original, |bytes| parse_cache(bytes, tier))
 }
 
-/// On failure we show the last good figure with the error alongside it. With
-/// nothing usable cached there is nothing to show, so the **original** error is
-/// returned rather than a generic "no usable cache" that hides what went wrong
-/// — a cold cache and an expired key would otherwise look identical.
 fn fallback_with_error(
     cache: &Cache,
     last_error: Option<(u16, String)>,
     tier: Option<&str>,
     original: AppError,
 ) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    let mut out = reuse(bytes, cache, true, tier)?;
-    out.last_error = last_error;
-    Ok(out)
+    crate::outcome::fallback(cache, last_error, original, |bytes| {
+        parse_cache(bytes, tier)
+    })
 }
 
 /// Returns the raw bytes (for the cache) alongside the *validated* envelope,

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
+use crate::cache::{Cache, acquire_lock_async};
 use crate::error::{AppError, Result};
 use crate::usage::KimiSnapshot;
 
@@ -87,13 +87,9 @@ impl KimiCodeAuth {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FetchOutcome {
-    pub snapshot: KimiSnapshot,
-    pub stale: bool,
-    pub last_error: Option<(u16, String)>,
-    pub cache_age: Option<Duration>,
-}
+/// This vendor's [`Outcome`](crate::outcome::Outcome) — the shared shape,
+/// specialised to its snapshot.
+pub type FetchOutcome = crate::outcome::Outcome<KimiSnapshot>;
 
 /// API-key fetch. Kept as-is for existing callers; the OAuth path goes
 /// through [`fetch_snapshot_with_auth`].
@@ -156,12 +152,7 @@ async fn fetch_snapshot_at(
         Ok(snap) => {
             let bytes = serde_json::to_vec(&snap_to_json(&snap))?;
             cache.write_payload(&bytes)?;
-            Ok(FetchOutcome {
-                snapshot: snap,
-                stale: false,
-                last_error: None,
-                cache_age: Some(Duration::ZERO),
-            })
+            Ok(crate::outcome::Outcome::fresh(snap))
         }
         Err(e) if e.is_transient() => fallback_silent(cache, e),
         Err(e) => {
@@ -175,26 +166,12 @@ async fn fetch_snapshot_at(
 }
 
 fn fallback_silent(cache: &Cache, original: AppError) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    match reuse_cache(bytes, cache, true) {
-        Ok(outcome) => Ok(outcome),
-        Err(_) => Err(original),
-    }
+    crate::outcome::fallback(cache, None, original, parse_cache)
 }
 
 fn fallback_with_error(cache: &Cache, original: AppError) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    match reuse_cache(bytes, cache, true) {
-        Ok(mut outcome) => {
-            outcome.last_error = error_to_pair(&original);
-            Ok(outcome)
-        }
-        Err(_) => Err(original),
-    }
+    let last_error = error_to_pair(&original);
+    crate::outcome::fallback(cache, last_error, original, parse_cache)
 }
 
 fn error_to_pair(e: &AppError) -> Option<(u16, String)> {
@@ -208,12 +185,7 @@ fn error_to_pair(e: &AppError) -> Option<(u16, String)> {
 
 fn reuse_cache(bytes: Vec<u8>, cache: &Cache, stale: bool) -> Result<FetchOutcome> {
     let snap = parse_cache(&bytes)?;
-    Ok(FetchOutcome {
-        snapshot: snap,
-        stale,
-        last_error: cache.read_last_error(),
-        cache_age: cache.payload_age(),
-    })
+    Ok(crate::outcome::Outcome::cached(snap, cache, stale))
 }
 
 fn parse_cache(bytes: &[u8]) -> Result<KimiSnapshot> {

@@ -529,29 +529,30 @@ mod tests {
         );
     }
 
-    /// A vendor whose cache is cold has no figure to show, so the error is the
-    /// entire output. Substituting a generic "no usable cache" there throws
-    /// away the only diagnostic the user gets: on a first run, an expired key,
-    /// a 500, and a genuinely empty cache all render identically. Thirteen
-    /// vendors returned the original error and five synthesized one; this
-    /// keeps them from diverging again.
+    /// The cold-cache decision — serve a stale figure, or surface the error
+    /// that caused the refresh to fail — is `outcome::fallback`'s alone. It
+    /// drifted into two disagreeing generations once, when each vendor owned a
+    /// copy: five replaced the original error with a generic "no usable cache"
+    /// while thirteen returned it. `fallback_payload` is the entry point to
+    /// that decision, so a second caller is a second copy in the making.
     #[test]
-    fn no_vendor_replaces_the_original_error_with_a_no_cache_message() {
+    fn only_the_shared_fallback_reads_the_stale_payload() {
         let mut sites = Vec::new();
         for file in crate::guard::rs_files_in("src") {
-            if !file.ends_with("fetch.rs") {
+            if file.ends_with("outcome.rs") || file.ends_with("cache.rs") {
                 continue;
             }
             let source = std::fs::read_to_string(&file).expect("readable module");
             for (n, line) in crate::guard::production_code(&source).lines().enumerate() {
-                if line.contains("no usable cache") || line.contains("no cache and network") {
+                if line.contains("fallback_payload(") {
                     sites.push(format!("{}:{}", file.display(), n + 1));
                 }
             }
         }
         assert!(
             sites.is_empty(),
-            "a cold cache must return the error that caused the fetch to fail,              not a generic message about the cache. Thread the original              `AppError` into the fallback instead. Found: {sites:#?}"
+            "reach the stale payload through `outcome::fallback`, which decides \
+             what a cold cache means for every vendor at once. Found: {sites:#?}"
         );
     }
 

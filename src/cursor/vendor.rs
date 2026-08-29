@@ -193,12 +193,7 @@ fn render_tooltip(
 
 impl From<FetchOutcome> for VendorOutcome {
     fn from(o: FetchOutcome) -> Self {
-        Self {
-            snapshot: crate::usage::VendorSnapshot::Cursor(o.snapshot),
-            stale: o.stale,
-            last_error: o.last_error,
-            cache_age: o.cache_age,
-        }
+        o.map(crate::usage::VendorSnapshot::Cursor)
     }
 }
 

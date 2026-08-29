@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
+use crate::cache::{Cache, acquire_lock_async};
 use crate::error::{AppError, Result};
 use crate::usage::DeepseekSnapshot;
 
@@ -25,13 +25,9 @@ impl Default for Endpoints {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FetchOutcome {
-    pub snapshot: DeepseekSnapshot,
-    pub stale: bool,
-    pub last_error: Option<(u16, String)>,
-    pub cache_age: Option<Duration>,
-}
+/// This vendor's [`Outcome`](crate::outcome::Outcome) — the shared shape,
+/// specialised to its snapshot.
+pub type FetchOutcome = crate::outcome::Outcome<DeepseekSnapshot>;
 
 pub async fn fetch_snapshot(
     client: &reqwest::Client,
@@ -55,12 +51,7 @@ pub async fn fetch_snapshot(
         Ok(snap) => {
             let bytes = serde_json::to_vec(&snap_to_json(&snap))?;
             cache.write_payload(&bytes)?;
-            Ok(FetchOutcome {
-                snapshot: snap,
-                stale: false,
-                last_error: None,
-                cache_age: Some(Duration::ZERO),
-            })
+            Ok(crate::outcome::Outcome::fresh(snap))
         }
         Err(e) if e.is_transient() => fallback_silent(cache, e),
         Err(AppError::Http { status, body }) => {
@@ -77,37 +68,20 @@ pub async fn fetch_snapshot(
 }
 
 fn fallback_silent(cache: &Cache, original: AppError) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    reuse_cache(bytes, cache, true)
+    crate::outcome::fallback(cache, None, original, parse_cache)
 }
 
-/// On failure we show the last good figure with the error alongside it. With
-/// nothing usable cached there is nothing to show, so the **original** error is
-/// returned rather than a generic "no usable cache" that hides what went wrong
-/// — a cold cache and an expired key would otherwise look identical.
 fn fallback_with_error(
     cache: &Cache,
     last_error: Option<(u16, String)>,
     original: AppError,
 ) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    let mut outcome = reuse_cache(bytes, cache, true)?;
-    outcome.last_error = last_error;
-    Ok(outcome)
+    crate::outcome::fallback(cache, last_error, original, parse_cache)
 }
 
 fn reuse_cache(bytes: Vec<u8>, cache: &Cache, stale: bool) -> Result<FetchOutcome> {
     let snap = parse_cache(&bytes)?;
-    Ok(FetchOutcome {
-        snapshot: snap,
-        stale,
-        last_error: cache.read_last_error(),
-        cache_age: cache.payload_age(),
-    })
+    Ok(crate::outcome::Outcome::cached(snap, cache, stale))
 }
 
 /// Cached money is required, not optional: a truncated or half-written payload

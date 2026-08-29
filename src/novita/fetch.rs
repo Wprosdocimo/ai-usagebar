@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use crate::cache::{Cache, MAX_STALE, acquire_lock_async};
+use crate::cache::{Cache, acquire_lock_async};
 use crate::error::{AppError, Result};
 use crate::usage::{NovitaSnapshot, finite_amount};
 use crate::vendor::{MAX_BODY_BYTES, read_body_capped};
@@ -28,13 +28,9 @@ impl Default for Endpoints {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FetchOutcome {
-    pub snapshot: NovitaSnapshot,
-    pub stale: bool,
-    pub last_error: Option<(u16, String)>,
-    pub cache_age: Option<Duration>,
-}
+/// This vendor's [`Outcome`](crate::outcome::Outcome) — the shared shape,
+/// specialised to its snapshot.
+pub type FetchOutcome = crate::outcome::Outcome<NovitaSnapshot>;
 
 pub async fn fetch_snapshot(
     client: &reqwest::Client,
@@ -57,12 +53,7 @@ pub async fn fetch_snapshot(
             let snap = to_snapshot(balance)?;
             let bytes = serde_json::to_vec(&serde_json::json!({ "snapshot": serde_repr(&snap) }))?;
             cache.write_payload(&bytes)?;
-            Ok(FetchOutcome {
-                snapshot: snap,
-                stale: false,
-                last_error: None,
-                cache_age: Some(Duration::ZERO),
-            })
+            Ok(crate::outcome::Outcome::fresh(snap))
         }
         Err(e) if e.is_transient() => fallback_silent(cache, e),
         Err(AppError::Http { status, body }) => {
@@ -79,10 +70,7 @@ pub async fn fetch_snapshot(
 }
 
 fn fallback_silent(cache: &Cache, original: AppError) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    reuse_cache(&bytes, cache, true)
+    crate::outcome::fallback(cache, None, original, parse_cache)
 }
 
 /// On failure we show the last good figure with the error alongside it. With
@@ -93,24 +81,12 @@ fn fallback_with_error(
     last_error: Option<(u16, String)>,
     original: AppError,
 ) -> Result<FetchOutcome> {
-    let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(original);
-    };
-    let Ok(mut outcome) = reuse_cache(&bytes, cache, true) else {
-        return Err(original);
-    };
-    outcome.last_error = last_error;
-    Ok(outcome)
+    crate::outcome::fallback(cache, last_error, original, parse_cache)
 }
 
 fn reuse_cache(bytes: &[u8], cache: &Cache, stale: bool) -> Result<FetchOutcome> {
     let snap = parse_cache(bytes)?;
-    Ok(FetchOutcome {
-        snapshot: snap,
-        stale,
-        last_error: cache.read_last_error(),
-        cache_age: cache.payload_age(),
-    })
+    Ok(crate::outcome::Outcome::cached(snap, cache, stale))
 }
 
 fn serde_repr(snap: &NovitaSnapshot) -> serde_json::Value {
