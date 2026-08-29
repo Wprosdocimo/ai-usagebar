@@ -231,27 +231,37 @@ fn status(json: bool) -> i32 {
 }
 
 fn print_status(report: &serde_json::Value) {
+    for line in status_lines(report) {
+        println!("{line}");
+    }
+}
+
+/// Render the status report. Separate from printing it so the rendering — the
+/// half with the fallbacks for absent fields, and the note about a live login
+/// nothing here accounts for — can be read back in a test.
+fn status_lines(report: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
     match &report["desktop"] {
         serde_json::Value::Null => {
-            println!("Claude Desktop   not found (macOS only)");
+            out.push("Claude Desktop   not found (macOS only)".to_string());
         }
         desktop => {
-            println!(
+            out.push(format!(
                 "Claude Desktop   {}",
                 desktop["data_dir"].as_str().unwrap_or("?")
-            );
+            ));
             let profiles = desktop["profiles"]
                 .as_array()
                 .map_or(&[][..], Vec::as_slice);
             if profiles.is_empty() {
-                println!(
+                out.push(format!(
                     "  no saved accounts in {} — capture one with \
                      `ai-usagebar account add <label> --desktop`",
                     desktop["profiles_dir"].as_str().unwrap_or("?")
-                );
+                ));
             }
             for profile in profiles {
-                println!(
+                out.push(format!(
                     "  {:<12} {:<28} sessions={:<5} creds={:<4} state={:<4}{}",
                     profile["label"].as_str().unwrap_or("?"),
                     profile["email"].as_str().unwrap_or("(email unknown)"),
@@ -259,33 +269,37 @@ fn print_status(report: &serde_json::Value) {
                     yes_no(&profile["has_credentials"]),
                     yes_no(&profile["has_desktop_state"]),
                     active_tag(&profile["active"]),
-                );
+                ));
             }
         }
     }
 
-    println!();
-    println!("Claude Code      the `claude` CLI's default login");
+    out.push(String::new());
+    out.push("Claude Code      the `claude` CLI's default login".to_string());
     let accounts = report["cli"]["accounts"]
         .as_array()
         .map_or(&[][..], Vec::as_slice);
     if accounts.is_empty() {
-        println!("  no named accounts — add one with `ai-usagebar account add <label>`");
+        out.push(
+            "  no named accounts — add one with `ai-usagebar account add <label>`".to_string(),
+        );
     }
     for account in accounts {
-        println!(
+        out.push(format!(
             "  {:<12} {:<28}{}",
             account["label"].as_str().unwrap_or("?"),
             account["email"].as_str().unwrap_or("(email unknown)"),
             active_tag(&account["active"]),
-        );
+        ));
     }
     if report["cli"]["active_label"].is_null() && !accounts.is_empty() {
-        println!(
+        out.push(
             "  note: the live CLI login belongs to no account listed here, so its \
              saved copies may be stale."
+                .to_string(),
         );
     }
+    out
 }
 
 fn yes_no(value: &serde_json::Value) -> &'static str {
@@ -553,20 +567,8 @@ fn resolve_deletions(paths: &Paths, plan: &mut SwitchPlan, args: &SwitchArgs, in
     }
     if !args.delete_conflict.is_empty() {
         // The caller already asked — the macOS menu bar's dialog, or a script
-        // that listed `deletion_conflicts` from `account status --json`. Only
-        // exact opaque keys actually in conflict are honoured, so a stale
-        // dialog answered against an older observation cannot delete a later
-        // item that happens to reuse the same id.
-        let known: BTreeMap<String, claude_desktop::merge::DeletionKey> = plan
-            .deletions
-            .iter()
-            .map(|candidate| (candidate.external_key(), candidate.key()))
-            .collect();
-        plan.confirmed_deletions = args
-            .delete_conflict
-            .iter()
-            .filter_map(|key| known.get(key).cloned())
-            .collect();
+        // that listed `deletion_conflicts` from `account status --json`.
+        plan.confirmed_deletions = authorized_deletions(&plan.deletions, &args.delete_conflict);
         println!(
             "  deletions       deleting {} of {} conflict(s) everywhere, as chosen",
             plan.confirmed_deletions.len(),
@@ -634,6 +636,54 @@ fn resolve_deletions(paths: &Paths, plan: &mut SwitchPlan, args: &SwitchArgs, in
     }
 }
 
+/// Which of this plan's deletions the caller's `--delete-conflict` keys
+/// authorize.
+///
+/// Only keys naming a conflict *this* plan actually found are honoured. The
+/// keys are opaque and carry the deleting account and the holders, so an answer
+/// given against an older observation — a menu-bar dialog left open, a script
+/// working from a previous `account status --json` — cannot authorize the
+/// deletion of a later item that happens to reuse the same id. An unrecognised
+/// key is dropped rather than treated as a match.
+fn authorized_deletions(
+    deletions: &[claude_desktop::merge::DeletionCandidate],
+    requested: &[String],
+) -> BTreeSet<claude_desktop::merge::DeletionKey> {
+    let known: BTreeMap<String, claude_desktop::merge::DeletionKey> = deletions
+        .iter()
+        .map(|candidate| (candidate.external_key(), candidate.key()))
+        .collect();
+    requested
+        .iter()
+        .filter_map(|key| known.get(key).cloned())
+        .collect()
+}
+
+/// Read a "numbers to KEEP" answer as a set of 1-based indices.
+///
+/// `Err` carries every token that names nothing in the list, and the caller
+/// keeps everything when it does. Acting on the readable half of a mistyped
+/// answer would delete whatever the unreadable half meant to save, and guessing
+/// which item that was is not worth erasing one over.
+fn parse_keep_list(
+    answer: &str,
+    count: usize,
+) -> std::result::Result<BTreeSet<usize>, Vec<String>> {
+    let valid = 1..=count;
+    let unknown: Vec<String> = answer
+        .split_whitespace()
+        .filter(|token| !matches!(token.parse::<usize>(), Ok(n) if valid.contains(&n)))
+        .map(str::to_string)
+        .collect();
+    if !unknown.is_empty() {
+        return Err(unknown);
+    }
+    Ok(answer
+        .split_whitespace()
+        .filter_map(|token| token.parse::<usize>().ok())
+        .collect())
+}
+
 /// Pick which to keep by number; everything unlisted goes. Asking for the
 /// keepers rather than the doomed makes the destructive answer the one you have
 /// to type deliberately, and a blank line the harmless one.
@@ -650,20 +700,13 @@ fn choose_deletions_individually(plan: &mut SwitchPlan, name: &impl Fn(&str) -> 
     println!();
     println!("  Numbers to KEEP, space separated (blank = keep none, deletes all):");
     let picked = ask("> ").unwrap_or_default();
-    let keep: BTreeSet<usize> = picked
-        .split_whitespace()
-        .filter_map(|token| token.parse::<usize>().ok())
-        .collect();
-    let valid = 1..=plan.deletions.len();
-    let unknown: Vec<&str> = picked
-        .split_whitespace()
-        .filter(|token| !matches!(token.parse::<usize>(), Ok(n) if valid.contains(&n)))
-        .collect();
-    if !unknown.is_empty() {
-        // Guessing which routine a typo meant is not worth erasing one over.
-        println!("  {unknown:?} is not in the list — keeping everything instead.");
-        return;
-    }
+    let keep = match parse_keep_list(&picked, plan.deletions.len()) {
+        Ok(keep) => keep,
+        Err(unknown) => {
+            println!("  {unknown:?} is not in the list — keeping everything instead.");
+            return;
+        }
+    };
     plan.confirmed_deletions = plan
         .deletions
         .iter()
@@ -679,10 +722,26 @@ fn choose_deletions_individually(plan: &mut SwitchPlan, name: &impl Fn(&str) -> 
 }
 
 fn print_plan(plan: &SwitchPlan) {
+    for line in plan_lines(plan) {
+        println!("{line}");
+    }
+}
+
+/// Render what a switch would do, before anything is touched. Separate from
+/// printing it because this is the text a user reads to decide whether to go
+/// ahead with a destructive operation: it has to be exact about what is
+/// skipped, what is only kept locally, and whether a rollback exists.
+fn plan_lines(plan: &SwitchPlan) -> Vec<String> {
+    let mut out = Vec::new();
     let email = plan.target.email.as_deref().unwrap_or("email unknown");
-    println!("Claude Desktop   → {} ({email})", plan.target.label);
+    out.push(format!(
+        "Claude Desktop   → {} ({email})",
+        plan.target.label
+    ));
     if let Some(outgoing) = &plan.outgoing {
-        println!("  saving          {outgoing}'s credential and browser state first");
+        out.push(format!(
+            "  saving          {outgoing}'s credential and browser state first"
+        ));
     }
     match plan.target.org_uuid {
         Some(_) => {
@@ -690,35 +749,40 @@ fn print_plan(plan: &SwitchPlan) {
                 plan.scheduled.as_ref().map_or((0, 0, 0), |merge| {
                     (merge.added, merge.updated, merge.conflicts)
                 });
-            println!(
+            out.push(format!(
                 "  history         {} new + {} refreshed session(s)",
                 plan.sessions.copied.len(),
                 plan.sessions.updated.len(),
-            );
-            println!("  routines        {new_routines} new + {edited_routines} edited elsewhere");
+            ));
+            out.push(format!(
+                "  routines        {new_routines} new + {edited_routines} edited elsewhere"
+            ));
             if conflicts > 0 {
-                println!(
+                out.push(format!(
                     "  routine conflicts {conflicts} kept local (edit the desired copy to resolve)"
-                );
+                ));
             }
         }
-        None => println!("  history         skipped (no org recorded for this account yet)"),
+        None => {
+            out.push("  history         skipped (no org recorded for this account yet)".to_string())
+        }
     }
-    println!("  credential      swap to the saved Desktop login");
-    println!(
+    out.push("  credential      swap to the saved Desktop login".to_string());
+    out.push(format!(
         "  browser state   {}",
         if plan.restores_desktop_state {
             "restore this account's cookies and local storage"
         } else {
             "none saved yet"
         }
-    );
+    ));
     if !plan.opts.keep_bridge {
-        println!("  remote bridge   clear (a stale session id breaks /remote-control)");
+        out.push("  remote bridge   clear (a stale session id breaks /remote-control)".to_string());
     }
     if !plan.archive_members.is_empty() {
-        println!("  rollback        {}", plan.archive.display());
+        out.push(format!("  rollback        {}", plan.archive.display()));
     }
+    out
 }
 
 fn switch_cli(config: &Config, args: &SwitchArgs, tolerant: bool) -> Result<bool> {
@@ -1056,6 +1120,291 @@ fn shell_login_command(account_dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::claude_desktop::merge::{ConflictKind, DeletionCandidate};
+
+    fn candidate(id: &str, deleted_by: &str, still_in: &[&str]) -> DeletionCandidate {
+        DeletionCandidate {
+            kind: ConflictKind::Chat,
+            id: id.to_string(),
+            deleted_by: deleted_by.to_string(),
+            still_in: still_in.iter().map(|s| s.to_string()).collect(),
+            summary: format!("chat {id}"),
+        }
+    }
+
+    fn rendered(report: serde_json::Value) -> String {
+        status_lines(&report).join("\n")
+    }
+
+    fn plan_fixture() -> SwitchPlan {
+        SwitchPlan {
+            target: claude_desktop::ProfileMeta {
+                label: "work".into(),
+                email: Some("w@example.test".into()),
+                account_uuid: "acct-1".into(),
+                org_uuid: Some("org-1".into()),
+                has_credentials: true,
+                has_desktop_state: true,
+            },
+            outgoing: Some("personal".into()),
+            sessions: Default::default(),
+            scheduled: None,
+            tokens: claude_desktop::SavedTokens {
+                token_cache: "{}".into(),
+                token_cache_v2: "{}".into(),
+            },
+            archive: std::path::PathBuf::from("/archives/rollback.tar"),
+            archive_members: vec!["a".into()],
+            restores_desktop_state: true,
+            opts: Default::default(),
+            deletions: Vec::new(),
+            confirmed_deletions: Default::default(),
+            prior_synced: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_plan_names_the_target_the_outgoing_account_and_the_rollback() {
+        let out = plan_lines(&plan_fixture()).join("\n");
+
+        assert!(out.contains("work (w@example.test)"), "{out}");
+        assert!(
+            out.contains("saving          personal's credential"),
+            "{out}"
+        );
+        assert!(out.contains("restore this account's cookies"), "{out}");
+        assert!(
+            out.contains("rollback        /archives/rollback.tar"),
+            "{out}"
+        );
+    }
+
+    /// Without an org there is no history folder to merge into, so the plan
+    /// must say the history step is skipped rather than quietly claim zero
+    /// sessions were copied — those read the same to a user and mean very
+    /// different things.
+    #[test]
+    fn a_plan_without_an_org_says_history_is_skipped_not_empty() {
+        let mut plan = plan_fixture();
+        plan.target.org_uuid = None;
+
+        let out = plan_lines(&plan).join("\n");
+
+        assert!(out.contains("skipped (no org recorded"), "{out}");
+        assert!(!out.contains("new + 0 refreshed"), "{out}");
+    }
+
+    /// Nothing saved yet, no rollback to offer, and no previous account to
+    /// preserve: every optional line has to be absent rather than empty.
+    #[test]
+    fn a_plan_omits_the_lines_that_do_not_apply() {
+        let mut plan = plan_fixture();
+        plan.outgoing = None;
+        plan.restores_desktop_state = false;
+        plan.archive_members.clear();
+
+        let out = plan_lines(&plan).join("\n");
+
+        assert!(!out.contains("saving"), "{out}");
+        assert!(!out.contains("rollback"), "{out}");
+        assert!(out.contains("none saved yet"), "{out}");
+    }
+
+    /// A routine edited in two accounts is kept local rather than merged, and
+    /// the count only appears when there is one — a "0 kept local" line reads
+    /// like something went wrong.
+    #[test]
+    fn routine_conflicts_are_reported_only_when_there_are_some() {
+        let mut plan = plan_fixture();
+        plan.scheduled = Some(claude_desktop::merge::ScheduledMerge {
+            target: std::path::PathBuf::from("/scheduled.json"),
+            bytes: Vec::new(),
+            added: 2,
+            updated: 1,
+            conflicts: 3,
+            canonical_routines: Default::default(),
+        });
+
+        let out = plan_lines(&plan).join("\n");
+        assert!(
+            out.contains("routines        2 new + 1 edited elsewhere"),
+            "{out}"
+        );
+        assert!(out.contains("routine conflicts 3 kept local"), "{out}");
+
+        plan.scheduled.as_mut().unwrap().conflicts = 0;
+        assert!(!plan_lines(&plan).join("\n").contains("routine conflicts"));
+    }
+
+    /// The bridge line describes a *destructive* default — the stale session id
+    /// is cleared unless the user opted out — so it must track the flag.
+    #[test]
+    fn the_bridge_line_tracks_the_keep_bridge_flag() {
+        let mut plan = plan_fixture();
+        assert!(
+            plan_lines(&plan)
+                .join("\n")
+                .contains("remote bridge   clear"),
+            "clearing is the default and must be announced"
+        );
+
+        plan.opts.keep_bridge = true;
+        assert!(!plan_lines(&plan).join("\n").contains("remote bridge"));
+    }
+
+    #[test]
+    fn status_reports_both_halves_and_marks_the_active_account() {
+        let out = rendered(serde_json::json!({
+            "desktop": {
+                "data_dir": "/data",
+                "profiles_dir": "/profiles",
+                "profiles": [{
+                    "label": "work", "email": "w@example.test", "sessions": 12,
+                    "has_credentials": true, "has_desktop_state": false, "active": true,
+                }],
+            },
+            "cli": {
+                "active_label": "personal",
+                "accounts": [{"label": "personal", "email": "p@example.test", "active": true}],
+            },
+        }));
+
+        assert!(out.contains("Claude Desktop   /data"), "{out}");
+        assert!(out.contains("work"), "{out}");
+        assert!(out.contains("sessions=12"), "{out}");
+        assert!(out.contains("creds=yes"), "{out}");
+        assert!(out.contains("state=no"), "{out}");
+        assert_eq!(out.matches("[active]").count(), 2, "{out}");
+    }
+
+    /// Desktop is macOS-only and the report is `null` elsewhere; the CLI half
+    /// still has to render.
+    #[test]
+    fn status_without_desktop_still_reports_the_cli() {
+        let out = rendered(serde_json::json!({
+            "desktop": null,
+            "cli": {"active_label": null, "accounts": []},
+        }));
+
+        assert!(out.contains("not found (macOS only)"), "{out}");
+        assert!(out.contains("no named accounts"), "{out}");
+    }
+
+    /// Every field is absent. Nothing here may panic or invent a value — the
+    /// report is assembled from a filesystem that can be in any state.
+    #[test]
+    fn status_fills_in_placeholders_rather_than_panicking_on_an_empty_report() {
+        let out = rendered(serde_json::json!({
+            "desktop": {"profiles": [{}]},
+            "cli": {"accounts": [{}]},
+        }));
+
+        assert!(out.contains("Claude Desktop   ?"), "{out}");
+        assert!(out.contains("(email unknown)"), "{out}");
+        assert!(out.contains("sessions=0"), "{out}");
+        assert!(out.contains("creds=no"), "{out}");
+        assert!(
+            !out.contains("[active]"),
+            "absent must not read as active: {out}"
+        );
+    }
+
+    /// The warning that matters: saved copies are stale when the live login is
+    /// not one of the accounts listed. It must appear only when there *are*
+    /// accounts to be stale — an empty list is a fresh install, not a problem.
+    #[test]
+    fn the_stale_copies_note_appears_only_when_an_unlisted_login_is_live() {
+        let note = "saved copies may be stale";
+        let with_accounts = serde_json::json!({
+            "desktop": null,
+            "cli": {"active_label": null, "accounts": [{"label": "work"}]},
+        });
+        assert!(rendered(with_accounts).contains(note));
+
+        let live_login_is_listed = serde_json::json!({
+            "desktop": null,
+            "cli": {"active_label": "work", "accounts": [{"label": "work"}]},
+        });
+        assert!(!rendered(live_login_is_listed).contains(note));
+
+        let fresh_install = serde_json::json!({
+            "desktop": null,
+            "cli": {"active_label": null, "accounts": []},
+        });
+        assert!(!rendered(fresh_install).contains(note));
+    }
+
+    #[test]
+    fn only_keys_naming_a_current_conflict_authorize_a_deletion() {
+        let deletions = vec![
+            candidate("chat-a", "acct-1", &["acct-2"]),
+            candidate("chat-b", "acct-1", &["acct-2"]),
+        ];
+        let asked_for = vec![deletions[1].external_key()];
+
+        let confirmed = authorized_deletions(&deletions, &asked_for);
+
+        assert_eq!(confirmed.len(), 1);
+        assert!(confirmed.contains(&deletions[1].key()));
+        assert!(
+            !confirmed.contains(&deletions[0].key()),
+            "authorizing one conflict must not authorize its neighbour"
+        );
+    }
+
+    /// The key carries the account topology observed when the question was
+    /// asked. A dialog left open while the accounts changed underneath answers
+    /// about a conflict that no longer exists, and must delete nothing — even
+    /// though an item with that same id is still in front of us.
+    #[test]
+    fn a_key_from_a_stale_observation_deletes_nothing() {
+        let asked_when = [candidate("chat-a", "acct-1", &["acct-2"])];
+        let answer = vec![asked_when[0].external_key()];
+        // Same id, but a third account now holds a copy too.
+        let now = [candidate("chat-a", "acct-1", &["acct-2", "acct-3"])];
+
+        assert!(
+            authorized_deletions(&now, &answer).is_empty(),
+            "a verdict about an older topology must not carry over"
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_key_is_dropped_rather_than_matched() {
+        let deletions = [candidate("chat-a", "acct-1", &["acct-2"])];
+        let confirmed = authorized_deletions(&deletions, &["not-a-key".to_string(), String::new()]);
+        assert!(confirmed.is_empty());
+    }
+
+    #[test]
+    fn a_keep_list_keeps_exactly_what_it_names() {
+        assert_eq!(parse_keep_list("1 3", 3).unwrap(), BTreeSet::from([1, 3]));
+        // Order and repetition do not matter; the answer is a set.
+        assert_eq!(parse_keep_list("3 1 3", 3).unwrap(), BTreeSet::from([1, 3]));
+        // Blank keeps nothing — the documented way to delete them all.
+        assert!(parse_keep_list("   ", 3).unwrap().is_empty());
+    }
+
+    /// A typo here erases whatever the unreadable token meant to save, so the
+    /// whole answer is refused rather than half-applied.
+    #[test]
+    fn a_keep_list_naming_anything_unknown_is_refused_whole() {
+        for (answer, count) in [("1 x", 3), ("0", 3), ("4", 3), ("-1", 3), ("1.5", 3)] {
+            let unknown = parse_keep_list(answer, count)
+                .expect_err(&format!("{answer:?} should have been refused"));
+            assert!(!unknown.is_empty(), "{answer:?}");
+        }
+        // Including when the readable half would have kept something: the
+        // refusal has to win, or `2` gets deleted on behalf of a typo.
+        assert_eq!(parse_keep_list("1 tow", 3).unwrap_err(), vec!["tow"]);
+    }
+
+    #[test]
+    fn an_empty_list_accepts_only_an_empty_answer() {
+        assert!(parse_keep_list("", 0).unwrap().is_empty());
+        assert!(parse_keep_list("1", 0).is_err());
+    }
 
     #[test]
     fn mutation_commands_never_fall_back_after_a_config_error() {

@@ -11,6 +11,11 @@ Each release is also published at
 
 ### Changed
 
+- Internal: `account.rs` grew from 7 tests to 22 by splitting its decisions
+  from its prompting and printing (#137) — the deletion-conflict authorization,
+  the keep-list parser, and the status and switch-plan renderers are now pure
+  functions with coverage. No behaviour changes; the extracted code is the code
+  that was there. Regions covered went 22% → 50%, whole-tree 83.9% → 85.1%.
 - Internal: the four-field record every vendor fetch returns, and the policy
   around it, is now `outcome::Outcome<T>` instead of eighteen private copies
   (#136). No behaviour changes — the copies had already been reconciled in
