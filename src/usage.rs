@@ -163,11 +163,12 @@ fn fmt_minor_units(minor: i64, currency: &str) -> String {
     format!("{sign}{} minor units {currency}", minor.unsigned_abs())
 }
 
-/// Format an amount in minor units with its own currency and scale. Rendering
-/// R$ 141.57 as "$141.57" is a claim about the wrong currency — the same class
-/// of defect as a fabricated number. Known codes get their symbol (mirroring
-/// `deepseek::format_money`); anything else renders as `AMOUNT CODE`, which is
-/// still truthful.
+/// Format an amount in minor units with its own currency and scale.
+///
+/// The scale is this function's own — `money` cannot express a zero- or
+/// three-decimal currency — but the *symbol* comes from
+/// [`crate::format::with_currency`], so the two cannot disagree about what a
+/// given code looks like.
 pub fn fmt_minor(minor: i64, decimal_places: u32, currency: Option<&str>) -> String {
     let scale = 10_u64.pow(decimal_places);
     // `unsigned_abs`, not negation: `-i64::MIN` overflows. Unreachable from
@@ -184,14 +185,7 @@ pub fn fmt_minor(minor: i64, decimal_places: u32, currency: Option<&str>) -> Str
             width = decimal_places as usize
         )
     };
-    match currency {
-        None | Some("USD") => format!("{sign}${number}"),
-        Some("BRL") => format!("{sign}R${number}"),
-        Some("EUR") => format!("{sign}€{number}"),
-        Some("GBP") => format!("{sign}£{number}"),
-        Some("JPY") | Some("CNY") => format!("{sign}¥{number}"),
-        Some(other) => format!("{sign}{number} {other}"),
-    }
+    crate::format::with_currency(sign, &number, currency)
 }
 
 /// DeepSeek — credit balance from `/user/balance`.

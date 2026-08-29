@@ -256,7 +256,7 @@ impl Envelope {
         } else {
             config_plan_tier.unwrap_or("unknown").to_string()
         };
-        let plan = format!("GLM Coding {}", capitalize(&level));
+        let plan = format!("GLM Coding {}", crate::format::capitalize(&level));
 
         ZaiSnapshot {
             plan,
@@ -277,21 +277,6 @@ fn to_window(l: &LimitEntry, dur: chrono::Duration) -> Option<UsageWindow> {
         resets_at,
         window_duration: dur,
     })
-}
-
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) => {
-            let mut out = String::with_capacity(s.len());
-            for u in c.to_uppercase() {
-                out.push(u);
-            }
-            out.push_str(chars.as_str());
-            out
-        }
-        None => String::new(),
-    }
 }
 
 #[cfg(test)]

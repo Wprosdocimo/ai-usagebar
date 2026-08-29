@@ -38,15 +38,7 @@ pub fn build_placeholders(snap: &NovitaSnapshot) -> HashMap<&'static str, String
 /// Severity keys on the absolute remaining USD balance (same thresholds as
 /// Kilo/DeepSeek): running low = warmer color, empty = critical.
 pub fn severity(snap: &NovitaSnapshot) -> PaceSeverity {
-    if snap.available < 1.0 {
-        PaceSeverity::Critical
-    } else if snap.available < 5.0 {
-        PaceSeverity::High
-    } else if snap.available < 20.0 {
-        PaceSeverity::Mid
-    } else {
-        PaceSeverity::Low
-    }
+    crate::pango::balance_severity(snap.available, "USD")
 }
 
 pub fn render(

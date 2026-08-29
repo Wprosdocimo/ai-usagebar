@@ -22,8 +22,25 @@ Each release is also published at
   refreshing it belongs to the CLI that owns the file — so an expired token is
   reported as expired rather than silently rewritten.
 
+### Changed
+
+- EUR, GBP, BRL and JPY amounts render with their symbol everywhere. The two
+  money formatters — one for decimal amounts, one for integer minor units —
+  each carried their own currency table, and they disagreed: the same euro
+  figure read `3.50 EUR` in one panel and `€3.50` in another. Both now share a
+  single table. USD and CNY are unchanged, and a currency with no symbol still
+  trails its code rather than guessing one.
+
 ### Fixed
 
+- A vendor whose cache is cold now reports **what actually failed** instead of
+  a generic "no usable cache". Claude, Codex, Z.AI, OpenRouter and DeepSeek
+  replaced the original error with that message when there was no cached
+  figure to fall back on, so on a first run an expired key, a `500` and a
+  genuinely empty cache all rendered identically — the useful diagnostic was
+  written to disk and shown only on the *next* refresh. The other thirteen
+  vendors already returned the original error; a guard test keeps the two
+  groups from diverging again.
 - Z.AI's rows in the native panels — Omarchy Quattro, GNOME, KDE and the TUI —
   carry the pace footnote every other percentage vendor's rows carry
   (`60% elapsed · 20pts under`) instead of a bare `Resets in 2h 00m`. GLM's

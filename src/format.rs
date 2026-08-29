@@ -30,11 +30,47 @@ pub fn money(v: f64, currency: &str) -> String {
     } else {
         ""
     };
+    with_currency(sign, &magnitude, Some(currency))
+}
+
+/// Attach a currency to an already-formatted magnitude and sign.
+///
+/// The one table that decides which currencies get a symbol. [`money`] works in
+/// `f64` at two decimals and [`crate::usage::fmt_minor`] works in integer minor
+/// units at the currency's own scale — two different numbers, but they must not
+/// disagree about what a euro looks like. They did: `money` rendered EUR as
+/// `3.50 EUR` while `fmt_minor` rendered the same currency as `€3.50`.
+///
+/// `None` means a payload that predates any currency field; those were always
+/// USD. A code with no symbol here trails the code instead of guessing one,
+/// which is still truthful — rendering R$ 141.57 as "$141.57" is a claim about
+/// the wrong currency, the same class of defect as a fabricated number.
+pub fn with_currency(sign: &str, number: &str, currency: Option<&str>) -> String {
     match currency {
-        "USD" => format!("{sign}${magnitude}"),
-        "CNY" => format!("{sign}¥{magnitude}"),
-        // Unknown currencies trail their code instead of guessing a symbol.
-        _ => format!("{sign}{magnitude} {currency}"),
+        None | Some("USD") => format!("{sign}${number}"),
+        Some("BRL") => format!("{sign}R${number}"),
+        Some("EUR") => format!("{sign}€{number}"),
+        Some("GBP") => format!("{sign}£{number}"),
+        Some("JPY") | Some("CNY") => format!("{sign}¥{number}"),
+        Some(other) => format!("{sign}{number} {other}"),
+    }
+}
+
+/// Upper-case the first character, leaving the rest alone.
+///
+/// Vendor plans arrive lower-cased (`"pro"`, `"max"`, `"glm coding pro"`) and
+/// every one of them wants the same title-ish label. `char::to_uppercase` can
+/// yield more than one char, so this is not `s[..1].to_uppercase() + &s[1..]`.
+pub fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => {
+            let mut out = String::with_capacity(s.len());
+            out.extend(first.to_uppercase());
+            out.push_str(chars.as_str());
+            out
+        }
+        None => String::new(),
     }
 }
 
@@ -54,13 +90,6 @@ pub fn local_time_hms(when: DateTime<Utc>) -> String {
 pub fn updated_at_hm(now: DateTime<Utc>, cache_age: Option<Duration>) -> String {
     match cache_age {
         Some(age) => local_time_hm(now - chrono::Duration::from_std(age).unwrap_or_default()),
-        None => "—".to_string(),
-    }
-}
-
-pub fn updated_at_hms(now: DateTime<Utc>, cache_age: Option<Duration>) -> String {
-    match cache_age {
-        Some(age) => local_time_hms(now - chrono::Duration::from_std(age).unwrap_or_default()),
         None => "—".to_string(),
     }
 }
@@ -142,13 +171,42 @@ mod tests {
     fn money_places_the_sign_ahead_of_every_currency() {
         assert_eq!(money(20.0, "CNY"), "¥20.00");
         assert_eq!(money(-20.0, "CNY"), "-¥20.00");
-        // An unknown currency trails its code rather than guessing a symbol,
-        // and the sign still leads.
-        assert_eq!(money(3.5, "EUR"), "3.50 EUR");
-        assert_eq!(money(-3.5, "EUR"), "-3.50 EUR");
+        // A currency trails its code only when this table has no symbol for
+        // it; the sign still leads either way.
+        assert_eq!(money(3.5, "SEK"), "3.50 SEK");
+        assert_eq!(money(-3.5, "SEK"), "-3.50 SEK");
         // usd() is the same policy, not a second one.
         assert_eq!(money(-5.71, "USD"), usd(-5.71));
         assert_eq!(money(-0.0, "CNY"), "¥0.00");
+    }
+
+    /// `money` and `usage::fmt_minor` compute different numbers — f64 at two
+    /// decimals versus integer minor units at the currency's own scale — but a
+    /// euro must look like a euro in both. They disagreed once: `money` had no
+    /// EUR/GBP/BRL/JPY entry and trailed the code while `fmt_minor` printed the
+    /// symbol, so the same currency read two ways in two panels.
+    #[test]
+    fn the_two_money_formatters_agree_on_every_symbol() {
+        for (code, symbol) in [
+            ("USD", "$"),
+            ("BRL", "R$"),
+            ("EUR", "€"),
+            ("GBP", "£"),
+            ("JPY", "¥"),
+            ("CNY", "¥"),
+        ] {
+            assert_eq!(money(3.5, code), format!("{symbol}3.50"), "money {code}");
+            assert_eq!(
+                crate::usage::fmt_minor(350, 2, Some(code)),
+                format!("{symbol}3.50"),
+                "fmt_minor {code}"
+            );
+        }
+        // And they agree that an unlisted code trails instead of guessing.
+        assert_eq!(money(3.5, "SEK"), "3.50 SEK");
+        assert_eq!(crate::usage::fmt_minor(350, 2, Some("SEK")), "3.50 SEK");
+        // fmt_minor keeps its own scale: JPY has no minor unit.
+        assert_eq!(crate::usage::fmt_minor(350, 0, Some("JPY")), "¥350");
     }
 
     #[test]

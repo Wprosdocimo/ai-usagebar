@@ -68,7 +68,7 @@ impl OauthCreds {
     /// Plan label rendered the way claudebar does (claudebar:547-550):
     ///   "${sub_type^} [5x|20x]" (first letter capitalized, optional tier suffix).
     pub fn plan_label(&self) -> String {
-        let mut name = capitalize_first(&self.subscription_type);
+        let mut name = crate::format::capitalize(&self.subscription_type);
         if name.is_empty() {
             name = "Unknown".into();
         }
@@ -82,21 +82,6 @@ impl OauthCreds {
 
     pub fn expires_at_secs(&self) -> i64 {
         self.expires_at_ms / 1000
-    }
-}
-
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => {
-            let mut out = String::with_capacity(s.len());
-            for c in first.to_uppercase() {
-                out.push(c);
-            }
-            out.push_str(chars.as_str());
-            out
-        }
-        None => String::new(),
     }
 }
 

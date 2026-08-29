@@ -52,21 +52,7 @@ pub fn severity(snap: &DeepseekSnapshot) -> PaceSeverity {
     if !snap.is_available {
         return PaceSeverity::Critical;
     }
-    // Thresholds scaled by currency. CNY ≈ 7× USD (rough parity).
-    // critical / high / mid boundaries in each currency unit.
-    let (t_critical, t_high, t_mid) = match snap.currency.as_str() {
-        "CNY" => (7.0_f64, 35.0, 140.0),
-        _ => (1.0_f64, 5.0, 20.0), // USD and unknowns treated as USD-scale
-    };
-    if snap.balance < t_critical {
-        PaceSeverity::Critical
-    } else if snap.balance < t_high {
-        PaceSeverity::High
-    } else if snap.balance < t_mid {
-        PaceSeverity::Mid
-    } else {
-        PaceSeverity::Low
-    }
+    crate::pango::balance_severity(snap.balance, &snap.currency)
 }
 
 pub fn render(

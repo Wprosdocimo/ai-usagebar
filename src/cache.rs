@@ -529,6 +529,32 @@ mod tests {
         );
     }
 
+    /// A vendor whose cache is cold has no figure to show, so the error is the
+    /// entire output. Substituting a generic "no usable cache" there throws
+    /// away the only diagnostic the user gets: on a first run, an expired key,
+    /// a 500, and a genuinely empty cache all render identically. Thirteen
+    /// vendors returned the original error and five synthesized one; this
+    /// keeps them from diverging again.
+    #[test]
+    fn no_vendor_replaces_the_original_error_with_a_no_cache_message() {
+        let mut sites = Vec::new();
+        for file in crate::guard::rs_files_in("src") {
+            if !file.ends_with("fetch.rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&file).expect("readable module");
+            for (n, line) in crate::guard::production_code(&source).lines().enumerate() {
+                if line.contains("no usable cache") || line.contains("no cache and network") {
+                    sites.push(format!("{}:{}", file.display(), n + 1));
+                }
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "a cold cache must return the error that caused the fetch to fail,              not a generic message about the cache. Thread the original              `AppError` into the fallback instead. Found: {sites:#?}"
+        );
+    }
+
     /// The bug this closes: the pair handed to the widget was built from the
     /// raw body in parallel with the redacted one going to disk, so the run
     /// that hit the `401` showed the body and only the *next* run showed the

@@ -67,16 +67,21 @@ pub async fn fetch_snapshot(
                 cache_age: Some(Duration::ZERO),
             })
         }
-        Err(e) if e.is_transient() => fallback_silent(cache, config_plan_tier),
+        Err(e) if e.is_transient() => fallback_silent(cache, config_plan_tier, e),
         Err(AppError::Http { status, body }) => {
             cache.mark_stale();
             let last_error = Some(cache.write_last_error(status, &body));
-            fallback_with_error(cache, last_error, config_plan_tier)
+            fallback_with_error(
+                cache,
+                last_error,
+                config_plan_tier,
+                AppError::Http { status, body },
+            )
         }
         Err(e) => {
             cache.mark_stale();
             let last_error = Some(cache.write_last_error(0, &e.to_string()));
-            fallback_with_error(cache, last_error, config_plan_tier)
+            fallback_with_error(cache, last_error, config_plan_tier, e)
         }
     }
 }
@@ -93,22 +98,25 @@ fn reuse(bytes: Vec<u8>, cache: &Cache, stale: bool, tier: Option<&str>) -> Resu
     })
 }
 
-fn fallback_silent(cache: &Cache, tier: Option<&str>) -> Result<FetchOutcome> {
+fn fallback_silent(cache: &Cache, tier: Option<&str>, original: AppError) -> Result<FetchOutcome> {
     let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(AppError::Transport(
-            "zai: no cache and network unreachable".into(),
-        ));
+        return Err(original);
     };
     reuse(bytes, cache, true, tier)
 }
 
+/// On failure we show the last good figure with the error alongside it. With
+/// nothing usable cached there is nothing to show, so the **original** error is
+/// returned rather than a generic "no usable cache" that hides what went wrong
+/// — a cold cache and an expired key would otherwise look identical.
 fn fallback_with_error(
     cache: &Cache,
     last_error: Option<(u16, String)>,
     tier: Option<&str>,
+    original: AppError,
 ) -> Result<FetchOutcome> {
     let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(AppError::Other("zai: no usable cache".into()));
+        return Err(original);
     };
     let mut out = reuse(bytes, cache, true, tier)?;
     out.last_error = last_error;

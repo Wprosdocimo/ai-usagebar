@@ -177,18 +177,27 @@ pub async fn fetch_snapshot(
         Ok(Err(AppError::Http { status, body })) => {
             cache.mark_stale();
             let last_error = Some(cache.write_last_error(status, &body));
-            fallback_to_cache(cache, plan_label, last_error)
+            fallback_to_cache(
+                cache,
+                plan_label,
+                last_error,
+                AppError::Http { status, body },
+            )
         }
         Ok(Err(e)) if e.is_transient() => {
             // Reuse cache silently; no last_error write.
-            fallback_to_cache_silent(cache, plan_label)
+            fallback_to_cache_silent(cache, plan_label, e)
         }
         Ok(Err(e)) => {
             cache.mark_stale();
             let last_error = Some(cache.write_last_error(0, &e.to_string()));
-            fallback_to_cache(cache, plan_label, last_error)
+            fallback_to_cache(cache, plan_label, last_error, e)
         }
-        Err(_elapsed) => fallback_to_cache_silent(cache, plan_label),
+        Err(_elapsed) => fallback_to_cache_silent(
+            cache,
+            plan_label,
+            AppError::Transport("usage request timed out".into()),
+        ),
     }
 }
 
@@ -220,13 +229,18 @@ fn reuse_cache(
     })
 }
 
+/// On failure we show the last good figure with the error alongside it. With
+/// nothing usable cached there is nothing to show, so the **original** error is
+/// returned rather than a generic "no usable cache" that hides what went wrong
+/// — a cold cache and an expired key would otherwise look identical.
 fn fallback_to_cache(
     cache: &Cache,
     plan_label: String,
     last_error: Option<(u16, String)>,
+    original: AppError,
 ) -> Result<FetchOutcome> {
     let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(AppError::Other("no usable cache".into()));
+        return Err(original);
     };
     let snap = parse_payload(&bytes, plan_label)?;
     Ok(FetchOutcome {
@@ -237,11 +251,13 @@ fn fallback_to_cache(
     })
 }
 
-fn fallback_to_cache_silent(cache: &Cache, plan_label: String) -> Result<FetchOutcome> {
+fn fallback_to_cache_silent(
+    cache: &Cache,
+    plan_label: String,
+    original: AppError,
+) -> Result<FetchOutcome> {
     let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(AppError::Transport(
-            "no cache and network unreachable".into(),
-        ));
+        return Err(original);
     };
     let snap = parse_payload(&bytes, plan_label)?;
     Ok(FetchOutcome {

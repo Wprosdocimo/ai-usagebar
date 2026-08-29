@@ -179,7 +179,7 @@ where
 impl UsageResponse {
     pub fn into_snapshot(self, plan_hint: Option<&str>) -> AppResult<OpenAiSnapshot> {
         let plan_type = self.plan_type.as_deref().or(plan_hint).unwrap_or("Unknown");
-        let plan = format!("ChatGPT {}", capitalize(plan_type));
+        let plan = format!("ChatGPT {}", crate::format::capitalize(plan_type));
 
         let (session, weekly) = classify_rate_limit(self.rate_limit.unwrap_or_default())?;
         let code_review = self
@@ -328,21 +328,6 @@ fn range_from_vec(v: Option<Vec<i64>>) -> Option<(i64, i64)> {
         Some((v[0], v[0]))
     } else {
         None
-    }
-}
-
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) => {
-            let mut out = String::with_capacity(s.len());
-            for u in c.to_uppercase() {
-                out.push(u);
-            }
-            out.push_str(chars.as_str());
-            out
-        }
-        None => String::new(),
     }
 }
 

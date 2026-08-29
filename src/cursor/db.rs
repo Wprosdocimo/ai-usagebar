@@ -13,7 +13,6 @@
 use std::path::{Path, PathBuf};
 use std::{hash::Hash, hash::Hasher};
 
-use base64::Engine;
 use rusqlite::{Connection, OpenFlags};
 
 use crate::display::sanitize_untrusted_path;
@@ -164,7 +163,7 @@ pub struct SessionAuth {
 /// unusable, so this is a credentials error, not a schema error (the *shape*
 /// of the wire endpoint isn't in play yet at this point).
 pub fn session_auth(token: &str) -> Result<SessionAuth> {
-    let claims = parse_jwt_claims(token).ok_or_else(|| {
+    let claims = crate::jwt::claims(token).ok_or_else(|| {
         AppError::Credentials(
             "Cursor session token could not be decoded. Sign in to the Cursor IDE again.".into(),
         )
@@ -194,23 +193,10 @@ pub fn session_auth(token: &str) -> Result<SessionAuth> {
     })
 }
 
-/// Decode a JWT's payload segment without verifying its signature — we trust
-/// it the same way the Cursor dashboard's own browser JS does (it never
-/// verifies either; the server is the one that rejects a bad token).
-fn parse_jwt_claims(token: &str) -> Option<serde_json::Value> {
-    let mut parts = token.split('.');
-    let _header = parts.next()?;
-    let payload = parts.next()?;
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload))
-        .ok()?;
-    serde_json::from_slice(&decoded).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
     use tempfile::TempDir;
 
     /// Build a fake JWT with the given claims (no signature verification,

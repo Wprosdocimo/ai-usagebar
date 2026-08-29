@@ -141,15 +141,24 @@ pub async fn fetch_snapshot(
         Ok(Err(AppError::Http { status, body })) => {
             cache.mark_stale();
             let last_error = Some(cache.write_last_error(status, &body));
-            fallback(cache, plan_hint.as_deref(), last_error)
+            fallback(
+                cache,
+                plan_hint.as_deref(),
+                last_error,
+                AppError::Http { status, body },
+            )
         }
-        Ok(Err(e)) if e.is_transient() => fallback_silent(cache, plan_hint.as_deref()),
+        Ok(Err(e)) if e.is_transient() => fallback_silent(cache, plan_hint.as_deref(), e),
         Ok(Err(e)) => {
             cache.mark_stale();
             let last_error = Some(cache.write_last_error(0, &e.to_string()));
-            fallback(cache, plan_hint.as_deref(), last_error)
+            fallback(cache, plan_hint.as_deref(), last_error, e)
         }
-        Err(_) => fallback_silent(cache, plan_hint.as_deref()),
+        Err(_) => fallback_silent(
+            cache,
+            plan_hint.as_deref(),
+            AppError::Transport("openai: usage request timed out".into()),
+        ),
     }
 }
 
@@ -168,24 +177,31 @@ fn reuse(
     })
 }
 
+/// On failure we show the last good figure with the error alongside it. With
+/// nothing usable cached there is nothing to show, so the **original** error is
+/// returned rather than a generic "no usable cache" that hides what went wrong
+/// — a cold cache and an expired key would otherwise look identical.
 fn fallback(
     cache: &Cache,
     plan_hint: Option<&str>,
     last_error: Option<(u16, String)>,
+    original: AppError,
 ) -> Result<FetchOutcome> {
     let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(AppError::Other("openai: no usable cache".into()));
+        return Err(original);
     };
     let mut out = reuse(bytes, cache, true, plan_hint)?;
     out.last_error = last_error;
     Ok(out)
 }
 
-fn fallback_silent(cache: &Cache, plan_hint: Option<&str>) -> Result<FetchOutcome> {
+fn fallback_silent(
+    cache: &Cache,
+    plan_hint: Option<&str>,
+    original: AppError,
+) -> Result<FetchOutcome> {
     let Some(bytes) = cache.fallback_payload(MAX_STALE)? else {
-        return Err(AppError::Transport(
-            "openai: no cache and network unreachable".into(),
-        ));
+        return Err(original);
     };
     reuse(bytes, cache, true, plan_hint)
 }

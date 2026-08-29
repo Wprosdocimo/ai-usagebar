@@ -28,6 +28,7 @@ pub mod grok;
 /// Source-scanning helpers for structural guard tests. Test-only.
 #[cfg(test)]
 pub(crate) mod guard;
+pub mod jwt;
 pub mod kilo;
 pub mod kimi;
 pub mod kiro;
@@ -42,6 +43,7 @@ pub mod pacing;
 pub mod pango;
 pub mod report;
 pub mod safe_storage;
+pub mod serde_helpers;
 pub mod supergrok;
 pub mod theme;
 pub mod tooltip;

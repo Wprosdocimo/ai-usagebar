@@ -941,6 +941,8 @@ fn fallback(err: &AppError, _cli: &Cli) -> WaybarOutput {
     };
     // Tooltips are Pango markup. Escape error text before serializing it so an
     // error cannot inject markup; serde still produces valid one-line JSON.
+    // `escape` also runs `display::sanitize_untrusted_field`, which is what
+    // bounds and de-controls the vendor body this tooltip can carry.
     WaybarOutput::error(&escape(&tooltip))
 }
 
@@ -1006,6 +1008,37 @@ mod tests {
         let out = fallback(&err, &cli_default());
         assert_eq!(out.text, "⚠");
         assert!(out.tooltip.contains("missing token"));
+    }
+
+    /// A vendor body reaches this tooltip verbatim on a cold cache — nothing
+    /// on the way has been through `Cache::write_last_error`. What protects it
+    /// is that `pango::escape` runs `sanitize_untrusted_field` first, so bidi
+    /// overrides (which reorder the text around them and survive XML escaping)
+    /// and a body up to the 2 MiB `MAX_BODY_BYTES` ceiling are both handled.
+    /// That is load-bearing and easy to lose if `escape` is ever reduced to
+    /// plain XML escaping, so pin it here at the sink that depends on it.
+    #[test]
+    fn fallback_strips_control_characters_and_caps_a_hostile_body() {
+        let hostile = "start\u{202E}reordered\u{1B}[31m".to_string()
+            + &"A".repeat(crate::display::MAX_UNTRUSTED_FIELD_CHARS);
+        let out = fallback(
+            &AppError::Http {
+                status: 500,
+                body: hostile,
+            },
+            &cli_default(),
+        );
+
+        assert_eq!(out.text, "\u{26a0}");
+        assert!(!out.tooltip.contains('\u{202E}'), "bidi override survived");
+        assert!(!out.tooltip.contains('\u{1B}'), "escape sequence survived");
+        assert!(
+            out.tooltip.chars().count() <= crate::display::MAX_UNTRUSTED_FIELD_CHARS,
+            "uncapped tooltip of {} chars",
+            out.tooltip.chars().count()
+        );
+        // The diagnostic itself still survives the cleaning.
+        assert!(out.tooltip.contains("HTTP 500"), "{}", out.tooltip);
     }
 
     #[test]

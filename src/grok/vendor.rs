@@ -33,15 +33,7 @@ pub fn build_placeholders(snap: &GrokSnapshot) -> HashMap<&'static str, String> 
 
 /// Prepaid credit: running low = warmer, empty/negative = critical.
 pub fn severity(snap: &GrokSnapshot) -> PaceSeverity {
-    if snap.balance < 1.0 {
-        PaceSeverity::Critical
-    } else if snap.balance < 5.0 {
-        PaceSeverity::High
-    } else if snap.balance < 20.0 {
-        PaceSeverity::Mid
-    } else {
-        PaceSeverity::Low
-    }
+    crate::pango::balance_severity(snap.balance, "USD")
 }
 
 pub fn render(

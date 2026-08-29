@@ -26,41 +26,20 @@ struct RefreshRequest<'a> {
 
 #[derive(Debug, Deserialize)]
 pub struct RefreshResponse {
-    #[serde(deserialize_with = "de_nonempty_string")]
+    #[serde(deserialize_with = "crate::serde_helpers::de_nonempty_string")]
     pub access_token: String,
-    #[serde(default, deserialize_with = "de_opt_nonempty_string")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::de_opt_nonempty_string"
+    )]
     pub refresh_token: Option<String>,
-    #[serde(default, deserialize_with = "de_opt_nonempty_string")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::de_opt_nonempty_string"
+    )]
     pub id_token: Option<String>,
     #[serde(default, deserialize_with = "de_expires_in")]
     pub expires_in: Option<u64>,
-}
-
-fn de_nonempty_string<'de, D>(d: D) -> std::result::Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = String::deserialize(d)?;
-    if value.trim().is_empty() {
-        Err(serde::de::Error::custom("token cannot be empty"))
-    } else {
-        Ok(value)
-    }
-}
-
-fn de_opt_nonempty_string<'de, D>(d: D) -> std::result::Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<String>::deserialize(d)?
-        .map(|value| {
-            if value.trim().is_empty() {
-                Err(serde::de::Error::custom("token cannot be empty"))
-            } else {
-                Ok(value)
-            }
-        })
-        .transpose()
 }
 
 fn de_expires_in<'de, D>(d: D) -> std::result::Result<Option<u64>, D::Error>

@@ -42,19 +42,7 @@ pub fn severity(snap: &MoonshotSnapshot) -> PaceSeverity {
     if snap.available <= 0.0 {
         return PaceSeverity::Critical;
     }
-    let (t_critical, t_high, t_mid) = match snap.currency.as_str() {
-        "CNY" => (7.0_f64, 35.0, 140.0),
-        _ => (1.0_f64, 5.0, 20.0),
-    };
-    if snap.available < t_critical {
-        PaceSeverity::Critical
-    } else if snap.available < t_high {
-        PaceSeverity::High
-    } else if snap.available < t_mid {
-        PaceSeverity::Mid
-    } else {
-        PaceSeverity::Low
-    }
+    crate::pango::balance_severity(snap.available, &snap.currency)
 }
 
 pub fn render(
