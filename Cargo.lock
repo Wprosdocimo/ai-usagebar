@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "ai-usagebar"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "aes",
  "base64 0.23.1",
