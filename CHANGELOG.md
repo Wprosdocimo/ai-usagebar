@@ -9,6 +9,19 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- **Command Code** (`commandcode.ai`) is supported as a vendor, selectable with
+  `--vendor commandcode` and enabled with `[commandcode]` in config. It shows
+  the 5-hour and weekly rolling spend windows — priced in dollars, as Command
+  Code meters spend rather than tokens — plus the plan and the monthly credit
+  remaining. Like Cursor and Kiro CLI it needs no key of its own: it reuses the
+  OAuth credential from either the official CLI or pi
+  (`~/.commandcode/auth.json`, then `~/.pi/agent/auth.json`), with
+  `COMMANDCODE_API_KEY` as an override. The credential is only ever read —
+  refreshing it belongs to the CLI that owns the file — so an expired token is
+  reported as expired rather than silently rewritten.
+
 ### Fixed
 
 - Z.AI's rows in the native panels — Omarchy Quattro, GNOME, KDE and the TUI —

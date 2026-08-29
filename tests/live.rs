@@ -616,3 +616,70 @@ async fn minimax_live() {
             .map(|w| w.utilization_pct),
     );
 }
+
+/// Command Code reuses whichever local agent harness is signed in, so this
+/// test needs no key of its own — it skips when nothing on the machine holds
+/// a credential.
+#[tokio::test]
+#[ignore]
+async fn commandcode_live() {
+    use ai_usagebar::commandcode;
+
+    let credential = match commandcode::creds::resolve(None) {
+        Ok(credential) => credential,
+        Err(error) => {
+            eprintln!("commandcode_live: {error} — skipping Command Code smoke test");
+            return;
+        }
+    };
+    let cache = xdg_cache_for("commandcode");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap();
+    let endpoints = commandcode::fetch::Endpoints::default();
+    let out = commandcode::fetch::fetch_snapshot(
+        &client,
+        &credential.token,
+        &cache,
+        &endpoints,
+        Duration::from_secs(0),
+    )
+    .await
+    .expect("command code fetch should succeed against the real API");
+
+    // The ledger is load-bearing; the windows are what the bar leads with.
+    assert!(
+        out.snapshot.five_hour.is_some()
+            || out.snapshot.weekly.is_some()
+            || out.snapshot.credits.is_some(),
+        "commandcode returned neither a window nor a ledger"
+    );
+    for (label, window) in [
+        ("commandcode.five_hour", out.snapshot.five_hour.as_ref()),
+        ("commandcode.weekly", out.snapshot.weekly.as_ref()),
+    ] {
+        if let Some(window) = window {
+            assert_pct(label, window.pct());
+            assert!(window.cap > 0.0, "{label} reported a non-positive cap");
+            assert!(
+                window.resets_at.is_some(),
+                "{label} lost its reset timestamp — the API sends a ms epoch"
+            );
+        }
+    }
+    println!(
+        "✅ command code — plan={:?}, 5h={:?}, weekly={:?}, credits={:?} of pool {:?}",
+        out.snapshot.plan,
+        out.snapshot
+            .five_hour
+            .as_ref()
+            .map(|w| (w.used, w.cap, w.pct())),
+        out.snapshot
+            .weekly
+            .as_ref()
+            .map(|w| (w.used, w.cap, w.pct())),
+        out.snapshot.credits.as_ref().map(|c| c.remaining()),
+        out.snapshot.credit_pool,
+    );
+}

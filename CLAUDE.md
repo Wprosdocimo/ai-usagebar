@@ -13,19 +13,25 @@ When cutting a new version (patch, minor, or major):
    - Add a new `## [X.Y.Z] — YYYY-MM-DD` section above the previous one.
    - Categorize entries by **Added / Changed / Fixed / Security** (Keep-A-Changelog).
    - Update the `[Unreleased]` compare link and add a new release link at the bottom.
-   - **Prove no published section moved**, before tagging:
+   - **Prove no published section moved**, before tagging. Compare the newest
+     released section against its own tag, byte for byte:
      ```
-     git diff <previous-tag> HEAD -- CHANGELOG.md | grep '^-' | grep -v '^---' \
-       | grep -v '^-\[Unreleased\]:'
+     prev=$(git describe --tags --abbrev=0)
+     diff <(git show "$prev:CHANGELOG.md" | sed -n "/^## \[${prev#v}\]/,/^## \[/p") \
+          <(sed -n "/^## \[${prev#v}\]/,/^## \[/p" CHANGELOG.md)
      ```
-     The `[Unreleased]:` compare link is excluded because it legitimately
-     changes every release; a check that fires every time gets ignored, which
-     is worse than no check. Any *other* output means an already-released
-     section changed. A PR branched before the last tag carries its entries
-     under `[Unreleased]`, and git merges them *cleanly* into whatever now
-     sits at that position — which is the section you just published. It
-     happened to v1.6.0 (#127's entries landed in it after release) and was
-     caught only by this diff. A clean merge is not evidence here; the diff is.
+     Any output means the released section changed. **It must compare, not
+     grep for removals.** The first version of this check greped `^-` and
+     therefore only caught a *rewritten* entry; #129 branched before v1.8.0 and
+     its `[Unreleased]` bullet merged in as a pure *insertion*, adding a feature
+     to a shipped release with no removed line for the grep to find. It passed
+     clean while the section was wrong.
+
+     The cause is the same both times: a PR branched before the last tag
+     carries its entries under `[Unreleased]`, and git merges them *cleanly*
+     into whatever now sits at that position — which is the section you just
+     published. It happened to v1.6.0 (#127) and again to v1.8.0 (#129). A
+     clean merge is not evidence here; the comparison is.
 3. **Bump `packaging/aur/PKGBUILD`** — `pkgver=X.Y.Z`, `pkgrel=1`, reset `sha256sums` to `'SKIP'`.
 4. **Bump `packaging/aur/PKGBUILD-bin`** — same `pkgver`, `pkgrel=1`, reset both
    `sha256sums_x86_64` and `sha256sums_aarch64` to `'SKIP'`.

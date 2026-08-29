@@ -1,6 +1,6 @@
 # ai-usagebar
 
-Native Omarchy Quattro panel, Waybar widget, and tabbed TUI for AI plan usage across **Claude**, **Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, **Kimi**, **Nous Research**, **OpenCode Go**, and other supported AI coding services.
+Native Omarchy Quattro panel, Waybar widget, and tabbed TUI for AI plan usage across **Claude**, **Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, **Kimi**, **Nous Research**, **OpenCode Go**, **Command Code**, and other supported AI coding services.
 
 ai-usagebar began as a Rust port of
 [`claudebar`](https://github.com/mryll/claudebar) and remains drop-in
@@ -226,6 +226,7 @@ come from environment variables or `config.toml`.
 | Kiro CLI | Existing kiro-cli login | Opt in and run `kiro-cli login` once. ai-usagebar refreshes the session when needed. |
 | Nous Research | OAuth device flow | Enable `[nous]`, click **Log in with Nous Research** in the Omarchy settings panel, or run `ai-usagebar auth nous login`. Credentials are kept in ai-usagebar's separate platform config directory (`~/.config/ai-usagebar/credentials.json` on Linux). |
 | OpenCode Go | API key (`OPENCODE_GO_API_KEY` env or `[opencode-go] api_key` in config) | Enable `[opencode-go]`, then enter the key in the Omarchy settings panel or set the environment variable. |
+| Command Code | Existing `commandcode`, pi, or omp login | Enable `[commandcode]` and sign in to any one of them once. No key to paste; `COMMANDCODE_API_KEY` overrides if you prefer one. |
 
 ### Nous credits and OpenCode Go
 
@@ -248,6 +249,31 @@ be entered through the native Settings panel; stored values are sent to the Rust
 settings command over stdin and are never placed in QML command arguments. Cache
 entries are tied to the endpoint and a one-way key fingerprint, so changing
 accounts cannot reuse another account's fresh or stale usage.
+
+### Command Code
+
+Command Code meters spend rather than tokens, so its two rolling windows are
+priced in dollars: `$1.23 of $14.00` for the 5-hour window and `$5.24 of $35.00`
+for the weekly one, alongside the monthly credit that is left. The percentages
+the bar and the meters show are derived from those figures.
+
+**There is no key to enter, and no key field in the settings panel.**
+Command Code appears in the provider selector but not in the key list, the same
+way Claude, Codex, Cursor and Kiro do — enable `[commandcode]` and it works.
+
+Credentials are reused, never issued. The OAuth token comes from
+`~/.commandcode/auth.json` from the official CLI first, then
+`~/.pi/agent/auth.json`; `COMMANDCODE_API_KEY` outranks both. **The token is
+only ever read.**
+Refreshing it belongs to the CLI that owns the file, and writing back from here
+would race the harnesses that share it; an expired token is reported as expired
+instead. Set `[commandcode] auth_paths` to search somewhere else entirely.
+
+The plan's monthly allowance is not reported by the API, so a small table maps
+the plan id to it (GOAT → $70, and so on). An unrecognised plan keeps its id
+and simply omits the "spent of allowance" line rather than inventing a
+denominator. Cache entries are tied to the endpoint and a one-way token
+fingerprint, so changing accounts cannot reuse another account's usage.
 
 #### Grok: team-scoped vs organization-scoped keys
 

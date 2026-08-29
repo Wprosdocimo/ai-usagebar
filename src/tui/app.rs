@@ -730,6 +730,21 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             .await?;
             Ok(outcome.into())
         }
+        VendorId::CommandCode => {
+            let credential =
+                crate::commandcode::creds::resolve(config.commandcode.auth_paths.as_deref())?;
+            let cache = crate::cache::Cache::for_vendor("commandcode")?;
+            let endpoints = crate::commandcode::fetch::Endpoints::default();
+            let outcome = crate::commandcode::fetch::fetch_snapshot(
+                client,
+                &credential.token,
+                &cache,
+                &endpoints,
+                DEFAULT_TTL,
+            )
+            .await?;
+            Ok(outcome.into())
+        }
     }
 }
 
