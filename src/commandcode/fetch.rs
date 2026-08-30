@@ -66,12 +66,7 @@ pub async fn fetch_snapshot(
     if let Some(bytes) = cache.fresh_payload(ttl)?
         && let Ok(snapshot) = parse_cache(&bytes, &target)
     {
-        return Ok(FetchOutcome {
-            snapshot,
-            stale: false,
-            last_error: cache.read_last_error(),
-            cache_age: cache.payload_age(),
-        });
+        return Ok(crate::outcome::Outcome::cached(snapshot, cache, false));
     }
 
     match fetch_live(client, token, endpoints).await {
@@ -81,12 +76,7 @@ pub async fn fetch_snapshot(
                 "response": snapshot_repr(&snapshot),
             }))?;
             cache.write_payload(&body)?;
-            Ok(FetchOutcome {
-                snapshot,
-                stale: false,
-                last_error: None,
-                cache_age: Some(Duration::ZERO),
-            })
+            Ok(crate::outcome::Outcome::fresh(snapshot))
         }
         Err(error @ AppError::Transport(_)) => fallback_or_error(cache, None, &target, error),
         Err(AppError::Http { status, .. }) => {

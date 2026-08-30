@@ -40,7 +40,10 @@ Each release is also published at
   same camelCase `BillingConfig` shape the strict wire types already accept.
   The endpoint is fixed: `GROK_CLI_CHAT_PROXY_BASE_URL` still scopes the
   cache (it changes which login is in play) but does not choose where the
-  key is sent.
+  key is sent. The README frontend table, `docs/configuration.md`,
+  `docs/vendor-endpoints.md` and `docs/format-placeholders.md` are updated to
+  match: they described SuperGrok as ACP-only and stated that the login files
+  were never parsed, which stopped being true with this change.
 
 ### Changed
 

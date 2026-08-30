@@ -126,6 +126,35 @@ mod tests {
         Err(AppError::Schema("cached payload is not ours".into()))
     }
 
+    /// The refactor that introduced this module replaced the hand-built
+    /// records with `fresh`/`cached` by regex, and the regex missed six that
+    /// used field shorthand — behaviourally identical, but they are how the
+    /// policy drifts back apart. Constructing the record by hand is the thing
+    /// to forbid, not any particular spelling of it.
+    #[test]
+    fn no_vendor_assembles_the_record_by_hand() {
+        let mut sites = Vec::new();
+        for file in crate::guard::rs_files_in("src") {
+            if file.ends_with("outcome.rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&file).expect("readable module");
+            for (n, line) in crate::guard::production_code(&source).lines().enumerate() {
+                let line = line.trim();
+                if line == "cache_age: Some(Duration::ZERO),"
+                    || line == "cache_age: cache.payload_age(),"
+                {
+                    sites.push(format!("{}:{}", file.display(), n + 1));
+                }
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "build outcomes with `Outcome::fresh` or `Outcome::cached`, so the \
+             provenance rules live in one place. Found: {sites:#?}"
+        );
+    }
+
     #[test]
     fn a_fresh_outcome_clears_the_recorded_error() {
         let out = Outcome::fresh("live");

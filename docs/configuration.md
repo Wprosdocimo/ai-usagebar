@@ -105,11 +105,14 @@ api_key_env = "XAI_MANAGEMENT_KEY"
 
 [supergrok]
 enabled = true             # disabled by default; enable once you've run `grok login`
-# No API key: billing comes from the official Grok Build ACP process.
+# No API key of its own: billing comes from Grok Build's documented HTTPS
+# endpoint using the `key` already in its auth.json (read-only, sent in one
+# Authorization header, never copied or rewritten), or from its ACP process.
 # Defaults to $GROK_HOME/bin/grok or ~/.grok/bin/grok. Override only when the
 # trusted official binary was installed elsewhere.
 # grok_binary = "/opt/grok/bin/grok"
-# Opaque cache-scope fingerprint inputs; neither file is parsed or copied.
+# Cache-scope fingerprint inputs. config.toml is read as opaque bytes only;
+# auth.json is also read for its billing `key`. Neither is copied or written.
 # auth_path = "/home/you/.grok/auth.json"
 # config_path = "/home/you/.grok/config.toml"
 

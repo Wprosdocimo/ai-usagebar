@@ -102,12 +102,7 @@ where
                 snapshot.account = "uncached".into();
             }
 
-            Ok(FetchOutcome {
-                snapshot,
-                stale: false,
-                last_error: None,
-                cache_age: Some(Duration::ZERO),
-            })
+            Ok(crate::outcome::Outcome::fresh(snapshot))
         }
         Err(error) => fallback(cache, scope_before.as_deref(), now, error),
     }
@@ -214,12 +209,11 @@ fn reuse_cache(
     stale: bool,
     account_scope: &str,
 ) -> Result<FetchOutcome> {
-    Ok(FetchOutcome {
-        snapshot: parse_cache(bytes, account_scope)?,
+    Ok(crate::outcome::Outcome::cached(
+        parse_cache(bytes, account_scope)?,
+        cache,
         stale,
-        last_error: cache.read_last_error(),
-        cache_age: cache.payload_age(),
-    })
+    ))
 }
 
 /// SuperGrok adds one rule to the shared policy: a cached snapshot whose

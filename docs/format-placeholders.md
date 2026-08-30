@@ -151,10 +151,16 @@ USD; the China service uses CNY.
 - `{session_pct}` and `{weekly_pct}` remain aliases for `sgk_pct`.
 - `{plan}` is the subscription tier when Grok Build supplies one.
 
-SuperGrok is the subscription path provided by Grok Build's `x.ai/billing` ACP
-extension. It is separate from the Grok Management API prepaid balance.
-ai-usagebar never parses, copies, caches, refreshes, or sends the SuperGrok
-token in ACP messages. It hashes auth and config files only to keep caches
+SuperGrok is the subscription path. It is separate from the Grok Management
+API prepaid balance. Billing comes from Grok Build's documented
+`cli-chat-proxy.grok.com` endpoint, with the CLI's `x.ai/billing` ACP extension
+as a fallback for builds where that endpoint is unavailable.
+
+The HTTPS path reads the long-lived `key` from the login's `auth.json` and uses
+it inside one outgoing `Authorization` header. ai-usagebar never copies,
+caches, refreshes, logs, or writes that key back, and never echoes it in an
+error; account selection and token rotation stay with Grok Build. The config
+file is read only as opaque bytes for the one-way digest that keeps caches
 separate between logins.
 
 The default executable is `$GROK_HOME/bin/grok`, or `~/.grok/bin/grok` when
