@@ -22,13 +22,11 @@ const DEFAULT_BASE_URL: &str = "https://cli-chat-proxy.grok.com";
 const TOKEN_AUTH_HEADER: &str = "xai-grok-cli";
 const MAX_AUTH_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
+/// The base URL is fixed. Tests reach the seam through [`fetch_billing_with`],
+/// so an environment override would buy nothing and would let one variable
+/// redirect the login's long-lived key to a host of its choosing.
 pub async fn fetch_billing(auth_path: &Path) -> Result<BillingResponse> {
-    let base = std::env::var("GROK_CLI_CHAT_PROXY_BASE_URL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-    fetch_billing_with(auth_path, &base).await
+    fetch_billing_with(auth_path, DEFAULT_BASE_URL).await
 }
 
 pub async fn fetch_billing_with(auth_path: &Path, base_url: &str) -> Result<BillingResponse> {
@@ -56,8 +54,9 @@ pub async fn fetch_billing_with(auth_path: &Path, base_url: &str) -> Result<Bill
         });
     }
 
-    serde_json::from_slice(&bytes)
-        .map_err(|_| AppError::Schema("Grok Build billing response does not match the expected schema".into()))
+    serde_json::from_slice(&bytes).map_err(|_| {
+        AppError::Schema("Grok Build billing response does not match the expected schema".into())
+    })
 }
 
 /// Locate the Grok Build login's long-lived `key` in `auth.json`.
@@ -66,15 +65,17 @@ pub async fn fetch_billing_with(auth_path: &Path, base_url: &str) -> Result<Bill
 /// `key`. The first non-empty key wins; parsing stays bounded so a replaced
 /// or oversized file cannot stall or exhaust the fetch.
 fn read_billing_key(auth_path: &Path) -> Result<String> {
-    let metadata = std::fs::metadata(auth_path)
-        .map_err(|_| AppError::Credentials("Grok Build login file not found; run `grok login`".into()))?;
+    let metadata = std::fs::metadata(auth_path).map_err(|_| {
+        AppError::Credentials("Grok Build login file not found; run `grok login`".into())
+    })?;
     if !metadata.is_file() || metadata.len() > MAX_AUTH_FILE_BYTES {
         return Err(AppError::Credentials(
             "Grok Build login file is not a readable auth.json; run `grok login`".into(),
         ));
     }
-    let bytes = std::fs::read(auth_path)
-        .map_err(|_| AppError::Credentials("Grok Build login file could not be read; run `grok login`".into()))?;
+    let bytes = std::fs::read(auth_path).map_err(|_| {
+        AppError::Credentials("Grok Build login file could not be read; run `grok login`".into())
+    })?;
     let parsed: Value = serde_json::from_slice(&bytes).map_err(|_| {
         AppError::Credentials("Grok Build login file is not valid JSON; run `grok login`".into())
     })?;
@@ -122,7 +123,9 @@ mod tests {
             .with_body(r#"{"config":{"creditUsagePercent":10.0,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-09-05T18:45:31Z"}}}"#)
             .create_async()
             .await;
-        let response = fetch_billing_with(file.path(), &server.url()).await.unwrap();
+        let response = fetch_billing_with(file.path(), &server.url())
+            .await
+            .unwrap();
         m.assert_async().await;
         drop(response);
     }
@@ -137,7 +140,9 @@ mod tests {
             .with_body(r#"{"error":"bad token"}"#)
             .create_async()
             .await;
-        let error = fetch_billing_with(file.path(), &server.url()).await.unwrap_err();
+        let error = fetch_billing_with(file.path(), &server.url())
+            .await
+            .unwrap_err();
         m.assert_async().await;
         let rendered = error.to_string();
         assert!(!rendered.contains("secret-key"));
@@ -168,7 +173,8 @@ mod tests {
     #[tokio::test]
     async fn oversized_login_files_fail_closed() {
         let mut file = NamedTempFile::new().unwrap();
-        file.write_all(&vec![b'a'; MAX_AUTH_FILE_BYTES as usize + 1]).unwrap();
+        file.write_all(&vec![b'a'; MAX_AUTH_FILE_BYTES as usize + 1])
+            .unwrap();
         assert!(read_billing_key(file.path()).is_err());
     }
 
@@ -181,7 +187,26 @@ mod tests {
             .with_body("x".repeat(MAX_BODY_BYTES + 1))
             .create_async()
             .await;
-        assert!(fetch_billing_with(file.path(), &server.url()).await.is_err());
+        assert!(
+            fetch_billing_with(file.path(), &server.url())
+                .await
+                .is_err()
+        );
         m.assert_async().await;
+    }
+    /// `GROK_CLI_CHAT_PROXY_BASE_URL` is a real Grok CLI variable — `scope.rs`
+    /// hashes it into the cache digest for exactly that reason. Honouring it
+    /// *here* would be different: this is the one request that carries the
+    /// login's long-lived key, so an ambient variable in whatever environment
+    /// Waybar inherited would choose where that key is sent. The destination
+    /// stays pinned; tests reach the seam through `fetch_billing_with`.
+    #[test]
+    fn the_billing_destination_is_not_environment_controlled() {
+        let source = include_str!("direct.rs");
+        assert!(
+            !crate::guard::production_code(source).contains("env::var"),
+            "the credential-bearing request must not take its host from the environment"
+        );
+        assert_eq!(DEFAULT_BASE_URL, "https://cli-chat-proxy.grok.com");
     }
 }

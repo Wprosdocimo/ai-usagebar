@@ -22,6 +22,9 @@ Each release is also published at
   both transports fail, the direct error is reported because it reflects the
   actual login state. Response parsing is unchanged: the proxy returns the
   same camelCase `BillingConfig` shape the strict wire types already accept.
+  The endpoint is fixed: `GROK_CLI_CHAT_PROXY_BASE_URL` still scopes the
+  cache (it changes which login is in play) but does not choose where the
+  key is sent.
 
 ### Changed
 
