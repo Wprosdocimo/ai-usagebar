@@ -12,7 +12,7 @@ use crate::error::{AppError, Result};
 use crate::usage::{SuperGrokPeriod, SuperGrokSnapshot};
 
 use super::scope::ScopePaths;
-use super::{acp, scope, types};
+use super::{acp, direct, scope, types};
 
 const LOCK_TIMEOUT: Duration = Duration::from_secs(15);
 const CACHE_SCHEMA: u8 = 2;
@@ -32,9 +32,28 @@ pub async fn fetch_snapshot(
         cache_ttl,
         Utc::now(),
         || scope::fingerprint(scope_paths),
-        || acp::fetch_billing(grok_binary),
+        || fetch_billing_any(grok_binary, scope_paths),
     )
     .await
+}
+
+/// Direct HTTPS billing first, the ACP process as fallback.
+///
+/// Grok Build CLI 1.0.13 removed the `x.ai/billing` ACP extension, so the
+/// documented proxy endpoint is now the primary transport; the ACP path keeps
+/// serving builds where that endpoint is unavailable. When both fail, the
+/// direct error is reported — it reflects the actual login state.
+async fn fetch_billing_any(
+    grok_binary: &Path,
+    scope_paths: &ScopePaths,
+) -> Result<types::BillingResponse> {
+    match direct::fetch_billing(&scope_paths.auth).await {
+        Ok(response) => Ok(response),
+        Err(direct_error) => match acp::fetch_billing(grok_binary).await {
+            Ok(response) => Ok(response),
+            Err(_) => Err(direct_error),
+        },
+    }
 }
 
 async fn fetch_snapshot_with<S, F, Fut>(
