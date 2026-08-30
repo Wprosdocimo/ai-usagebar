@@ -9,6 +9,17 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- Named Codex accounts (`[[openai.accounts]]`, added in 1.8.0) are now actually
+  reachable: `--vendor openai --account <label>` was rejected by CLI validation
+  before it could dispatch, `~` in an account's `codex_auth_path` was never
+  expanded, and the TUI and `usage` report skipped openai named accounts
+  entirely. All three paths now mirror the OpenRouter account handling — one
+  tab/report entry per named account, each with its own isolated cache — and
+  openai account labels are validated and de-duplicated on config load like the
+  other multi-account vendors.
+
 ### Changed
 
 - Internal: `account.rs` grew from 7 tests to 22 by splitting its decisions

@@ -83,9 +83,9 @@ impl TabId {
     }
 }
 
-/// Expand enabled vendors into the tab list. Claude and OpenRouter yield their
-/// default account followed by configured named accounts; every other vendor
-/// is a single tab. With no extra accounts the result equals
+/// Expand enabled vendors into the tab list. Claude, OpenRouter, and Codex
+/// (OpenAI) yield their default account followed by configured named accounts;
+/// every other vendor is a single tab. With no extra accounts the result equals
 /// `config.enabled_vendors()`, preserving the historical tab set and order.
 ///
 /// Config-only and pure — no Desktop profiles. Production uses
@@ -144,6 +144,11 @@ fn build_tabs(config: &Config, desktop_labels: &[String]) -> Vec<TabId> {
                 tabs.push(TabId::vendor(vendor));
             }
             for account in &config.openrouter.accounts {
+                tabs.push(TabId::account_for(vendor, account.label.clone()));
+            }
+        } else if vendor == VendorId::Openai {
+            tabs.push(TabId::vendor(vendor));
+            for account in &config.openai.accounts {
                 tabs.push(TabId::account_for(vendor, account.label.clone()));
             }
         } else {
@@ -509,12 +514,12 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             Ok(outcome.into())
         }
         VendorId::Openai => {
-            let cache = crate::cache::Cache::for_vendor("openai")?;
-            let creds_path = config
-                .openai
-                .codex_auth_path
-                .clone()
-                .unwrap_or_else(|| crate::openai::creds::default_path().unwrap_or_default());
+            let label = tab.account.as_deref();
+            let cache = match label {
+                Some(label) => crate::cache::Cache::for_vendor_account("openai", label)?,
+                None => crate::cache::Cache::for_vendor("openai")?,
+            };
+            let creds_path = config.openai.resolve_auth_path(label)?;
             let endpoints = crate::openai::fetch::Endpoints::default();
             let outcome =
                 crate::openai::fetch_snapshot(client, &creds_path, &cache, &endpoints, DEFAULT_TTL)
@@ -976,6 +981,25 @@ mod tests {
                 TabId::vendor(VendorId::Openrouter),
                 TabId::account_for(VendorId::Openrouter, "work"),
                 TabId::account_for(VendorId::Openrouter, "personal"),
+            ]
+        );
+    }
+
+    #[test]
+    fn openai_named_accounts_get_their_own_tabs_after_the_default() {
+        let mut config = Config::default();
+        config.anthropic.enabled = false;
+        config.zai.enabled = false;
+        config.openrouter.enabled = false;
+        config.openai.accounts.push(crate::config::OpenAiAccount {
+            label: "work".into(),
+            codex_auth_path: "/tmp/codex-work/auth.json".into(),
+        });
+        assert_eq!(
+            tabs_from_config(&config),
+            vec![
+                TabId::vendor(VendorId::Openai),
+                TabId::account_for(VendorId::Openai, "work"),
             ]
         );
     }

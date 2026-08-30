@@ -165,9 +165,14 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
 }
 
 fn validate_vendor_options(cli: &Cli, vendor: Vendor) -> Result<()> {
-    if cli.account.is_some() && !matches!(vendor, Vendor::Anthropic | Vendor::Openrouter) {
+    if cli.account.is_some()
+        && !matches!(
+            vendor,
+            Vendor::Anthropic | Vendor::Openrouter | Vendor::Openai
+        )
+    {
         return Err(AppError::Other(
-            "--account is supported only for Claude and OpenRouter".into(),
+            "--account is supported only for Claude, OpenRouter, and Codex (OpenAI)".into(),
         ));
     }
     if cli.desktop && vendor != Vendor::Anthropic {
@@ -1256,6 +1261,7 @@ mod tests {
         assert!(validate_vendor_options(&cli, Vendor::Zai).is_err());
         assert!(validate_vendor_options(&cli, Vendor::Anthropic).is_ok());
         assert!(validate_vendor_options(&cli, Vendor::Openrouter).is_ok());
+        assert!(validate_vendor_options(&cli, Vendor::Openai).is_ok());
     }
 
     #[test]

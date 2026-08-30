@@ -1046,6 +1046,9 @@ impl Config {
         for account in &mut self.anthropic.accounts {
             account.credentials_path = expand_tilde(&account.credentials_path);
         }
+        for account in &mut self.openai.accounts {
+            account.codex_auth_path = expand_tilde(&account.codex_auth_path);
+        }
     }
 
     /// Explicitly enumerate every inline API-key field. Adding a new API-key
@@ -1187,6 +1190,16 @@ impl Config {
             if !labels.insert(&account.label) {
                 return Err(AppError::Credentials(format!(
                     "duplicate anthropic account label {:?}",
+                    account.label
+                )));
+            }
+        }
+        let mut openai_labels = HashSet::new();
+        for account in &self.openai.accounts {
+            validate_account_label_for("openai", &account.label)?;
+            if !openai_labels.insert(&account.label) {
+                return Err(AppError::Credentials(format!(
+                    "duplicate openai account label {:?}",
                     account.label
                 )));
             }
@@ -2308,6 +2321,23 @@ enabled = false
             ..Default::default()
         };
         assert!(cfg.all_accounts().is_empty());
+    }
+
+    #[test]
+    fn openai_account_auth_paths_are_tilde_expanded_on_load() {
+        let f = write_toml(
+            r#"
+            [[openai.accounts]]
+            label = "work"
+            codex_auth_path = "~/.codex-work/auth.json"
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        let home = crate::cache::home_dir().unwrap();
+        assert_eq!(
+            c.openai.accounts[0].codex_auth_path,
+            home.join(".codex-work/auth.json")
+        );
     }
 
     #[test]

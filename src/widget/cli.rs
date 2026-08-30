@@ -116,7 +116,7 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub creds_path: Option<std::path::PathBuf>,
 
-    /// Select a named Claude or OpenRouter account from the matching
+    /// Select a named Claude, OpenRouter, or Codex (OpenAI) account from the matching
     /// `[[...accounts]]` config array. Without it, the vendor's default account
     /// and original cache path are unchanged. For Claude it conflicts with the
     /// lower-level `--creds-path` because both select a credential source.
