@@ -292,6 +292,37 @@ pub fn plan_from_status(v: &serde_json::Value) -> String {
 /// Buckets are keyed by `bucketId` (`gemini-5h`, `gemini-weekly`, `3p-5h`,
 /// `3p-weekly`), falling back to the group display name plus the `window`
 /// discriminator so a renamed bucket id still lands in the right slot.
+/// One bucket, named the way the response named it.
+fn describe_bucket(group_name: &str, id: &str, window: Option<&str>) -> String {
+    let id = if id.is_empty() { "<unnamed>" } else { id };
+    let group = if group_name.is_empty() {
+        String::new()
+    } else {
+        format!(" in {group_name:?}")
+    };
+    match window {
+        Some(window) if !window.is_empty() => format!("{id} (window {window}){group}"),
+        _ => format!("{id}{group}"),
+    }
+}
+
+/// A quota summary we cannot use. Naming the buckets that *were* present turns
+/// a report of this into something actionable — the alternative says only what
+/// we wanted, which tells neither the user nor a maintainer whether the plan
+/// has no such pool, the product renamed one, or a new cadence appeared.
+fn missing_bucket(wanted: &str, seen: &[String]) -> AppError {
+    if seen.is_empty() {
+        return AppError::Other(format!(
+            "antigravity: quota summary has no {wanted} bucket, and no buckets at all — \
+             the running product may not have a quota for this account yet"
+        ));
+    }
+    AppError::Other(format!(
+        "antigravity: quota summary has no {wanted} bucket; it offered: {}",
+        seen.join(", ")
+    ))
+}
+
 pub fn parse_quota_summary(v: &serde_json::Value, plan: String) -> Result<AntigravitySnapshot> {
     let groups = v["response"]["groups"]
         .as_array()
@@ -302,6 +333,10 @@ pub fn parse_quota_summary(v: &serde_json::Value, plan: String) -> Result<Antigr
     let mut gemini_weekly = None;
     let mut tp_5h = None;
     let mut tp_weekly = None;
+    // What the response actually offered, so a summary we cannot use says so
+    // instead of only naming what it wanted. Bucket ids and group names are
+    // quota vocabulary, not account data.
+    let mut seen: Vec<String> = Vec::new();
 
     for group in groups {
         let group_name = group["displayName"].as_str().unwrap_or_default();
@@ -310,6 +345,7 @@ pub fn parse_quota_summary(v: &serde_json::Value, plan: String) -> Result<Antigr
         };
         for bucket in buckets {
             let id = bucket["bucketId"].as_str().unwrap_or_default();
+            seen.push(describe_bucket(group_name, id, bucket["window"].as_str()));
             let window = bucket["window"].as_str().unwrap_or_default();
             let is_weekly = if id.ends_with("weekly") || window == "weekly" {
                 true
@@ -349,12 +385,8 @@ pub fn parse_quota_summary(v: &serde_json::Value, plan: String) -> Result<Antigr
         }
     }
 
-    let session = gemini_5h.ok_or_else(|| {
-        AppError::Other("antigravity: quota summary has no Gemini 5h bucket".into())
-    })?;
-    let weekly = gemini_weekly.ok_or_else(|| {
-        AppError::Other("antigravity: quota summary has no Gemini weekly bucket".into())
-    })?;
+    let session = gemini_5h.ok_or_else(|| missing_bucket("Gemini 5h", &seen))?;
+    let weekly = gemini_weekly.ok_or_else(|| missing_bucket("Gemini weekly", &seen))?;
 
     Ok(AntigravitySnapshot {
         plan,
@@ -1217,6 +1249,66 @@ mod tests {
             let err = parse_quota_summary(&v, "Pro".into()).unwrap_err();
             assert!(err.to_string().contains("resetTime"), "{err}");
         }
+    }
+
+    /// The report behind issue #139 gave only "has no Gemini 5h bucket", which
+    /// says what we wanted and nothing about what arrived — so neither the user
+    /// nor a maintainer could tell a plan with no such pool from a renamed
+    /// bucket or a new cadence. The error now names what the summary offered.
+    #[test]
+    fn a_summary_without_the_gemini_5h_bucket_names_the_buckets_it_did_have() {
+        let summary = serde_json::json!({
+            "groups": [{
+                "displayName": "Gemini",
+                "buckets": [
+                    {"bucketId": "gemini-weekly", "window": "weekly", "remainingFraction": 0.5},
+                    {"bucketId": "gemini-daily", "window": "daily", "remainingFraction": 0.9},
+                ],
+            }],
+        });
+
+        let error = parse_quota_summary(&summary, "Pro".into())
+            .expect_err("a missing 5h bucket is still an error");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("no Gemini 5h bucket"), "{rendered}");
+        assert!(rendered.contains("gemini-weekly"), "{rendered}");
+        assert!(
+            rendered.contains("gemini-daily") && rendered.contains("window daily"),
+            "an unrecognised cadence is exactly what a reader needs to see: {rendered}"
+        );
+        assert!(rendered.contains("Gemini"), "{rendered}");
+    }
+
+    /// A summary with groups but no buckets at all is a different situation
+    /// from a summary whose buckets we did not recognise, and says so.
+    #[test]
+    fn a_summary_with_no_buckets_at_all_says_that_rather_than_listing_nothing() {
+        let summary = serde_json::json!({
+            "groups": [{"displayName": "Gemini", "buckets": []}],
+        });
+
+        let rendered = parse_quota_summary(&summary, "Pro".into())
+            .expect_err("no buckets is an error")
+            .to_string();
+
+        assert!(rendered.contains("no buckets at all"), "{rendered}");
+        assert!(!rendered.contains("it offered:"), "{rendered}");
+    }
+
+    /// An unnamed bucket must still be listed — a summary of nothing but
+    /// unnamed buckets is itself the finding.
+    #[test]
+    fn buckets_without_an_id_are_still_named_in_the_error() {
+        let summary = serde_json::json!({
+            "groups": [{"displayName": "", "buckets": [{"remainingFraction": 0.5}]}],
+        });
+
+        let rendered = parse_quota_summary(&summary, "Pro".into())
+            .expect_err("an unusable summary is an error")
+            .to_string();
+
+        assert!(rendered.contains("<unnamed>"), "{rendered}");
     }
 
     #[test]
