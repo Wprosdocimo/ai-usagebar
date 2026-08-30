@@ -11,6 +11,14 @@ Each release is also published at
 
 ### Fixed
 
+- Antigravity's "quota summary has no Gemini 5h bucket" error now names the
+  buckets the summary *did* contain, with their windows and groups (#139). The
+  old message said only what was wanted, so a plan with no such pool, a renamed
+  bucket, and a new cadence were indistinguishable from each other — to the user
+  and to a maintainer reading the report. A summary carrying no buckets at all
+  says that instead of listing nothing. The parser is unchanged and still
+  refuses to invent a window it cannot find.
+
 - Named Codex accounts (`[[openai.accounts]]`, added in 1.8.0) are now actually
   reachable: `--vendor openai --account <label>` was rejected by CLI validation
   before it could dispatch, `~` in an account's `codex_auth_path` was never
