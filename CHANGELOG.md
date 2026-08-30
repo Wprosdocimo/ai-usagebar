@@ -11,6 +11,14 @@ Each release is also published at
 
 ### Fixed
 
+- Named Codex accounts (`[[openai.accounts]]`, added in 1.8.0) are now actually
+  reachable: `--vendor openai --account <label>` was rejected by CLI validation
+  before it could dispatch, `~` in an account's `codex_auth_path` was never
+  expanded, and the TUI and `usage` report skipped openai named accounts
+  entirely. All three paths now mirror the OpenRouter account handling — one
+  tab/report entry per named account, each with its own isolated cache — and
+  openai account labels are validated and de-duplicated on config load like the
+  other multi-account vendors.
 - SuperGrok works again with grok CLI 1.0.13, which dropped the `x.ai/billing`
   ACP extension the vendor was built on (`-32601 Method not found`, probed
   directly, after a session handshake, and in leader mode). The vendor now
