@@ -9,6 +9,20 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- SuperGrok works again with grok CLI 1.0.13, which dropped the `x.ai/billing`
+  ACP extension the vendor was built on (`-32601 Method not found`, probed
+  directly, after a session handshake, and in leader mode). The vendor now
+  calls the CLI's documented `cli-chat-proxy.grok.com/v1/billing` endpoint
+  first, using the long-lived `key` already stored in the login's `auth.json`
+  — read-only, size-bounded, used only inside one outgoing `Authorization`
+  header, never copied, cached, logged, or echoed in an error — and falls back
+  to the ACP process for CLI builds where the endpoint is unavailable. When
+  both transports fail, the direct error is reported because it reflects the
+  actual login state. Response parsing is unchanged: the proxy returns the
+  same camelCase `BillingConfig` shape the strict wire types already accept.
+
 ### Changed
 
 - Internal: `account.rs` grew from 7 tests to 22 by splitting its decisions

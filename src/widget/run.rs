@@ -410,9 +410,9 @@ async fn grok_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
     ))
 }
 
-/// SuperGrok delegates auth and billing transport to the official Grok Build
-/// ACP process — no token or API key is parsed, cached, refreshed, or placed
-/// in an ACP message by ai-usagebar.
+/// SuperGrok reads billing over the CLI's documented HTTPS endpoint (or, as a
+/// fallback, its ACP process). The login's `key` is used only inside one
+/// outgoing Authorization header — never cached, refreshed, or written back.
 async fn supergrok_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
     let cache = vendor_cache(cli, "supergrok")?;
     let scope_paths = supergrok::scope::ScopePaths::with_overrides(
