@@ -1,9 +1,10 @@
 //! Settings overlay — opened from the TUI by pressing `s`. Lets the user pick
-//! the primary vendor and paste a credential for any credential-authenticated vendor
+//! the primary vendor and paste a credential for any API-key-authenticated vendor
 //! (including Z.AI, Kimi, MiniMax, and the balance vendors) without hand-editing
-//! config.toml. Anthropic, OpenAI, Cursor, Kiro, Antigravity, and Command Code
-//! authenticate through local product state, so they have no credential field here —
-//! there is nothing to paste, and a field would only imply otherwise. Kimi keeps
+//! config.toml. Anthropic, OpenAI, GitHub Copilot, Cursor, Kiro, Antigravity, and
+//! Command Code authenticate through official or local product state, so they have
+//! no credential field here — there is nothing to paste, and a field would only
+//! imply otherwise. Kimi keeps
 //! its credential field because a platform key is still one of its two credentials, but
 //! a subscriber whose credential is the Kimi Code CLI login has nothing to paste
 //! and enables `[kimi]` in config.toml instead.
@@ -149,15 +150,6 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         secret_label: "API key",
         note: "usage quota",
     },
-    KeyVendor {
-        id: VendorId::Copilot,
-        label: "GitHub Copilot",
-        env: "GITHUB_COPILOT_TOKEN",
-        section: "copilot",
-        config_key: "token",
-        secret_label: "GitHub OAuth token",
-        note: "",
-    },
 ];
 
 /// Read the inline credential currently in config, so the field opens
@@ -175,7 +167,6 @@ fn config_inline_key<'a>(cfg: &'a Config, vendor: &KeyVendor) -> Option<&'a str>
         "grok" => cfg.grok.api_key.as_deref(),
         "minimax" => cfg.minimax.api_key.as_deref(),
         "opencode-go" => cfg.opencode_go.api_key.as_deref(),
-        "copilot" => cfg.copilot.token.as_deref(),
         _ => None,
     }
 }
@@ -321,14 +312,23 @@ impl SettingsState {
             .iter()
             .map(|kv| KeyInput::from_config(config_inline_key(cfg, kv)))
             .collect();
-        let primary_choices = cfg.enabled_vendors();
+        let mut primary_choices = cfg.enabled_vendors();
+        // Copilot credentials belong to GitHub CLI, so a login cannot write a
+        // local key that would also opt it in. Offer it explicitly instead:
+        // selecting it persists both the primary and `enabled = true`.
+        if !primary_choices.contains(&VendorId::Copilot) {
+            primary_choices.push(VendorId::Copilot);
+        }
         // A configured but disabled primary is ineffective. Display the first
         // enabled vendor instead; when none are enabled retain the historical
         // Anthropic fallback in memory without inventing a persisted primary.
         let primary = cfg
             .ui
             .primary
-            .filter(|vendor| primary_choices.contains(vendor))
+            .filter(|vendor| {
+                primary_choices.contains(vendor)
+                    && (*vendor != VendorId::Copilot || cfg.copilot.enabled)
+            })
             .or_else(|| primary_choices.first().copied())
             .unwrap_or_else(|| cfg.ui.primary.unwrap_or(VendorId::Anthropic));
         Self {
@@ -509,11 +509,25 @@ pub fn save_to_path(state: &SettingsState, path: &Path) -> Result<()> {
         })?
     };
 
-    // Do not write a disabled primary as a side effect of saving an API key.
-    // With no enabled vendors, leave any existing value alone so the legacy
-    // resolver's Anthropic fallback remains intact.
+    // Remove fields written by the short-lived inline Copilot-token design.
+    // GitHub CLI owns the OAuth credential now; retaining a secret this app
+    // neither reads nor supports would be misleading and unsafe.
+    if let Some(table) = doc
+        .get_mut("copilot")
+        .and_then(toml_edit::Item::as_table_mut)
+    {
+        table.remove("token");
+        table.remove("token_env");
+    }
+
+    // Only Copilot is deliberately offered before it is enabled: choosing it
+    // is the explicit opt-in after the GitHub CLI login. All other choices
+    // remain enabled-only, so no failed provider is persisted as primary.
     if state.primary_choices.contains(&state.primary) {
         set_string(&mut doc, "ui", "primary", state.primary.slug())?;
+        if state.primary == VendorId::Copilot {
+            set_bool(&mut doc, "copilot", "enabled", true)?;
+        }
     }
 
     for (i, kv) in KEY_VENDORS.iter().enumerate() {
@@ -676,7 +690,6 @@ fn configured_key_env<'a>(cfg: &'a Config, section: &str, fallback: &'a str) -> 
         "grok" => &cfg.grok.api_key_env,
         "minimax" => &cfg.minimax.api_key_env,
         "opencode-go" => &cfg.opencode_go.api_key_env,
-        "copilot" => &cfg.copilot.token_env,
         _ => fallback,
     }
 }
@@ -1118,7 +1131,6 @@ mod tests {
             VendorId::Novita,
             VendorId::Moonshot,
             VendorId::Grok,
-            VendorId::Copilot,
         ] {
             assert!(
                 KEY_VENDORS.iter().any(|kv| kv.id == id),
@@ -1140,25 +1152,26 @@ mod tests {
     }
 
     #[test]
-    fn from_config_prefills_existing_copilot_token() {
-        let mut cfg = Config::default();
-        cfg.copilot.token = Some("saved-copilot-token".into());
-        let state = SettingsState::from_config(&cfg);
-        assert_eq!(
-            state.keys[key_index(VendorId::Copilot)].buf,
-            "saved-copilot-token"
+    fn copilot_has_no_editable_credential_field() {
+        assert!(
+            !KEY_VENDORS
+                .iter()
+                .any(|vendor| vendor.id == VendorId::Copilot)
         );
-        assert!(!state.keys[key_index(VendorId::Copilot)].dirty);
     }
 
     #[test]
     fn from_config_offers_enabled_vendors_only() {
         let cfg = Config::default();
         let s = SettingsState::from_config(&cfg);
-        assert_eq!(s.primary_choices, cfg.enabled_vendors());
-        // Opt-in vendors are disabled by default and must not be offered.
+        let mut expected = cfg.enabled_vendors();
+        expected.push(VendorId::Copilot);
+        assert_eq!(s.primary_choices, expected);
+        // API-key opt-in vendors are disabled by default and must not be
+        // offered. Copilot is the exception: choosing it enables it safely.
         assert!(!s.primary_choices.contains(&VendorId::Grok));
         assert!(s.primary_choices.contains(&s.primary));
+        assert!(s.primary_choices.contains(&VendorId::Copilot));
     }
 
     #[test]
@@ -1389,6 +1402,16 @@ api_key_env = "OPENROUTER_WORK_API_KEY"
     }
 
     #[test]
+    fn disabled_copilot_is_offered_but_not_shown_as_the_current_primary() {
+        let mut cfg = Config::default();
+        cfg.ui.primary = Some(VendorId::Copilot);
+        let state = SettingsState::from_config(&cfg);
+
+        assert!(state.primary_choices.contains(&VendorId::Copilot));
+        assert_eq!(state.primary, VendorId::Anthropic);
+    }
+
+    #[test]
     fn save_does_not_write_a_disabled_primary() {
         // Saving an API key must not persist a primary the resolver would
         // ignore; an existing value in the file stays untouched.
@@ -1597,24 +1620,24 @@ api_key_env = "OPENROUTER_WORK_API_KEY"
     }
 
     #[test]
-    fn native_snapshot_reports_copilot_presence_without_serializing_token() {
-        let mut cfg = Config::default();
-        cfg.copilot.token = Some("never-leak-this-copilot-token".into());
-        let raw = settings_snapshot_json_with(&cfg, |name| name == "GITHUB_COPILOT_TOKEN").unwrap();
+    fn native_snapshot_offers_copilot_primary_without_a_token_field() {
+        let cfg = Config::default();
+        let raw = settings_snapshot_json_with(&cfg, |_| false).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        let copilot = parsed["keys"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["id"] == "copilot")
-            .unwrap();
-        assert_eq!(copilot["configured"], true);
-        assert_eq!(copilot["inline_configured"], true);
-        assert_eq!(copilot["environment_configured"], true);
-        assert_eq!(copilot["environment"], "GITHUB_COPILOT_TOKEN");
-        assert_eq!(copilot["secret_label"], "GitHub OAuth token");
-        assert!(!raw.contains("never-leak-this-copilot-token"));
-        assert!(parsed.get("token").is_none());
+        assert!(
+            parsed["primary_choices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["id"] == "copilot")
+        );
+        assert!(
+            !parsed["keys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["id"] == "copilot")
+        );
     }
 
     #[test]
@@ -1690,25 +1713,21 @@ enabled = true
     }
 
     #[test]
-    fn native_patch_saves_and_clears_copilot_token() {
-        let (_dir, path) = temp_config(Some("[copilot]\nenabled = false\n"));
+    fn native_primary_selection_enables_copilot_without_writing_a_token() {
+        let (_dir, path) = temp_config(Some(
+            "[copilot]\nenabled = false\ntoken = \"legacy-value\"\ntoken_env = \"OLD_TOKEN\"\n",
+        ));
         let cfg = Config::load_from(&path).unwrap();
-        let save = serde_json::json!({
+        let select = serde_json::json!({
             "schema_version": 1,
-            "keys": {"copilot": {"action": "set", "value": "saved-copilot-token"}}
+            "primary": "copilot"
         });
-        apply_settings_json_to_path(&cfg, &save.to_string(), &path).unwrap();
+        apply_settings_json_to_path(&cfg, &select.to_string(), &path).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("token = \"saved-copilot-token\""));
         assert!(raw.contains("enabled = true"));
-
-        let cfg = Config::load_from(&path).unwrap();
-        let clear = serde_json::json!({
-            "schema_version": 1,
-            "keys": {"copilot": {"action": "clear"}}
-        });
-        apply_settings_json_to_path(&cfg, &clear.to_string(), &path).unwrap();
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("token ="));
+        assert!(raw.contains("primary = \"copilot\""));
+        assert!(!raw.contains("token ="));
+        assert!(!raw.contains("token_env ="));
     }
 
     #[test]

@@ -112,12 +112,13 @@ enabled = true
 
 [copilot]
 # Disabled by default. GitHub Copilot quota comes from the private endpoint
-# used by VS Code. GITHUB_COPILOT_TOKEN takes priority when it is non-empty.
-# Otherwise save a GitHub OAuth token with the settings form or set `token`.
-# ai-usagebar does not read VS Code/GitHub credential stores.
+# used by VS Code. Sign in with the official GitHub CLI first:
+#   gh auth login --web
+# ai-usagebar obtains the OAuth token only by running `gh auth token`; it never
+# reads, copies, or stores a GitHub CLI, editor, or browser credential.
+# Set GITHUB_COPILOT_TOKEN only as an optional explicit environment override.
+# In Omarchy Settings, select GitHub Copilot as Primary Provider to enable it.
 enabled = false
-token_env = "GITHUB_COPILOT_TOKEN"
-# token = "github-oauth-token" # settings writes this file with mode 0600
 
 [zai]
 enabled = true

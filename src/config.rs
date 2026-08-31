@@ -4,7 +4,7 @@
 //! ```toml
 //! [anthropic]  enabled = true
 //! [openai]     enabled = true   # Codex OAuth from ~/.codex/auth.json
-//! [copilot]    enabled = false  # GitHub OAuth token from env or config.toml
+//! [copilot]    enabled = false  # GitHub CLI OAuth, or an explicit env override
 //! [zai]        enabled = true
 //! [openrouter] enabled = true
 //! [deepseek]   enabled = false
@@ -527,44 +527,39 @@ impl Default for OpenAiConfig {
     }
 }
 
-/// GitHub Copilot quota from the private endpoint used by VS Code. The OAuth
-/// token may be supplied by the environment or saved in this app's protected
-/// config file; this app never scans editor credential stores.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// GitHub Copilot quota from the private endpoint used by VS Code. The token
+/// comes from an explicit environment override or the official GitHub CLI;
+/// this app never reads, copies, or writes GitHub credential stores.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CopilotConfig {
     pub enabled: bool,
-    /// Name of the environment variable carrying a GitHub OAuth token.
-    pub token_env: String,
-    /// Fallback OAuth token saved by the settings forms. A non-empty
-    /// environment value always takes precedence.
-    pub token: Option<String>,
-}
-
-impl Default for CopilotConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            token_env: "GITHUB_COPILOT_TOKEN".to_string(),
-            token: None,
-        }
-    }
 }
 
 impl CopilotConfig {
     pub fn resolve_token(&self) -> Result<String> {
-        if let Some(token) = optional_api_key(&self.token_env, self.token.as_deref()) {
-            return Ok(token);
+        self.resolve_token_with(
+            |name| std::env::var_os(name),
+            &crate::copilot::credentials::SystemGhAuthTokenRunner,
+        )
+    }
+
+    fn resolve_token_with(
+        &self,
+        environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+        runner: &impl crate::copilot::credentials::GhAuthTokenRunner,
+    ) -> Result<String> {
+        if let Some(value) = environment("GITHUB_COPILOT_TOKEN") {
+            let token = value.into_string().map_err(|_| {
+                AppError::Credentials(
+                    "GitHub Copilot: GITHUB_COPILOT_TOKEN is not valid UTF-8.".into(),
+                )
+            })?;
+            if !token.is_empty() {
+                return Ok(token);
+            }
         }
-        let advice = if is_valid_env_var_name(&self.token_env) {
-            "set a GitHub OAuth token in the environment variable named by `token_env` or set `token`"
-        } else {
-            "set `token_env` to a valid environment-variable name or set `token`"
-        };
-        Err(AppError::Credentials(format!(
-            "GitHub Copilot: no GitHub OAuth token. Either {advice} under [copilot] in {}.",
-            config_path_hint()
-        )))
+        crate::copilot::credentials::resolve_with(runner)
     }
 }
 
@@ -1111,7 +1106,6 @@ impl Config {
             self.grok.api_key.as_deref(),
             self.anthropic_api.api_key.as_deref(),
             self.opencode_go.api_key.as_deref(),
-            self.copilot.token.as_deref(),
         ]
         .into_iter()
         .chain(
@@ -1484,8 +1478,6 @@ mod tests {
         assert_eq!(config.opencode_go.api_key_env, "OPENCODE_GO_API_KEY");
         assert!(config.opencode_go.api_key.is_none());
         assert!(!config.is_enabled(VendorId::Copilot));
-        assert_eq!(config.copilot.token_env, "GITHUB_COPILOT_TOKEN");
-        assert!(config.copilot.token.is_none());
     }
 
     #[cfg(unix)]
@@ -1816,29 +1808,46 @@ enabled = false
     }
 
     #[test]
-    fn copilot_token_prefers_environment_over_saved_token() {
-        let _g = env_guard();
-        let variable = "AI_USAGEBAR_TEST_COPILOT_TOKEN_PRECEDENCE";
-        unsafe { std::env::set_var(variable, "from-environment") };
-        let config = CopilotConfig {
-            token_env: variable.into(),
-            token: Some("from-config".into()),
-            ..CopilotConfig::default()
-        };
-        assert_eq!(config.resolve_token().unwrap(), "from-environment");
-        unsafe { std::env::remove_var(variable) };
-        assert_eq!(config.resolve_token().unwrap(), "from-config");
+    fn copilot_token_prefers_explicit_environment_over_gh_cli() {
+        struct NeverRun;
+        impl crate::copilot::credentials::GhAuthTokenRunner for NeverRun {
+            fn run(
+                &self,
+                _: &crate::copilot::credentials::GhAuthTokenCommand,
+            ) -> std::io::Result<crate::copilot::credentials::GhAuthTokenOutput> {
+                panic!("environment override must not invoke gh")
+            }
+        }
+
+        let token = CopilotConfig::default()
+            .resolve_token_with(
+                |name| (name == "GITHUB_COPILOT_TOKEN").then(|| "from-environment".into()),
+                &NeverRun,
+            )
+            .unwrap();
+        assert_eq!(token, "from-environment");
     }
 
     #[test]
-    fn copilot_token_errors_do_not_echo_token_env_value() {
-        let config = CopilotConfig {
-            token_env: "github-pasted-token".into(),
-            ..CopilotConfig::default()
-        };
-        let error = config.resolve_token().unwrap_err().to_string();
-        assert!(error.contains("token_env"));
-        assert!(!error.contains("github-pasted-token"));
+    fn copilot_token_uses_injected_gh_cli_and_hides_failure_output() {
+        struct FailedGh;
+        impl crate::copilot::credentials::GhAuthTokenRunner for FailedGh {
+            fn run(
+                &self,
+                _: &crate::copilot::credentials::GhAuthTokenCommand,
+            ) -> std::io::Result<crate::copilot::credentials::GhAuthTokenOutput> {
+                Ok(crate::copilot::credentials::GhAuthTokenOutput {
+                    success: false,
+                    stdout: b"never-echo-gh-output".to_vec(),
+                })
+            }
+        }
+        let error = CopilotConfig::default()
+            .resolve_token_with(|_| None, &FailedGh)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("gh auth login --web"));
+        assert!(!error.contains("never-echo-gh-output"));
     }
 
     #[test]
@@ -1972,20 +1981,6 @@ enabled = false
         assert_eq!(c.openrouter.api_key.as_deref(), Some("sk-or-inline"));
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn config_parses_and_protects_inline_copilot_token() {
-        let file = write_toml("[copilot]\ntoken = \"test-token\"\n");
-        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
-
-        let config = Config::load_from(file.path()).unwrap();
-
-        assert_eq!(config.copilot.token.as_deref(), Some("test-token"));
-        assert_eq!(
-            std::fs::metadata(file.path()).unwrap().mode() & 0o777,
-            0o600
-        );
-    }
     #[test]
     fn openrouter_named_accounts_preserve_the_default_contract() {
         let f = write_toml(

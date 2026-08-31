@@ -58,20 +58,24 @@ assert.match(settingsViewSource, /write\(root\.pendingPayload\s*\+\s*"\\n"\)/);
 assert.match(settingsViewSource, /password:\s*true/);
 assert.match(settingsViewSource, /function\s+finishApply\s*\(\)\s*\{[\s\S]*?scrubSecrets\(\)[\s\S]*?if\s*\(applyExitCode/s);
 assert.match(settingsViewSource, /signal\s+nousLoginRequested\(\)/);
+assert.match(settingsViewSource, /signal\s+copilotLoginRequested\(\)/);
 assert.match(settingsViewSource, /signal\s+showValueRequested\(bool\s+enabled\)/);
 assert.match(settingsViewSource, /label:\s*"Show usage value in the top bar"/);
 assert.match(settingsViewSource, /signal\s+showProviderRequested\(bool\s+enabled\)/);
 assert.match(settingsViewSource, /label:\s*"Show provider name in the top bar"/);
 assert.match(panelSource, /onShowProviderRequested/);
 assert.match(settingsViewSource, /Log in with Nous Research/);
-assert.match(settingsViewSource, /Leave the terminal open until login completes/);
+assert.match(settingsViewSource, /Log in with GitHub Copilot/);
+assert.match(settingsViewSource, /choose GitHub Copilot as primary and save/);
 assert.match(settingsViewSource, /model:\s*root\.snapshot\.keys/);
 assert.match(settingsViewSource, /Paste\s*"\s*\+\s*\(keyCard\.modelData\.secret_label/);
 assert.match(panelSource, /function\s+openNousLogin\s*\(/);
 assert.match(panelSource, /ai-usagebar auth nous login/);
 assert.match(panelSource, /onNousLoginRequested/);
-assert.doesNotMatch(settingsViewSource, /copilotLoginRequested|Log in with GitHub Copilot/);
-assert.doesNotMatch(panelSource, /openCopilotLogin|onCopilotLoginRequested/);
+assert.match(panelSource, /function\s+openCopilotLogin\s*\(/);
+assert.match(panelSource, /gh auth login --web/);
+assert.match(panelSource, /onCopilotLoginRequested/);
+assert.doesNotMatch(settingsViewSource, /GitHub OAuth token|GITHUB_COPILOT_TOKEN/);
 assert.doesNotMatch(settingsViewSource, /command:\s*\[[^\]]*(?:api.?key|secret|pendingPayload)/i);
 
 const raw = JSON.stringify({primary: 'openai', entries: [
@@ -325,6 +329,14 @@ const noEnabled = model.parseSettingsSnapshot(JSON.stringify({
 }));
 assert.equal(noEnabled.ok, true);
 assert.equal(noEnabled.primary, '');
+const copilotPrimary = model.parseSettingsSnapshot(JSON.stringify({
+  schema_version: 1, primary: 'anthropic',
+  primary_choices: [{id: 'anthropic', label: 'Claude'}, {id: 'copilot', label: 'GitHub Copilot'}],
+  keys: []
+}));
+assert.equal(copilotPrimary.ok, true);
+assert.equal(copilotPrimary.primary_choices[1].id, 'copilot');
+assert.equal(copilotPrimary.keys.some(key => key.id === 'copilot'), false);
 
 const patch = model.buildSettingsPatch('openai', [
   {id: 'kimi', action: 'set', value: 'secret-value'},

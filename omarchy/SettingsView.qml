@@ -37,6 +37,7 @@ Column {
   signal saved()
   signal fallbackRequested()
   signal nousLoginRequested()
+  signal copilotLoginRequested()
   signal showValueRequested(bool enabled)
   signal showProviderRequested(bool enabled)
   signal closeRequested()
@@ -334,7 +335,7 @@ Column {
     }
     Text {
       width: parent.width
-      text: "Nous Research uses OAuth. Login opens in a terminal. Leave the terminal open until login completes, then return here and press Refresh."
+      text: "OAuth login opens in a terminal. Complete it, then return here, choose the provider as primary, save, and press Refresh."
       textFormat: Text.PlainText
       color: root.dim
       font.family: root.fontFamily
@@ -353,6 +354,20 @@ Column {
       onClicked: {
         root.statusText = "Nous Research login is opening in a terminal."
         root.nousLoginRequested()
+      }
+    }
+    Button {
+      width: parent.width
+      text: "Log in with GitHub Copilot"
+      iconText: "󰊤"
+      bordered: true
+      focusable: true
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+      enabled: !root.saving
+      onClicked: {
+        root.statusText = "GitHub sign-in is opening in a terminal. Complete it, then choose GitHub Copilot as primary and save."
+        root.copilotLoginRequested()
       }
     }
   }

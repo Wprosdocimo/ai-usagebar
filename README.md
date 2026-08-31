@@ -211,7 +211,7 @@ come from environment variables or `config.toml`.
 | Claude | OAuth from `~/.claude/.credentials.json` or the macOS login Keychain | Run `claude` once. Tokens refresh automatically. |
 | Anthropic API | Organization Admin key | Opt in with `ANTHROPIC_ADMIN_KEY` or `[anthropic_api] api_key`. Inference and Claude Code keys do not work. |
 | Codex | OAuth, read from `~/.codex/auth.json` | Run `codex login` once. Token auto-refreshes. |
-| GitHub Copilot | GitHub OAuth token | Paste a token into the Settings credential card or set `[copilot] token`, then enable `[copilot]`. A non-empty `GITHUB_COPILOT_TOKEN` takes priority. The token is sent only to GitHub Copilot's quota endpoint and is never read from credential stores. |
+| GitHub Copilot | GitHub CLI OAuth | Run `gh auth login --web`, then choose GitHub Copilot as the primary provider in Settings. ai-usagebar gets the token only with `gh auth token`; `GITHUB_COPILOT_TOKEN` is an optional explicit override. |
 | Z.AI | API key (`ZAI_API_KEY` env or `[zai] api_key` in config) | Set either. |
 | OpenRouter | API key (`OPENROUTER_API_KEY` env or `[openrouter] api_key` in config) | Set either. Named keys are supported. |
 | DeepSeek | API key (`DEEPSEEK_API_KEY` or config) | Set either and opt in. |
@@ -305,30 +305,23 @@ installs are unaffected until you opt in. Use either method:
   `config.toml`.
 - Add `enabled = true` to the vendor's config section alongside the key.
 
-The primary-vendor selector only offers vendors that are currently enabled, so a
-vendor you haven't opted into cannot be set as primary.
+The primary-vendor selector only offers enabled vendors, except GitHub Copilot:
+after signing in with GitHub CLI, selecting it as primary explicitly enables
+`[copilot]` at the same time.
 
 Vendors that authenticate through a local login rather than a key — Cursor,
 Kiro CLI, SuperGrok, Antigravity, and Kimi when you have a Kimi For Coding
 subscription — have no key to save, so enable them with `enabled = true` in
 `config.toml`.
 
-GitHub Copilot has a password-masked credential card in the Omarchy and
-terminal Settings forms. Paste a GitHub OAuth token and save; this writes
-`[copilot] token` and enables the provider. You can also set it manually:
-
-```toml
-[copilot]
-enabled = true
-token_env = "GITHUB_COPILOT_TOKEN" # optional environment-variable override
-token = "github-oauth-token"       # fallback when the environment is unset
-```
-
-`GITHUB_COPILOT_TOKEN` (or the environment variable named by `token_env`) takes
-priority over the saved token. The token is used exclusively for
-`GET https://api.github.com/copilot_internal/user`. ai-usagebar sends
-VS Code-compatible client headers, retains only normalized quota data in its
-cache, and never parses local editor or browser credential stores.
+GitHub Copilot has no token field in the Omarchy or terminal Settings forms.
+Run `gh auth login --web`, then select **GitHub Copilot** under **Primary
+Provider** and save. That enables `[copilot]` and sets it as primary, making it
+fetchable. At fetch time ai-usagebar runs only the fixed, structured
+`gh auth token` command; it never parses GitHub CLI configuration, credential
+stores, editor state, or browser state, and never writes the token to config or
+cache. `GITHUB_COPILOT_TOKEN` is an optional explicit environment override and
+takes precedence over GitHub CLI OAuth.
 
 ### Credential resolution order (for API-key vendors)
 

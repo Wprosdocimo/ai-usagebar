@@ -38,6 +38,8 @@ pub(crate) const VENDOR_SECRET_ENV_VARS: &[&str] = &[
     "OPENCODE_GO_API_KEY",
     "COMMANDCODE_API_KEY",
     "GITHUB_COPILOT_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
 ];
 
 pub(crate) fn vendor_secret_env_vars_to_remove(keep: &[&str]) -> Vec<&'static str> {

@@ -34,7 +34,7 @@ defensive and includes opt-in live tests for catching response changes.
 |---|---|
 | Claude | Undocumented usage endpoint, but used by the official `claude` CLI. Less fragile than a scraped web page. |
 | Codex | Undocumented ChatGPT usage endpoint used by the official `codex` CLI. Windows are identified by duration instead of response position. |
-| GitHub Copilot | Private endpoint used by VS Code. It requires a GitHub OAuth token and VS Code-compatible client headers; a non-empty configured environment variable takes priority, otherwise the protected `[copilot] token` saved through Settings is used. |
+| GitHub Copilot | Private endpoint used by VS Code. It requires a GitHub OAuth token and VS Code-compatible client headers; ai-usagebar gets it from the official `gh auth token` command after `gh auth login --web`. A non-empty `GITHUB_COPILOT_TOKEN` is an optional explicit override. GitHub CLI/editor/browser credentials are never parsed, copied, or stored. |
 | Z.AI | Reverse-engineered from a third-party plugin. Treat this as the most fragile integration. |
 | Kimi | Community-confirmed `/coding/v1/usages` route used by third-party quota tools. Drift is possible. The refresh grant is the Kimi Code CLI's own documented-by-behaviour device-flow token endpoint, using the CLI's public client id. |
 | Cursor | Undocumented endpoint called by Cursor's dashboard. Its shape may change with Cursor pricing. |
