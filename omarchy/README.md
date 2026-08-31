@@ -83,6 +83,8 @@ it never receives the saved value. The token is stored as `[copilot] token`;
 a non-empty `GITHUB_COPILOT_TOKEN` (or the environment variable named by
 `token_env`) takes priority. ai-usagebar does not read local editor or browser
 credential stores.
+After saving, refresh the settings panel and select **GitHub Copilot** under
+**Primary Provider** to make it the app-wide default.
 
 Existing installations need no migration: `config.toml`, environment-variable
 precedence, the TUI, Waybar, macOS, and Windows behavior are unchanged. If the
