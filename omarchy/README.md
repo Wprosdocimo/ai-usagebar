@@ -79,7 +79,9 @@ selector but never in the key list — enable them in `config.toml` and they wor
 with nothing to paste. GitHub Copilot is similarly absent from the key list,
 but requires an explicitly exported GitHub OAuth token named by
 `[copilot] token_env` (default `GITHUB_COPILOT_TOKEN`); it is never passed
-through the shell or stored in config.
+through the shell or stored in config. The **Log in with GitHub Copilot**
+button opens the standard `gh auth login --web` flow; finish it in the browser,
+then refresh the panel.
 
 Existing installations need no migration: `config.toml`, environment-variable
 precedence, the TUI, Waybar, macOS, and Windows behavior are unchanged. If the
