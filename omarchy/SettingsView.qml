@@ -37,7 +37,6 @@ Column {
   signal saved()
   signal fallbackRequested()
   signal nousLoginRequested()
-  signal copilotLoginRequested()
   signal showValueRequested(bool enabled)
   signal showProviderRequested(bool enabled)
   signal closeRequested()
@@ -122,11 +121,13 @@ Column {
 
   function finishApply() {
     saving = false
+    // The Rust process has consumed the stdin patch. Do not retain credentials
+    // in this long-lived shell, even if the save failed.
+    scrubSecrets()
     if (applyExitCode !== 0 || !Model.parseSettingsApplyResult(applyStdout)) {
       errorText = Model.errorMessage(applyStderr || "The settings command did not confirm the save.")
       return
     }
-    scrubSecrets()
     saved()
     load()
     // load() clears stale status before refreshing the snapshot, so set the
@@ -354,20 +355,6 @@ Column {
         root.nousLoginRequested()
       }
     }
-    Button {
-      width: parent.width
-      text: "Log in with GitHub Copilot"
-      iconText: "󰊤"
-      bordered: true
-      focusable: true
-      foreground: root.foreground
-      fontFamily: root.fontFamily
-      enabled: !root.saving
-      onClicked: {
-        root.statusText = "GitHub sign-in is opening in a terminal. Complete it, then return here and press Refresh."
-        root.copilotLoginRequested()
-      }
-    }
   }
 
   Column {
@@ -380,13 +367,13 @@ Column {
       foreground: root.foreground
     }
     PanelSectionHeader {
-      text: "API KEYS"
+      text: "CREDENTIALS"
       foreground: root.foreground
       fontFamily: root.fontFamily
     }
     Text {
       width: parent.width
-      text: "Stored values are never loaded into the shell. Leave a field blank to keep its current value, or use the clear button to remove an inline key. Environment variables take precedence."
+      text: "Stored values are never loaded into the shell. Leave a field blank to keep its current value, or use the clear button to remove an inline credential. Environment variables take precedence."
       textFormat: Text.PlainText
       color: root.dim
       font.family: root.fontFamily
@@ -463,6 +450,7 @@ Column {
             text: {
               var parts = []
               if (keyCard.modelData.environment) parts.push(root.safe(keyCard.modelData.environment))
+              if (keyCard.modelData.secret_label) parts.push(root.safe(keyCard.modelData.secret_label))
               if (keyCard.modelData.note) parts.push(root.safe(keyCard.modelData.note))
               return parts.join(" · ")
             }
@@ -483,7 +471,8 @@ Column {
               password: true
               enabled: !root.saving && keyCard.pendingAction !== "clear"
               placeholderText: keyCard.modelData.configured
-                ? "Leave blank to keep current key" : "Paste API key"
+                ? "Leave blank to keep current credential"
+                : "Paste " + (keyCard.modelData.secret_label || "credential")
               foreground: root.foreground
               onTextEdited: keyCard.pendingAction = text.length > 0 ? "set" : "unchanged"
               Keys.onEscapePressed: focus = false

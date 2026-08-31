@@ -72,16 +72,17 @@ rather than argv or the environment. Leave a field blank to keep its current
 value, or use its clear button to remove an inline key. Saving a new key also
 enables that provider, matching the terminal overlay.
 
-Not every provider has a key field, and a missing one is not an omission.
+Not every provider has a credential field, and a missing one is not an omission.
 Claude, Codex, Cursor, Kiro, Antigravity, and Command Code authenticate through
 a login that already exists on the machine, so they appear in the provider
 selector but never in the key list — enable them in `config.toml` and they work
-with nothing to paste. GitHub Copilot is similarly absent from the key list,
-but requires an explicitly exported GitHub OAuth token named by
-`[copilot] token_env` (default `GITHUB_COPILOT_TOKEN`); it is never passed
-through the shell or stored in config. The **Log in with GitHub Copilot**
-button opens the standard `gh auth login --web` flow; finish it in the browser,
-then refresh the panel.
+with nothing to paste. GitHub Copilot has a password-masked credential card:
+paste its GitHub OAuth token and save. The shell receives only presence
+metadata, then passes the changed token over stdin to the Rust settings owner;
+it never receives the saved value. The token is stored as `[copilot] token`;
+a non-empty `GITHUB_COPILOT_TOKEN` (or the environment variable named by
+`token_env`) takes priority. ai-usagebar does not read local editor or browser
+credential stores.
 
 Existing installations need no migration: `config.toml`, environment-variable
 precedence, the TUI, Waybar, macOS, and Windows behavior are unchanged. If the

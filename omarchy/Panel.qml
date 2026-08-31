@@ -178,11 +178,6 @@ Panel {
       bar.run("omarchy-launch-floating-terminal-with-presentation ai-usagebar auth nous login")
   }
 
-  function openCopilotLogin() {
-    if (bar && typeof bar.run === "function")
-      bar.run("omarchy-launch-floating-terminal-with-presentation gh auth login --web")
-  }
-
   function switchPanel(direction) {
     if (bar && typeof bar.switchPanelFrom === "function")
       return bar.switchPanelFrom(barIdentity, direction)
@@ -389,7 +384,6 @@ Panel {
             onShowProviderRequested: function(enabled) { root.setShowProvider(enabled) }
             onFallbackRequested: root.openTerminalSettings()
             onNousLoginRequested: root.openNousLogin()
-            onCopilotLoginRequested: root.openCopilotLogin()
             onCloseRequested: root.closeSettings()
           }
 

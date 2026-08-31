@@ -211,7 +211,7 @@ come from environment variables or `config.toml`.
 | Claude | OAuth from `~/.claude/.credentials.json` or the macOS login Keychain | Run `claude` once. Tokens refresh automatically. |
 | Anthropic API | Organization Admin key | Opt in with `ANTHROPIC_ADMIN_KEY` or `[anthropic_api] api_key`. Inference and Claude Code keys do not work. |
 | Codex | OAuth, read from `~/.codex/auth.json` | Run `codex login` once. Token auto-refreshes. |
-| GitHub Copilot | GitHub OAuth token from environment | Set `GITHUB_COPILOT_TOKEN` to a GitHub OAuth token and enable `[copilot]`. The token is sent only to GitHub Copilot's quota endpoint; it is never read from credential stores or saved in config. |
+| GitHub Copilot | GitHub OAuth token | Paste a token into the Settings credential card or set `[copilot] token`, then enable `[copilot]`. A non-empty `GITHUB_COPILOT_TOKEN` takes priority. The token is sent only to GitHub Copilot's quota endpoint and is never read from credential stores. |
 | Z.AI | API key (`ZAI_API_KEY` env or `[zai] api_key` in config) | Set either. |
 | OpenRouter | API key (`OPENROUTER_API_KEY` env or `[openrouter] api_key` in config) | Set either. Named keys are supported. |
 | DeepSeek | API key (`DEEPSEEK_API_KEY` or config) | Set either and opt in. |
@@ -313,19 +313,22 @@ Kiro CLI, SuperGrok, Antigravity, and Kimi when you have a Kimi For Coding
 subscription — have no key to save, so enable them with `enabled = true` in
 `config.toml`.
 
-GitHub Copilot is also configured outside the settings key form: export a
-GitHub OAuth token before the bar/TUI process starts, then enable it:
+GitHub Copilot has a password-masked credential card in the Omarchy and
+terminal Settings forms. Paste a GitHub OAuth token and save; this writes
+`[copilot] token` and enables the provider. You can also set it manually:
 
 ```toml
 [copilot]
 enabled = true
-token_env = "GITHUB_COPILOT_TOKEN" # optional override; no inline token field
+token_env = "GITHUB_COPILOT_TOKEN" # optional environment-variable override
+token = "github-oauth-token"       # fallback when the environment is unset
 ```
 
-The token is used exclusively for `GET https://api.github.com/copilot_internal/user`.
-ai-usagebar sends VS Code-compatible client headers, retains only normalized
-quota data in its cache, and never parses VS Code, GitHub CLI, or browser
-credential stores.
+`GITHUB_COPILOT_TOKEN` (or the environment variable named by `token_env`) takes
+priority over the saved token. The token is used exclusively for
+`GET https://api.github.com/copilot_internal/user`. ai-usagebar sends
+VS Code-compatible client headers, retains only normalized quota data in its
+cache, and never parses local editor or browser credential stores.
 
 ### Credential resolution order (for API-key vendors)
 

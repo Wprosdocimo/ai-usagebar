@@ -4,7 +4,7 @@
 //! ```toml
 //! [anthropic]  enabled = true
 //! [openai]     enabled = true   # Codex OAuth from ~/.codex/auth.json
-//! [copilot]    enabled = false  # GitHub OAuth token from an explicit env var
+//! [copilot]    enabled = false  # GitHub OAuth token from env or config.toml
 //! [zai]        enabled = true
 //! [openrouter] enabled = true
 //! [deepseek]   enabled = false
@@ -528,14 +528,17 @@ impl Default for OpenAiConfig {
 }
 
 /// GitHub Copilot quota from the private endpoint used by VS Code. The OAuth
-/// token is deliberately environment-only: this app neither scans editor
-/// credential stores nor persists a GitHub credential of its own.
+/// token may be supplied by the environment or saved in this app's protected
+/// config file; this app never scans editor credential stores.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CopilotConfig {
     pub enabled: bool,
     /// Name of the environment variable carrying a GitHub OAuth token.
     pub token_env: String,
+    /// Fallback OAuth token saved by the settings forms. A non-empty
+    /// environment value always takes precedence.
+    pub token: Option<String>,
 }
 
 impl Default for CopilotConfig {
@@ -543,19 +546,25 @@ impl Default for CopilotConfig {
         Self {
             enabled: false,
             token_env: "GITHUB_COPILOT_TOKEN".to_string(),
+            token: None,
         }
     }
 }
 
 impl CopilotConfig {
     pub fn resolve_token(&self) -> Result<String> {
-        resolve_env_secret(
-            "GitHub Copilot",
-            "[copilot]",
-            "token_env",
-            &self.token_env,
-            "GitHub OAuth token",
-        )
+        if let Some(token) = optional_api_key(&self.token_env, self.token.as_deref()) {
+            return Ok(token);
+        }
+        let advice = if is_valid_env_var_name(&self.token_env) {
+            "set a GitHub OAuth token in the environment variable named by `token_env` or set `token`"
+        } else {
+            "set `token_env` to a valid environment-variable name or set `token`"
+        };
+        Err(AppError::Credentials(format!(
+            "GitHub Copilot: no GitHub OAuth token. Either {advice} under [copilot] in {}.",
+            config_path_hint()
+        )))
     }
 }
 
@@ -1006,33 +1015,6 @@ pub fn optional_api_key(env_var_name: &str, inline: Option<&str>) -> Option<Stri
     inline.filter(|v| !v.is_empty()).map(str::to_string)
 }
 
-/// Resolve an environment-only credential. This is intentionally separate from
-/// API-key resolution so OAuth providers cannot acquire an inline fallback by
-/// accident, and callers get setup advice naming their actual config field.
-fn resolve_env_secret(
-    vendor_label: &str,
-    section: &str,
-    field: &str,
-    env_var_name: &str,
-    credential_label: &str,
-) -> Result<String> {
-    if is_valid_env_var_name(env_var_name)
-        && let Ok(value) = std::env::var(env_var_name)
-        && !value.is_empty()
-    {
-        return Ok(value);
-    }
-    let advice = if is_valid_env_var_name(env_var_name) {
-        format!("set {credential_label} in the environment variable named by `{field}`")
-    } else {
-        format!("set `{field}` to a valid environment-variable name")
-    };
-    Err(AppError::Credentials(format!(
-        "{vendor_label}: no {credential_label}. Either {advice} under {section} in {}.",
-        config_path_hint()
-    )))
-}
-
 fn resolve_api_key_in_section(
     vendor_label: &str,
     section: &str,
@@ -1083,7 +1065,7 @@ impl Config {
                 config.expand_paths();
                 config.validate()?;
                 #[cfg(unix)]
-                config.protect_inline_api_keys(path)?;
+                config.protect_inline_secrets(path)?;
                 Ok(config)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -1112,10 +1094,11 @@ impl Config {
         }
     }
 
-    /// Explicitly enumerate every inline API-key field. Adding a new API-key
-    /// vendor must add it here so its config file receives the same protection.
+    /// Explicitly enumerate every inline credential field. Adding a new
+    /// credential vendor must add it here so its config receives the same
+    /// protection.
     #[cfg(unix)]
-    fn has_inline_api_keys(&self) -> bool {
+    fn has_inline_secrets(&self) -> bool {
         [
             self.zai.api_key.as_deref(),
             self.openrouter.api_key.as_deref(),
@@ -1128,6 +1111,7 @@ impl Config {
             self.grok.api_key.as_deref(),
             self.anthropic_api.api_key.as_deref(),
             self.opencode_go.api_key.as_deref(),
+            self.copilot.token.as_deref(),
         ]
         .into_iter()
         .chain(
@@ -1140,21 +1124,21 @@ impl Config {
     }
 
     #[cfg(unix)]
-    fn protect_inline_api_keys(&self, path: &Path) -> Result<()> {
-        if !self.has_inline_api_keys() {
+    fn protect_inline_secrets(&self, path: &Path) -> Result<()> {
+        if !self.has_inline_secrets() {
             return Ok(());
         }
 
         let metadata = std::fs::metadata(path).map_err(|_| {
             AppError::Credentials(format!(
-                "config at {} contains inline api_key values but its permissions could not be checked; fix permissions or move keys to environment variables",
+                "config at {} contains inline credentials but its permissions could not be checked; fix permissions or move credentials to environment variables",
                 path.display()
             ))
         })?;
         if inline_key_permission_decision(metadata.mode()) == InlineKeyPermissionDecision::Tighten {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|_| {
                 AppError::Credentials(format!(
-                    "config at {} contains inline api_key values but is group/other-readable and could not be tightened to 0600; fix permissions or move keys to environment variables",
+                    "config at {} contains inline credentials but is group/other-readable and could not be tightened to 0600; fix permissions or move credentials to environment variables",
                     path.display()
                 ))
             })?;
@@ -1501,14 +1485,15 @@ mod tests {
         assert!(config.opencode_go.api_key.is_none());
         assert!(!config.is_enabled(VendorId::Copilot));
         assert_eq!(config.copilot.token_env, "GITHUB_COPILOT_TOKEN");
+        assert!(config.copilot.token.is_none());
     }
 
     #[cfg(unix)]
     #[test]
-    fn opencode_go_inline_key_is_protected_like_other_api_keys() {
+    fn inline_credentials_are_protected() {
         let mut config = Config::default();
         config.opencode_go.api_key = Some("<redacted>".to_string());
-        assert!(config.has_inline_api_keys());
+        assert!(config.has_inline_secrets());
     }
 
     #[cfg(unix)]
@@ -1520,7 +1505,7 @@ mod tests {
             api_key_env: None,
             api_key: Some("<redacted>".into()),
         });
-        assert!(config.has_inline_api_keys());
+        assert!(config.has_inline_secrets());
     }
 
     #[test]
@@ -1831,6 +1816,32 @@ enabled = false
     }
 
     #[test]
+    fn copilot_token_prefers_environment_over_saved_token() {
+        let _g = env_guard();
+        let variable = "AI_USAGEBAR_TEST_COPILOT_TOKEN_PRECEDENCE";
+        unsafe { std::env::set_var(variable, "from-environment") };
+        let config = CopilotConfig {
+            token_env: variable.into(),
+            token: Some("from-config".into()),
+            ..CopilotConfig::default()
+        };
+        assert_eq!(config.resolve_token().unwrap(), "from-environment");
+        unsafe { std::env::remove_var(variable) };
+        assert_eq!(config.resolve_token().unwrap(), "from-config");
+    }
+
+    #[test]
+    fn copilot_token_errors_do_not_echo_token_env_value() {
+        let config = CopilotConfig {
+            token_env: "github-pasted-token".into(),
+            ..CopilotConfig::default()
+        };
+        let error = config.resolve_token().unwrap_err().to_string();
+        assert!(error.contains("token_env"));
+        assert!(!error.contains("github-pasted-token"));
+    }
+
+    #[test]
     fn resolve_api_key_errors_when_both_missing() {
         let _g = env_guard();
         let var = "AI_USAGEBAR_TEST_BOTH_MISSING";
@@ -1961,6 +1972,20 @@ enabled = false
         assert_eq!(c.openrouter.api_key.as_deref(), Some("sk-or-inline"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn config_parses_and_protects_inline_copilot_token() {
+        let file = write_toml("[copilot]\ntoken = \"test-token\"\n");
+        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let config = Config::load_from(file.path()).unwrap();
+
+        assert_eq!(config.copilot.token.as_deref(), Some("test-token"));
+        assert_eq!(
+            std::fs::metadata(file.path()).unwrap().mode() & 0o777,
+            0o600
+        );
+    }
     #[test]
     fn openrouter_named_accounts_preserve_the_default_contract() {
         let f = write_toml(

@@ -1,17 +1,17 @@
 //! Settings overlay — opened from the TUI by pressing `s`. Lets the user pick
-//! the primary vendor and paste an API key for any key-authenticated vendor
+//! the primary vendor and paste a credential for any credential-authenticated vendor
 //! (including Z.AI, Kimi, MiniMax, and the balance vendors) without hand-editing
 //! config.toml. Anthropic, OpenAI, Cursor, Kiro, Antigravity, and Command Code
-//! authenticate through local product state, so they have no key field here —
+//! authenticate through local product state, so they have no credential field here —
 //! there is nothing to paste, and a field would only imply otherwise. Kimi keeps
-//! its key field because a platform key is still one of its two credentials, but
+//! its credential field because a platform key is still one of its two credentials, but
 //! a subscriber whose credential is the Kimi Code CLI login has nothing to paste
 //! and enables `[kimi]` in config.toml instead.
 //!
 //! Persistence uses `toml_edit` so the existing config keeps its comments,
 //! whitespace, and unrelated fields. Writing a key also flips that vendor's
 //! `enabled = true` (the opt-in vendors are disabled by default), so "paste the
-//! key and save" is all it takes. Files with inline keys are atomically written
+//! credential and save" is all it takes. Files with inline credentials are atomically written
 //! and `chmod 600`ed.
 
 use std::collections::BTreeMap;
@@ -33,14 +33,18 @@ use crate::theme::Theme;
 use crate::tui::style::bubble_theme;
 use crate::vendor::VendorId;
 
-/// A vendor that authenticates with an inline API key (vs. OAuth). The order of
-/// this table is the tab order of the key fields and the layout of the state's
-/// `keys` vec.
+/// A vendor that authenticates with an inline credential. The order of this
+/// table is the tab order of the credential fields and the layout of the
+/// state's `keys` vec.
 pub struct KeyVendor {
     pub id: VendorId,
     pub label: &'static str,
     pub env: &'static str,
     pub section: &'static str,
+    /// Config field that stores the credential (`api_key` for most vendors).
+    pub config_key: &'static str,
+    /// Human-readable name shown in the native settings form.
+    pub secret_label: &'static str,
     /// Extra hint after the env var (e.g. "management key"). Empty for none.
     pub note: &'static str,
 }
@@ -51,6 +55,8 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         label: "Anthropic API",
         env: "ANTHROPIC_ADMIN_KEY",
         section: "anthropic_api",
+        config_key: "api_key",
+        secret_label: "API key",
         note: "admin key — monthly spend",
     },
     KeyVendor {
@@ -58,6 +64,8 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         label: "Z.AI",
         env: "ZAI_API_KEY",
         section: "zai",
+        config_key: "api_key",
+        secret_label: "API key",
         note: "",
     },
     KeyVendor {
@@ -65,6 +73,8 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         label: "OpenRouter",
         env: "OPENROUTER_API_KEY",
         section: "openrouter",
+        config_key: "api_key",
+        secret_label: "API key",
         note: "",
     },
     KeyVendor {
@@ -72,6 +82,8 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         label: "DeepSeek",
         env: "DEEPSEEK_API_KEY",
         section: "deepseek",
+        config_key: "api_key",
+        secret_label: "API key",
         note: "",
     },
     KeyVendor {
@@ -79,6 +91,8 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         label: "Kimi",
         env: "KIMI_API_KEY",
         section: "kimi",
+        config_key: "api_key",
+        secret_label: "API key",
         note: "coding-plan usage",
     },
     KeyVendor {
@@ -86,6 +100,8 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         label: "Kilo",
         env: "KILO_API_KEY",
         section: "kilo",
+        config_key: "api_key",
+        secret_label: "API key",
         note: "",
     },
     KeyVendor {
@@ -93,6 +109,8 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         label: "Novita",
         env: "NOVITA_API_KEY",
         section: "novita",
+        config_key: "api_key",
+        secret_label: "API key",
         note: "",
     },
     KeyVendor {
@@ -100,6 +118,8 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         label: "Moonshot",
         env: "MOONSHOT_API_KEY",
         section: "moonshot",
+        config_key: "api_key",
+        secret_label: "API key",
         note: "account balance",
     },
     KeyVendor {
@@ -107,6 +127,8 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         label: "Grok",
         env: "XAI_MANAGEMENT_KEY",
         section: "grok",
+        config_key: "api_key",
+        secret_label: "API key",
         note: "management key, not the inference key",
     },
     KeyVendor {
@@ -114,6 +136,8 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         label: "MiniMax",
         env: "MINIMAX_API_KEY",
         section: "minimax",
+        config_key: "api_key",
+        secret_label: "API key",
         note: "Token Plan subscription key",
     },
     KeyVendor {
@@ -121,14 +145,25 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
         label: "OpenCode Go",
         env: "OPENCODE_GO_API_KEY",
         section: "opencode-go",
+        config_key: "api_key",
+        secret_label: "API key",
         note: "usage quota",
+    },
+    KeyVendor {
+        id: VendorId::Copilot,
+        label: "GitHub Copilot",
+        env: "GITHUB_COPILOT_TOKEN",
+        section: "copilot",
+        config_key: "token",
+        secret_label: "GitHub OAuth token",
+        note: "",
     },
 ];
 
-/// Read the inline `api_key` currently in config for a given section, so the
-/// field opens pre-filled (masked) when one is already set.
-fn config_inline_key<'a>(cfg: &'a Config, section: &str) -> Option<&'a str> {
-    match section {
+/// Read the inline credential currently in config, so the field opens
+/// pre-filled (masked) when one is already set.
+fn config_inline_key<'a>(cfg: &'a Config, vendor: &KeyVendor) -> Option<&'a str> {
+    match vendor.section {
         "anthropic_api" => cfg.anthropic_api.api_key.as_deref(),
         "zai" => cfg.zai.api_key.as_deref(),
         "openrouter" => cfg.openrouter.api_key.as_deref(),
@@ -140,6 +175,7 @@ fn config_inline_key<'a>(cfg: &'a Config, section: &str) -> Option<&'a str> {
         "grok" => cfg.grok.api_key.as_deref(),
         "minimax" => cfg.minimax.api_key.as_deref(),
         "opencode-go" => cfg.opencode_go.api_key.as_deref(),
+        "copilot" => cfg.copilot.token.as_deref(),
         _ => None,
     }
 }
@@ -283,7 +319,7 @@ impl SettingsState {
     pub fn from_config(cfg: &Config) -> Self {
         let keys = KEY_VENDORS
             .iter()
-            .map(|kv| KeyInput::from_config(config_inline_key(cfg, kv.section)))
+            .map(|kv| KeyInput::from_config(config_inline_key(cfg, kv)))
             .collect();
         let primary_choices = cfg.enabled_vendors();
         // A configured but disabled primary is ineffective. Display the first
@@ -458,7 +494,7 @@ fn save_to_config_default(state: &SettingsState) -> Result<()> {
 }
 
 /// Same as `save_to_config_default` but with an explicit path — exposed for
-/// tests. Writing a non-empty key also sets that vendor's `enabled = true`.
+/// tests. Writing a non-empty credential also sets that vendor's `enabled = true`.
 pub fn save_to_path(state: &SettingsState, path: &Path) -> Result<()> {
     let original = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -484,7 +520,7 @@ pub fn save_to_path(state: &SettingsState, path: &Path) -> Result<()> {
         let Some(input) = state.keys.get(i) else {
             continue;
         };
-        update_key(&mut doc, kv.section, input)?;
+        update_key(&mut doc, kv, input)?;
     }
 
     let bytes = doc.to_string();
@@ -502,22 +538,26 @@ pub fn save_to_path(state: &SettingsState, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Apply one key field to the document. Untouched fields are left alone; a
-/// field the user cleared is *removed*, so an inline secret can be deleted
-/// from the overlay rather than lingering in the file. Writing a non-empty key
-/// also opts the vendor in — the opt-in vendors would otherwise never fetch.
-fn update_key(doc: &mut DocumentMut, section: &str, input: &KeyInput) -> Result<()> {
+/// Apply one credential field to the document. Untouched fields are left
+/// alone; a field the user cleared is *removed*, so an inline secret can be
+/// deleted from the overlay rather than lingering in the file. Writing a
+/// non-empty credential also opts the vendor in — the opt-in vendors would
+/// otherwise never fetch.
+fn update_key(doc: &mut DocumentMut, vendor: &KeyVendor, input: &KeyInput) -> Result<()> {
     if !input.dirty {
         return Ok(());
     }
     if input.buf.is_empty() {
-        if let Some(table) = doc.get_mut(section).and_then(toml_edit::Item::as_table_mut) {
-            table.remove("api_key");
+        if let Some(table) = doc
+            .get_mut(vendor.section)
+            .and_then(toml_edit::Item::as_table_mut)
+        {
+            table.remove(vendor.config_key);
         }
         return Ok(());
     }
-    set_string(doc, section, "api_key", &input.buf)?;
-    set_bool(doc, section, "enabled", true)
+    set_string(doc, vendor.section, vendor.config_key, &input.buf)?;
+    set_bool(doc, vendor.section, "enabled", true)
 }
 
 /// Set or update a string field in a TOML section, preserving comments and
@@ -593,6 +633,7 @@ struct KeyStatus {
     id: String,
     label: String,
     environment: String,
+    secret_label: String,
     note: String,
     configured: bool,
     inline_configured: bool,
@@ -635,6 +676,7 @@ fn configured_key_env<'a>(cfg: &'a Config, section: &str, fallback: &'a str) -> 
         "grok" => &cfg.grok.api_key_env,
         "minimax" => &cfg.minimax.api_key_env,
         "opencode-go" => &cfg.opencode_go.api_key_env,
+        "copilot" => &cfg.copilot.token_env,
         _ => fallback,
     }
 }
@@ -656,13 +698,13 @@ fn snapshot_from_config_with(
         .iter()
         .map(|vendor| {
             let environment = configured_key_env(cfg, vendor.section, vendor.env);
-            let inline_configured =
-                config_inline_key(cfg, vendor.section).is_some_and(|v| !v.is_empty());
+            let inline_configured = config_inline_key(cfg, vendor).is_some_and(|v| !v.is_empty());
             let environment_configured = environment_configured(environment);
             KeyStatus {
                 id: vendor.id.slug().to_string(),
                 label: vendor.label.to_string(),
                 environment: environment.to_string(),
+                secret_label: vendor.secret_label.to_string(),
                 note: vendor.note.to_string(),
                 configured: inline_configured || environment_configured,
                 inline_configured,
@@ -725,23 +767,26 @@ fn state_from_apply_request(cfg: &Config, raw: &str) -> Result<SettingsState> {
         let index = KEY_VENDORS
             .iter()
             .position(|vendor| vendor.id.slug() == id)
-            .ok_or_else(|| AppError::Other(format!("unknown API-key vendor {id:?}")))?;
+            .ok_or_else(|| AppError::Other(format!("unknown credential vendor {id:?}")))?;
         let input = &mut state.keys[index];
         match mutation {
             KeyMutation::Set { value } => {
                 if value.is_empty() {
                     return Err(AppError::Other(format!(
-                        "API key for {id:?} is empty; use the clear action to remove it"
+                        "{} for {id:?} is empty; use the clear action to remove it",
+                        KEY_VENDORS[index].secret_label
                     )));
                 }
                 if value.len() > MAX_API_KEY_BYTES {
                     return Err(AppError::Other(format!(
-                        "API key for {id:?} exceeds {MAX_API_KEY_BYTES} bytes"
+                        "{} for {id:?} exceeds {MAX_API_KEY_BYTES} bytes",
+                        KEY_VENDORS[index].secret_label
                     )));
                 }
                 if value.chars().any(char::is_control) {
                     return Err(AppError::Other(format!(
-                        "API key for {id:?} contains control characters"
+                        "{} for {id:?} contains control characters",
+                        KEY_VENDORS[index].secret_label
                     )));
                 }
                 input.buf = value;
@@ -826,14 +871,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &SettingsState, theme: &Theme) {
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(inner);
 
-    // — Primary vendor + API keys header —
+    // — Primary vendor + credentials header —
     let mut lines: Vec<Line> = vec![
         section_header("Primary vendor", "shown first on the bar / TUI", &bubble),
         primary_line(state, &bubble),
         Line::from(""),
         section_header(
-            "API keys",
-            "pick a row, type the key, then Ctrl-S — Claude & Codex use CLI login",
+            "Credentials",
+            "pick a row, type the credential, then Ctrl-S — Claude & Codex use CLI login",
             &bubble,
         ),
     ];
@@ -1073,6 +1118,7 @@ mod tests {
             VendorId::Novita,
             VendorId::Moonshot,
             VendorId::Grok,
+            VendorId::Copilot,
         ] {
             assert!(
                 KEY_VENDORS.iter().any(|kv| kv.id == id),
@@ -1091,6 +1137,18 @@ mod tests {
         let s = SettingsState::from_config(&cfg);
         assert_eq!(s.keys[key_index(VendorId::Kilo)].buf, "sk-kilo");
         assert!(!s.keys[key_index(VendorId::Kilo)].dirty);
+    }
+
+    #[test]
+    fn from_config_prefills_existing_copilot_token() {
+        let mut cfg = Config::default();
+        cfg.copilot.token = Some("saved-copilot-token".into());
+        let state = SettingsState::from_config(&cfg);
+        assert_eq!(
+            state.keys[key_index(VendorId::Copilot)].buf,
+            "saved-copilot-token"
+        );
+        assert!(!state.keys[key_index(VendorId::Copilot)].dirty);
     }
 
     #[test]
@@ -1539,6 +1597,27 @@ api_key_env = "OPENROUTER_WORK_API_KEY"
     }
 
     #[test]
+    fn native_snapshot_reports_copilot_presence_without_serializing_token() {
+        let mut cfg = Config::default();
+        cfg.copilot.token = Some("never-leak-this-copilot-token".into());
+        let raw = settings_snapshot_json_with(&cfg, |name| name == "GITHUB_COPILOT_TOKEN").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let copilot = parsed["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "copilot")
+            .unwrap();
+        assert_eq!(copilot["configured"], true);
+        assert_eq!(copilot["inline_configured"], true);
+        assert_eq!(copilot["environment_configured"], true);
+        assert_eq!(copilot["environment"], "GITHUB_COPILOT_TOKEN");
+        assert_eq!(copilot["secret_label"], "GitHub OAuth token");
+        assert!(!raw.contains("never-leak-this-copilot-token"));
+        assert!(parsed.get("token").is_none());
+    }
+
+    #[test]
     fn native_key_only_patch_does_not_require_or_replace_primary() {
         let cfg = Config::default();
         let original_primary = SettingsState::from_config(&cfg).primary;
@@ -1608,6 +1687,28 @@ enabled = true
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("remove-me"));
         assert!(raw.contains("keep-me"));
+    }
+
+    #[test]
+    fn native_patch_saves_and_clears_copilot_token() {
+        let (_dir, path) = temp_config(Some("[copilot]\nenabled = false\n"));
+        let cfg = Config::load_from(&path).unwrap();
+        let save = serde_json::json!({
+            "schema_version": 1,
+            "keys": {"copilot": {"action": "set", "value": "saved-copilot-token"}}
+        });
+        apply_settings_json_to_path(&cfg, &save.to_string(), &path).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("token = \"saved-copilot-token\""));
+        assert!(raw.contains("enabled = true"));
+
+        let cfg = Config::load_from(&path).unwrap();
+        let clear = serde_json::json!({
+            "schema_version": 1,
+            "keys": {"copilot": {"action": "clear"}}
+        });
+        apply_settings_json_to_path(&cfg, &clear.to_string(), &path).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("token ="));
     }
 
     #[test]

@@ -112,11 +112,12 @@ enabled = true
 
 [copilot]
 # Disabled by default. GitHub Copilot quota comes from the private endpoint
-# used by VS Code. Set a GitHub OAuth token only in this environment variable;
-# ai-usagebar does not read VS Code/GitHub credential stores or save the token.
+# used by VS Code. GITHUB_COPILOT_TOKEN takes priority when it is non-empty.
+# Otherwise save a GitHub OAuth token with the settings form or set `token`.
+# ai-usagebar does not read VS Code/GitHub credential stores.
 enabled = false
 token_env = "GITHUB_COPILOT_TOKEN"
-# export GITHUB_COPILOT_TOKEN="github-oauth-token"
+# token = "github-oauth-token" # settings writes this file with mode 0600
 
 [zai]
 enabled = true

@@ -37,11 +37,9 @@ enabled = true
 # codex_auth_path = "/home/you/.codex/auth.json"
 
 [copilot]
-enabled = false           # opt in after exporting a GitHub OAuth token
-# Environment-only by design: ai-usagebar does not parse editor credential stores
-# or persist this token in config.toml.
+enabled = false           # opt in after saving or exporting a GitHub OAuth token
 token_env = "GITHUB_COPILOT_TOKEN"
-# export GITHUB_COPILOT_TOKEN="github-oauth-token"
+# token = "github-oauth-token" # fallback when GITHUB_COPILOT_TOKEN is unset
 
 [zai]
 enabled = true
