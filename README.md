@@ -1,6 +1,6 @@
 # ai-usagebar
 
-Native Omarchy Quattro panel, Waybar widget, and tabbed TUI for AI plan usage across **Claude**, **Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, **Kimi**, **Nous Research**, **OpenCode Go**, **Command Code**, and other supported AI coding services.
+Native Omarchy Quattro panel, Waybar widget, and tabbed TUI for AI plan usage across **Claude**, **Codex/ChatGPT**, **GitHub Copilot**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, **Kimi**, **Nous Research**, **OpenCode Go**, **Command Code**, and other supported AI coding services.
 
 ai-usagebar began as a Rust port of
 [`claudebar`](https://github.com/mryll/claudebar) and remains drop-in
@@ -211,6 +211,7 @@ come from environment variables or `config.toml`.
 | Claude | OAuth from `~/.claude/.credentials.json` or the macOS login Keychain | Run `claude` once. Tokens refresh automatically. |
 | Anthropic API | Organization Admin key | Opt in with `ANTHROPIC_ADMIN_KEY` or `[anthropic_api] api_key`. Inference and Claude Code keys do not work. |
 | Codex | OAuth, read from `~/.codex/auth.json` | Run `codex login` once. Token auto-refreshes. |
+| GitHub Copilot | GitHub OAuth token from environment | Set `GITHUB_COPILOT_TOKEN` to a GitHub OAuth token and enable `[copilot]`. The token is sent only to GitHub Copilot's quota endpoint; it is never read from credential stores or saved in config. |
 | Z.AI | API key (`ZAI_API_KEY` env or `[zai] api_key` in config) | Set either. |
 | OpenRouter | API key (`OPENROUTER_API_KEY` env or `[openrouter] api_key` in config) | Set either. Named keys are supported. |
 | DeepSeek | API key (`DEEPSEEK_API_KEY` or config) | Set either and opt in. |
@@ -293,8 +294,9 @@ rather than silently querying the wrong URL.
 
 ### Enabling a vendor
 
-`enabled = true` is what makes a vendor fetch. Anthropic API, DeepSeek, Kimi,
-Kilo, Novita, Moonshot, Grok, SuperGrok, Antigravity, Cursor, MiniMax, and Kiro CLI all default to **disabled** so that existing
+`enabled = true` is what makes a vendor fetch. Anthropic API, GitHub Copilot,
+DeepSeek, Kimi, Kilo, Novita, Moonshot, Grok, SuperGrok, Antigravity, Cursor,
+MiniMax, and Kiro CLI all default to **disabled** so that existing
 installs are unaffected until you opt in. Use either method:
 
 - Use the gear or `s` in the Omarchy panel, or run
@@ -310,6 +312,20 @@ Vendors that authenticate through a local login rather than a key — Cursor,
 Kiro CLI, SuperGrok, Antigravity, and Kimi when you have a Kimi For Coding
 subscription — have no key to save, so enable them with `enabled = true` in
 `config.toml`.
+
+GitHub Copilot is also configured outside the settings key form: export a
+GitHub OAuth token before the bar/TUI process starts, then enable it:
+
+```toml
+[copilot]
+enabled = true
+token_env = "GITHUB_COPILOT_TOKEN" # optional override; no inline token field
+```
+
+The token is used exclusively for `GET https://api.github.com/copilot_internal/user`.
+ai-usagebar sends VS Code-compatible client headers, retains only normalized
+quota data in its cache, and never parses VS Code, GitHub CLI, or browser
+credential stores.
 
 ### Credential resolution order (for API-key vendors)
 
@@ -372,6 +388,7 @@ display option, account path, region, and API-key setting.
 ai-usagebar                        # uses [ui] primary (defaults to anthropic)
 ai-usagebar --vendor anthropic_api
 ai-usagebar --vendor openai
+ai-usagebar --vendor copilot
 ai-usagebar --vendor zai
 ai-usagebar --vendor openrouter
 ai-usagebar --vendor deepseek

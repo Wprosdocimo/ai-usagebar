@@ -281,6 +281,7 @@ pub enum Vendor {
     #[value(name = "anthropic_api")]
     AnthropicApi,
     Openai,
+    Copilot,
     Zai,
     Openrouter,
     Deepseek,
@@ -308,6 +309,7 @@ impl Vendor {
             Vendor::Anthropic => crate::vendor::VendorId::Anthropic,
             Vendor::AnthropicApi => crate::vendor::VendorId::AnthropicApi,
             Vendor::Openai => crate::vendor::VendorId::Openai,
+            Vendor::Copilot => crate::vendor::VendorId::Copilot,
             Vendor::Zai => crate::vendor::VendorId::Zai,
             Vendor::Openrouter => crate::vendor::VendorId::Openrouter,
             Vendor::Deepseek => crate::vendor::VendorId::Deepseek,
@@ -399,6 +401,7 @@ fn id_to_vendor(id: crate::vendor::VendorId) -> Vendor {
         crate::vendor::VendorId::Anthropic => Vendor::Anthropic,
         crate::vendor::VendorId::AnthropicApi => Vendor::AnthropicApi,
         crate::vendor::VendorId::Openai => Vendor::Openai,
+        crate::vendor::VendorId::Copilot => Vendor::Copilot,
         crate::vendor::VendorId::Zai => Vendor::Zai,
         crate::vendor::VendorId::Openrouter => Vendor::Openrouter,
         crate::vendor::VendorId::Deepseek => Vendor::Deepseek,
@@ -467,6 +470,8 @@ mod tests {
         assert_eq!(nous.vendor, Some(Vendor::NousResearch));
         let opencode = Cli::parse_from(["ai-usagebar", "--vendor", "opencode-go"]);
         assert_eq!(opencode.vendor, Some(Vendor::OpenCodeGo));
+        let copilot = Cli::parse_from(["ai-usagebar", "--vendor", "copilot"]);
+        assert_eq!(copilot.vendor, Some(Vendor::Copilot));
         let login = Cli::parse_from(["ai-usagebar", "auth", "nous", "login"]);
         assert!(matches!(login.command, Some(Command::Auth { .. })));
     }

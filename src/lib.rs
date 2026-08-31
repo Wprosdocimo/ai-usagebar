@@ -18,6 +18,7 @@ pub mod claude_desktop;
 pub mod commandcode;
 pub mod config;
 pub mod context;
+pub mod copilot;
 pub mod countdown;
 pub mod cursor;
 pub mod deepseek;

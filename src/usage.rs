@@ -334,6 +334,7 @@ impl KimiSnapshot {
 pub enum VendorSnapshot {
     Anthropic(AnthropicSnapshot),
     Openai(OpenAiSnapshot),
+    Copilot(crate::copilot::types::Snapshot),
     Zai(ZaiSnapshot),
     Openrouter(OpenRouterSnapshot),
     Deepseek(DeepseekSnapshot),

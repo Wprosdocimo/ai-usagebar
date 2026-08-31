@@ -10,15 +10,15 @@ metrics expand to an empty string unless noted otherwise.
 | Provider | Value | Provider | Value |
 |---|---:|---|---:|
 | Claude | `cld` | Codex | `gpt` |
-| Z.AI | `zai` | OpenRouter | `opr` |
-| DeepSeek | `dsk` | Kimi | `kmi` |
-| Kilo | `klo` | Novita | `nvt` |
-| Moonshot | `msh` | Grok | `grk` |
-| SuperGrok | `sgk` | Anthropic API | `aac` |
-| Antigravity | `agy` | Cursor | `cur` |
-| MiniMax | `mmx` | Kiro CLI | `kir` |
-| Nous Research | `nrs` | OpenCode Go | `ocg` |
-| Command Code | `cmc` | | |
+| GitHub Copilot | `ghc` | Z.AI | `zai` |
+| OpenRouter | `opr` | DeepSeek | `dsk` |
+| Kimi | `kmi` | Kilo | `klo` |
+| Novita | `nvt` | Moonshot | `msh` |
+| Grok | `grk` | SuperGrok | `sgk` |
+| Anthropic API | `aac` | Antigravity | `agy` |
+| Cursor | `cur` | MiniMax | `mmx` |
+| Kiro CLI | `kir` | Nous Research | `nrs` |
+| OpenCode Go | `ocg` | Command Code | `cmc` |
 
 The same codes ride the `ai-usagebar usage --json` report as each entry's
 `short_name`, so a native frontend can draw a Waybar-style provider tag without
@@ -64,6 +64,20 @@ window is absent, it returns neutral empty, `0`, or `—` values as appropriate.
 
 Session and weekly families are empty when the API omits that window. The
 default widget automatically uses weekly values for a weekly-only response.
+
+## GitHub Copilot
+
+`{copilot_plan}`, `{copilot_reset}`, `{copilot_premium_pct}`,
+`{copilot_premium_used}`, `{copilot_premium_limit}`, `{copilot_chat_pct}`,
+`{copilot_chat_used}`, `{copilot_chat_limit}`, `{copilot_completions_pct}`,
+`{copilot_completions_used}`, `{copilot_completions_limit}`
+
+These represent the `premium_interactions`, `chat`, and `completions` quota
+snapshots that GitHub reports. The default bar format is
+`{copilot_premium_pct}% · {copilot_reset}`. `{session_*}` aliases Premium and
+`{weekly_*}` aliases Chat so one cross-provider format can still render it;
+both use Copilot's account-wide quota reset, not a weekly window. Missing
+quota buckets expand to `—`.
 
 ## Z.AI
 

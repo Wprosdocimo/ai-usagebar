@@ -76,7 +76,10 @@ Not every provider has a key field, and a missing one is not an omission.
 Claude, Codex, Cursor, Kiro, Antigravity, and Command Code authenticate through
 a login that already exists on the machine, so they appear in the provider
 selector but never in the key list — enable them in `config.toml` and they work
-with nothing to paste.
+with nothing to paste. GitHub Copilot is similarly absent from the key list,
+but requires an explicitly exported GitHub OAuth token named by
+`[copilot] token_env` (default `GITHUB_COPILOT_TOKEN`); it is never passed
+through the shell or stored in config.
 
 Existing installations need no migration: `config.toml`, environment-variable
 precedence, the TUI, Waybar, macOS, and Windows behavior are unchanged. If the

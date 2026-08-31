@@ -4,6 +4,7 @@
 //! ```toml
 //! [anthropic]  enabled = true
 //! [openai]     enabled = true   # Codex OAuth from ~/.codex/auth.json
+//! [copilot]    enabled = false  # GitHub OAuth token from an explicit env var
 //! [zai]        enabled = true
 //! [openrouter] enabled = true
 //! [deepseek]   enabled = false
@@ -41,6 +42,7 @@ pub struct Config {
     pub anthropic: AnthropicConfig,
     pub anthropic_api: AnthropicApiConfig,
     pub openai: OpenAiConfig,
+    pub copilot: CopilotConfig,
     pub zai: ZaiConfig,
     pub openrouter: OpenRouterConfig,
     pub deepseek: DeepseekConfig,
@@ -525,6 +527,38 @@ impl Default for OpenAiConfig {
     }
 }
 
+/// GitHub Copilot quota from the private endpoint used by VS Code. The OAuth
+/// token is deliberately environment-only: this app neither scans editor
+/// credential stores nor persists a GitHub credential of its own.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CopilotConfig {
+    pub enabled: bool,
+    /// Name of the environment variable carrying a GitHub OAuth token.
+    pub token_env: String,
+}
+
+impl Default for CopilotConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token_env: "GITHUB_COPILOT_TOKEN".to_string(),
+        }
+    }
+}
+
+impl CopilotConfig {
+    pub fn resolve_token(&self) -> Result<String> {
+        resolve_env_secret(
+            "GitHub Copilot",
+            "[copilot]",
+            "token_env",
+            &self.token_env,
+            "GitHub OAuth token",
+        )
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct NousConfig {
@@ -972,6 +1006,33 @@ pub fn optional_api_key(env_var_name: &str, inline: Option<&str>) -> Option<Stri
     inline.filter(|v| !v.is_empty()).map(str::to_string)
 }
 
+/// Resolve an environment-only credential. This is intentionally separate from
+/// API-key resolution so OAuth providers cannot acquire an inline fallback by
+/// accident, and callers get setup advice naming their actual config field.
+fn resolve_env_secret(
+    vendor_label: &str,
+    section: &str,
+    field: &str,
+    env_var_name: &str,
+    credential_label: &str,
+) -> Result<String> {
+    if is_valid_env_var_name(env_var_name)
+        && let Ok(value) = std::env::var(env_var_name)
+        && !value.is_empty()
+    {
+        return Ok(value);
+    }
+    let advice = if is_valid_env_var_name(env_var_name) {
+        format!("set {credential_label} in the environment variable named by `{field}`")
+    } else {
+        format!("set `{field}` to a valid environment-variable name")
+    };
+    Err(AppError::Credentials(format!(
+        "{vendor_label}: no {credential_label}. Either {advice} under {section} in {}.",
+        config_path_hint()
+    )))
+}
+
 fn resolve_api_key_in_section(
     vendor_label: &str,
     section: &str,
@@ -1106,6 +1167,7 @@ impl Config {
             VendorId::Anthropic => self.anthropic.enabled,
             VendorId::AnthropicApi => self.anthropic_api.enabled,
             VendorId::Openai => self.openai.enabled,
+            VendorId::Copilot => self.copilot.enabled,
             VendorId::Zai => self.zai.enabled,
             VendorId::Openrouter => self.openrouter.enabled,
             VendorId::Deepseek => self.deepseek.enabled,
@@ -1413,6 +1475,7 @@ mod tests {
         assert!(c.is_enabled(VendorId::Openrouter));
         for opt_in in [
             VendorId::AnthropicApi,
+            VendorId::Copilot,
             VendorId::Deepseek,
             VendorId::Kimi,
             VendorId::Kilo,
@@ -1436,6 +1499,8 @@ mod tests {
         assert!(!config.is_enabled(VendorId::OpenCodeGo));
         assert_eq!(config.opencode_go.api_key_env, "OPENCODE_GO_API_KEY");
         assert!(config.opencode_go.api_key.is_none());
+        assert!(!config.is_enabled(VendorId::Copilot));
+        assert_eq!(config.copilot.token_env, "GITHUB_COPILOT_TOKEN");
     }
 
     #[cfg(unix)]

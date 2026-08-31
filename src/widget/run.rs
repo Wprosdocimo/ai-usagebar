@@ -13,6 +13,7 @@ use crate::anthropic_api;
 use crate::antigravity;
 use crate::cache::{Cache, DEFAULT_TTL};
 use crate::config::Config;
+use crate::copilot;
 use crate::cursor;
 use crate::deepseek;
 use crate::error::{AppError, Result};
@@ -146,6 +147,7 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
         Vendor::AnthropicApi => anthropic_api_output(cli, &config).await,
         Vendor::Openrouter => openrouter_output(cli, &config).await,
         Vendor::Openai => openai_output(cli, &config).await,
+        Vendor::Copilot => copilot_output(cli, &config).await,
         Vendor::Zai => zai_output(cli, &config).await,
         Vendor::Deepseek => deepseek_output(cli, &config).await,
         Vendor::Kimi => kimi_output(cli, &config).await,
@@ -656,6 +658,30 @@ async fn openai_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
         &theme,
         &opts,
         chrono::Utc::now(),
+    ))
+}
+
+async fn copilot_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
+    let token = config.copilot.resolve_token()?;
+    let client = http_client()?;
+    let cache = vendor_cache(cli, "copilot")?;
+    let endpoints = copilot::fetch::Endpoints::default();
+    let outcome =
+        match copilot::fetch_snapshot(&client, &token, &cache, &endpoints, DEFAULT_TTL).await {
+            Ok(outcome) => outcome,
+            Err(error) if error.is_transient() => {
+                return Ok(WaybarOutput::loading(cli.icon.as_deref()));
+            }
+            Err(error) => return Err(error),
+        };
+    let snapshot = outcome.snapshot.clone();
+    let vendor_outcome: VendorOutcome = outcome.into();
+    Ok(copilot::vendor::render(
+        &vendor_outcome,
+        &snapshot,
+        &theme_from_cli(cli),
+        &RenderOpts::from_cli(cli),
+        Utc::now(),
     ))
 }
 

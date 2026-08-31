@@ -10,10 +10,10 @@ settings.
 # Which vendor the widget shows when --vendor is omitted, AND which tab
 # is selected when the TUI opens. Defaults to anthropic when not set.
 # Only a vendor that is enabled can be primary.
-# primary = "anthropic"   # anthropic | anthropic_api | openai | zai
-#                         # | openrouter | deepseek | kimi | kilo | novita
+# primary = "anthropic"   # anthropic | anthropic_api | openai | copilot
+#                         # | zai | openrouter | deepseek | kimi | kilo | novita
 #                         # | moonshot | grok | supergrok | antigravity | cursor
-#                         # | minimax | kiro
+#                         # | minimax | kiro | nous | opencode-go | commandcode
 
 [context]
 enabled = false           # opt in, then press c in ai-usagebar-tui
@@ -35,6 +35,13 @@ api_key_env = "ANTHROPIC_ADMIN_KEY"
 [openai]
 enabled = true
 # codex_auth_path = "/home/you/.codex/auth.json"
+
+[copilot]
+enabled = false           # opt in after exporting a GitHub OAuth token
+# Environment-only by design: ai-usagebar does not parse editor credential stores
+# or persist this token in config.toml.
+token_env = "GITHUB_COPILOT_TOKEN"
+# export GITHUB_COPILOT_TOKEN="github-oauth-token"
 
 [zai]
 enabled = true
