@@ -118,8 +118,9 @@ currencies are present; otherwise they use CNY.
 
 These cover the subscription quota and rolling five-hour window from
 `api.kimi.com/coding/v1/usages`. The default format is
-`{kimi_weekly_pct}% · {kimi_weekly_reset}`. Generic aliases are `{plan}` for the
-plan, `{weekly_pct}` for weekly usage, and `{session_pct}` for the five-hour
+`5h {kimi_window_pct}% · 7d {kimi_weekly_pct}%`, shortest window first like
+every other two-window vendor. Generic aliases are `{plan}` for the plan,
+`{weekly_pct}` for weekly usage, and `{session_pct}` for the five-hour
 window.
 
 ## Kilo

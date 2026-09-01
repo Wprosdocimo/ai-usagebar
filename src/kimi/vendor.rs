@@ -178,29 +178,12 @@ fn render_tooltip(
         escape(plan)
     )));
 
-    // Kimi counts requests rather than reporting a percentage, which is why
-    // this block used to print bare `26 / 100  (26%)` pairs. The percentage is
-    // right there — project each quota onto a window and it draws like every
-    // other vendor, with the counts riding along on the reset line.
-    lines.push(TooltipLine::Body("".into()));
-    // `remaining` is the vendor's own number, not `limit - used`: `extract_block`
-    // keeps both when the wire reports both. Dropping it would lose the figure a
-    // request-counting quota is actually read for.
-    let weekly_detail = format!(
-        "{used} / {limit} · {remaining} left",
-        used = snap.weekly_used,
-        limit = snap.weekly_limit,
-        remaining = snap.weekly_remaining
-    );
-    push_window_with_row(
-        &mut lines,
-        "  󰅄  Weekly quota",
-        &window(weekly_pct, snap.weekly_reset_at, WEEKLY_WINDOW),
-        theme,
-        now,
-        WindowRow::default().with_detail(&weekly_detail),
-    );
-
+    // Kimi counts requests rather than reporting a percentage, but the
+    // percentage is right there: each quota projects onto a window and draws
+    // like every other vendor's, with the counts riding along on the reset
+    // line. `remaining` is the vendor's own number, not `limit - used` —
+    // `extract_block` keeps both when the wire reports both, and dropping it
+    // would lose the figure a request-counting quota is actually read for.
     if snap.window_limit > 0 {
         lines.push(TooltipLine::Body("".into()));
         let window_detail = format!(
@@ -218,6 +201,22 @@ fn render_tooltip(
             WindowRow::default().with_detail(&window_detail),
         );
     }
+
+    lines.push(TooltipLine::Body("".into()));
+    let weekly_detail = format!(
+        "{used} / {limit} · {remaining} left",
+        used = snap.weekly_used,
+        limit = snap.weekly_limit,
+        remaining = snap.weekly_remaining
+    );
+    push_window_with_row(
+        &mut lines,
+        "  󰅄  Weekly quota",
+        &window(weekly_pct, snap.weekly_reset_at, WEEKLY_WINDOW),
+        theme,
+        now,
+        WindowRow::default().with_detail(&weekly_detail),
+    );
 
     if let Some((code, msg)) = outcome.last_error.as_ref() {
         let (label, icon, ecolor) = match warning_kind(*code, msg) {
@@ -558,6 +557,26 @@ mod tests {
         for glyph in ['↑', '→', '↓'] {
             assert!(!out.tooltip.contains(glyph), "{}", out.tooltip);
         }
+    }
+
+    /// The tooltip runs shortest window first, the way Claude's and Codex's
+    /// both open on their 5h row. Kimi's rolling bucket is that window, so it
+    /// sits above the weekly quota — the same order `DEFAULT_FORMAT` and the
+    /// detail panel use.
+    #[test]
+    fn tooltip_puts_the_rolling_window_above_the_weekly_quota() {
+        let snap = sample_snap();
+        let outcome = sample_outcome(snap.clone());
+        let out = render(&outcome, &snap, &Theme::default(), &opts(), now());
+        let rolling = out
+            .tooltip
+            .find("Rolling window (5h)")
+            .unwrap_or_else(|| panic!("no rolling row: {}", out.tooltip));
+        let weekly = out
+            .tooltip
+            .find("Weekly quota")
+            .unwrap_or_else(|| panic!("no weekly row: {}", out.tooltip));
+        assert!(rolling < weekly, "{}", out.tooltip);
     }
 
     /// Kimi's compact surface must not discard either independent quota.

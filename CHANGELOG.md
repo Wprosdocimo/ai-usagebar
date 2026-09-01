@@ -9,6 +9,19 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- Kimi leads with its rolling 5h window and carries the weekly quota under it,
+  the order every other two-window vendor uses — Claude's `Session (5h)` above
+  `Weekly (7d)`, Codex's `Codex 5h` above `Codex weekly`, GLM's `Session (5h)`
+  above `Weekly`. It was the one provider drawing the long window first, so a
+  glance across vendors compared different rows. The Waybar tooltip and the
+  shared panel projection both move, which carries the Omarchy Quattro panel,
+  the KDE plasmoid, the TUI detail panel, the TUI Overview row (`5h` before
+  `wk`) and `usage --json` with them. Kimi's Waybar bar text, the macOS menu
+  bar and the GNOME dropdown already read the 5h window off the `session_*`
+  alias and are unchanged.
+
 ## [1.9.1] — 2026-08-30
 
 ### Fixed

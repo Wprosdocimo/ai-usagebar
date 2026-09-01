@@ -549,16 +549,30 @@ mod tests {
             fetched_at: None,
         }));
         let projected = entry_from_state(&TabId::vendor(VendorId::Kimi), &state, Utc::now());
+        // Pair each reset with its own row rather than pinning the row order —
+        // that order is `panels::kimi_sections`' to choose, and pinning it here
+        // would only duplicate the test that owns it.
         let resets: Vec<_> = projected
             .sections
             .iter()
             .filter_map(|section| match section {
-                ReportSection::Metric { reset_at, .. } => Some(*reset_at),
+                ReportSection::Metric {
+                    label, reset_at, ..
+                } => Some((label.as_str(), *reset_at)),
                 _ => None,
             })
             .collect();
 
-        assert_eq!(resets, vec![Some(weekly_reset), Some(window_reset)]);
+        assert_eq!(
+            resets
+                .iter()
+                .copied()
+                .collect::<std::collections::HashMap<_, _>>(),
+            std::collections::HashMap::from([
+                ("Weekly quota", Some(weekly_reset)),
+                ("Rolling window (5h)", Some(window_reset)),
+            ])
+        );
     }
 
     #[test]
