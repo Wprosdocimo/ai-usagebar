@@ -1077,54 +1077,30 @@ fn deepseek_sections(s: &crate::usage::DeepseekSnapshot) -> SectionBuilder {
     v
 }
 
-fn kimi_sections(s: &crate::usage::KimiSnapshot, now: DateTime<Utc>, _tol: u32) -> SectionBuilder {
+/// Kimi reports each quota as used/limit against a limit of 100, so the pair
+/// is the percentage in longhand. Projecting both onto a `UsageWindow` lets
+/// the shared `push_window` draw them, which is what keeps the row identical
+/// to every other vendor's instead of a hand-rolled near-copy.
+fn kimi_sections(s: &crate::usage::KimiSnapshot, now: DateTime<Utc>, tol: u32) -> SectionBuilder {
+    use crate::kimi::vendor::{ROLLING_WINDOW, WEEKLY_WINDOW};
+
     let plan = s.plan.as_deref().unwrap_or("Kimi");
     let mut v = SectionBuilder::new(vec![Section::Title {
         left: plan.into(),
         right: None,
     }]);
+    let window = |pct, resets_at, window_duration| crate::usage::UsageWindow {
+        utilization_pct: pct,
+        resets_at,
+        window_duration,
+    };
 
     if s.window_limit > 0 {
-        let window_pct = s.window_pct().clamp(0, 100) as u16;
-        v.push(Section::Spacer);
-        v.push_metric(
-            Section::Metric {
-                label: "Rolling window (5h)".into(),
-                pct: window_pct,
-                severity: severity_for(s.window_pct()),
-                // Same `{pct}%` every other vendor shows; the request counts
-                // stay on the footnote.
-                value_label: format!("{window_pct}%"),
-                footnote: format!(
-                    "{} / {} · {} remaining · reset {}",
-                    s.window_used,
-                    s.window_limit,
-                    s.window_remaining,
-                    countdown::format(s.window_reset_at, now)
-                ),
-            },
-            s.window_reset_at,
-        );
+        let w = window(s.window_pct(), s.window_reset_at, ROLLING_WINDOW);
+        push_window(&mut v, "Rolling window (5h)", &w, now, tol, false);
     }
-
-    let weekly_pct = s.weekly_pct().clamp(0, 100) as u16;
-    v.push(Section::Spacer);
-    v.push_metric(
-        Section::Metric {
-            label: "Weekly quota".into(),
-            pct: weekly_pct,
-            severity: severity_for(s.weekly_pct()),
-            value_label: format!("{weekly_pct}%"),
-            footnote: format!(
-                "{} / {} · {} remaining · reset {}",
-                s.weekly_used,
-                s.weekly_limit,
-                s.weekly_remaining,
-                countdown::format(s.weekly_reset_at, now)
-            ),
-        },
-        s.weekly_reset_at,
-    );
+    let w = window(s.weekly_pct(), s.weekly_reset_at, WEEKLY_WINDOW);
+    push_window(&mut v, "Weekly quota", &w, now, tol, false);
 
     v
 }
@@ -1770,25 +1746,16 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing metric {label}"))
         };
 
+        // The bar carries the percentage, so the footnote is the plain
+        // `Resets in …` every other window row shows — not the counters, which
+        // against Kimi's limit of 100 only restate the percentage.
         let (weekly_value, weekly_footnote) = find_footnote("Weekly quota");
         assert_eq!(weekly_value, "26%");
-        assert!(weekly_footnote.contains("26 / 100"));
-        assert!(weekly_footnote.contains("74 remaining"));
-        assert!(
-            weekly_footnote.contains("4d 0h"),
-            "weekly reset countdown: {weekly_footnote}"
-        );
-        assert!(!weekly_footnote.contains("2026-05-27T")); // not a raw RFC3339
+        assert_eq!(weekly_footnote, "Resets in 4d 0h");
 
         let (window_value, window_footnote) = find_footnote("Rolling window (5h)");
         assert_eq!(window_value, "15%");
-        assert!(window_footnote.contains("15 / 100"));
-        assert!(window_footnote.contains("85 remaining"));
-        assert!(
-            window_footnote.contains("2h 00m"),
-            "window reset countdown: {window_footnote}"
-        );
-        assert!(!window_footnote.contains("2026-05-23T14")); // not a raw RFC3339
+        assert_eq!(window_footnote, "Resets in 2h 00m");
     }
 
     /// Every vendor holding both a short and a long window opens on the short

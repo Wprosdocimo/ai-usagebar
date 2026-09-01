@@ -38,8 +38,10 @@ pub struct WindowRow<'a> {
     pub marker_pct: Option<i32>,
     /// Pace glyph appended after the bold percentage (`↑` / `→` / `↓`).
     pub glyph: Option<&'static str>,
-    /// Extra dim text appended to the reset line — Kimi's `2 / 100` counters,
-    /// which the bar's percentage summarises but does not spell out.
+    /// Extra dim text appended to the reset line, for a figure the bar's
+    /// percentage cannot express. No vendor needs one today: Kimi's counters
+    /// were the last caller, and against its limit of 100 they only restated
+    /// the percentage already drawn above them.
     pub detail: Option<&'a str>,
 }
 
@@ -342,9 +344,9 @@ mod tests {
         let w = window(40, 3);
         let out = row_markup(
             &w,
-            WindowRow::paced(&w, at(12), 5, false).with_detail("2 / 100"),
+            WindowRow::paced(&w, at(12), 5, false).with_detail("2 of 100"),
         );
         assert!(out.contains("40% →"), "{out}");
-        assert!(out.contains("Resets in 3h 00m · 2 / 100"), "{out}");
+        assert!(out.contains("Resets in 3h 00m · 2 of 100"), "{out}");
     }
 }
