@@ -362,6 +362,7 @@ function parseSettingsSnapshot(raw) {
         id: keyId,
         label: cleanText(key.label, 120) || keyId,
         environment: cleanText(key.environment, 160),
+        secret_label: cleanText(key.secret_label, 120),
         note: cleanText(key.note, 240),
         configured: key.configured === true,
         inline_configured: key.inline_configured === true,
@@ -402,8 +403,8 @@ function buildSettingsPatch(primary, changes) {
       keys[id] = { action: "clear" }
     } else if (change.action === "set") {
       var value = String(change.value || "")
-      if (value === "") return { ok: false, error: "An edited API key is empty.", payload: "" }
-      if (value.length > 16384) return { ok: false, error: "An API key is too long.", payload: "" }
+      if (value === "") return { ok: false, error: "An edited credential is empty.", payload: "" }
+      if (value.length > 16384) return { ok: false, error: "A credential is too long.", payload: "" }
       keys[id] = { action: "set", value: value }
     } else return { ok: false, error: "A settings row has an invalid action.", payload: "" }
   }

@@ -140,6 +140,12 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
             }
             (s.plan.clone(), cells)
         }
+        VendorSnapshot::Copilot(s) => (
+            s.plan.clone(),
+            s.quotas()
+                .map(|(label, quota)| pct(label, quota.used_pct()))
+                .collect(),
+        ),
         VendorSnapshot::Zai(s) => {
             let mut cells = Vec::new();
             if let Some(w) = &s.session {
@@ -243,6 +249,7 @@ pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
         .into_iter()
         .flatten()
         .max(),
+        VendorSnapshot::Copilot(s) => s.quotas().map(|(_, quota)| quota.used_pct()).max(),
         VendorSnapshot::Zai(s) => [
             s.session.as_ref().map(|w| w.utilization_pct),
             s.weekly.as_ref().map(|w| w.utilization_pct),
@@ -330,6 +337,7 @@ pub(crate) fn sections_with_metadata_for(
                 VendorSnapshot::Anthropic(s) => anthropic_sections(s, now, pace_tolerance),
                 VendorSnapshot::AnthropicApi(s) => anthropic_api_sections(s),
                 VendorSnapshot::Openai(s) => openai_sections(s, now, pace_tolerance),
+                VendorSnapshot::Copilot(s) => copilot_sections(s, now),
                 VendorSnapshot::Zai(s) => zai_sections(s, now, pace_tolerance),
                 VendorSnapshot::Openrouter(s) => openrouter_sections(s),
                 VendorSnapshot::Deepseek(s) => deepseek_sections(s),
@@ -584,6 +592,45 @@ fn openai_sections(
         });
     }
     v
+}
+
+fn copilot_sections(s: &crate::copilot::types::Snapshot, now: DateTime<Utc>) -> SectionBuilder {
+    let mut sections = SectionBuilder::new(vec![Section::Title {
+        left: format!("GitHub Copilot {}", s.plan),
+        right: None,
+    }]);
+    for (label, quota) in s.quotas() {
+        let pct = quota.used_pct();
+        let detail = if quota.unlimited {
+            "Unlimited".to_string()
+        } else {
+            quota
+                .used_and_entitlement()
+                .map(|(used, entitlement)| format!("{used} of {entitlement} used"))
+                .unwrap_or_else(|| format!("{}% remaining", quota.percent_remaining))
+        };
+        sections.push(Section::Spacer);
+        sections.push_metric(
+            Section::Metric {
+                label: label.to_string(),
+                pct: pct.clamp(0, 100) as u16,
+                severity: severity_for(pct),
+                value_label: if quota.unlimited {
+                    "Unlimited".to_string()
+                } else {
+                    format!("{pct}%")
+                },
+                footnote: detail,
+            },
+            s.reset_at,
+        );
+    }
+    sections.push(Section::Spacer);
+    sections.push(Section::Text {
+        label: "Resets".into(),
+        value: countdown::format(s.reset_at, now),
+    });
+    sections
 }
 
 fn zai_sections(s: &crate::usage::ZaiSnapshot, now: DateTime<Utc>, tol: u32) -> SectionBuilder {
@@ -1366,6 +1413,41 @@ mod tests {
             last_error: None,
             fetched_at: Some(now() - chrono::Duration::seconds(15)),
         }))
+    }
+
+    #[test]
+    fn copilot_sections_carry_quota_reset_metadata() {
+        let reset_at = now() + chrono::Duration::days(4);
+        let snapshot = VendorSnapshot::Copilot(crate::copilot::types::Snapshot {
+            plan: "Pro".into(),
+            premium: Some(crate::copilot::types::Quota {
+                percent_remaining: 25,
+                entitlement: Some(300),
+                remaining: Some(75),
+                unlimited: false,
+            }),
+            chat: None,
+            completions: None,
+            reset_at: Some(reset_at),
+        });
+        let sections = sections_with_metadata_for(&ready(snapshot), now(), 5);
+        assert!(matches!(
+            &sections[0].section,
+            Section::Title { left, .. } if left == "GitHub Copilot Pro"
+        ));
+        let metric = sections
+            .iter()
+            .find(|projection| matches!(&projection.section, Section::Metric { .. }))
+            .expect("premium metric");
+        assert_eq!(metric.reset_at, Some(reset_at));
+        assert!(matches!(
+            &metric.section,
+            Section::Metric { label, pct, value_label, footnote, .. }
+                if label == "Premium requests"
+                    && *pct == 75
+                    && value_label == "75%"
+                    && footnote == "225 of 300 used"
+        ));
     }
 
     #[test]

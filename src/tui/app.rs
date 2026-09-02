@@ -526,6 +526,15 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                     .await?;
             Ok(outcome.into())
         }
+        VendorId::Copilot => {
+            let token = config.copilot.resolve_token()?;
+            let cache = crate::cache::Cache::for_vendor("copilot")?;
+            let endpoints = crate::copilot::fetch::Endpoints::default();
+            let outcome =
+                crate::copilot::fetch_snapshot(client, &token, &cache, &endpoints, DEFAULT_TTL)
+                    .await?;
+            Ok(outcome.into())
+        }
         VendorId::Deepseek => {
             let api_key = crate::config::resolve_api_key(
                 "DeepSeek",

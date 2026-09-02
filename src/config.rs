@@ -4,6 +4,7 @@
 //! ```toml
 //! [anthropic]  enabled = true
 //! [openai]     enabled = true   # Codex OAuth from ~/.codex/auth.json
+//! [copilot]    enabled = false  # GitHub CLI OAuth, or an explicit env override
 //! [zai]        enabled = true
 //! [openrouter] enabled = true
 //! [deepseek]   enabled = false
@@ -41,6 +42,7 @@ pub struct Config {
     pub anthropic: AnthropicConfig,
     pub anthropic_api: AnthropicApiConfig,
     pub openai: OpenAiConfig,
+    pub copilot: CopilotConfig,
     pub zai: ZaiConfig,
     pub openrouter: OpenRouterConfig,
     pub deepseek: DeepseekConfig,
@@ -522,6 +524,45 @@ impl Default for OpenAiConfig {
             accounts: Vec::new(),
             admin_key_env: "OPENAI_ADMIN_KEY".to_string(),
         }
+    }
+}
+
+/// GitHub Copilot quota from the private endpoint used by VS Code. The token
+/// comes from an explicit environment override or the official GitHub CLI;
+/// this app never reads, copies, or writes GitHub credential stores.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CopilotConfig {
+    pub enabled: bool,
+    /// Path to the official GitHub CLI. Unset looks `gh` up on `PATH`, which
+    /// is how `gh` is normally installed; set it to pin the executable.
+    pub gh_binary: Option<PathBuf>,
+}
+
+impl CopilotConfig {
+    pub fn resolve_token(&self) -> Result<String> {
+        self.resolve_token_with(
+            |name| std::env::var_os(name),
+            &crate::copilot::credentials::SystemGhAuthTokenRunner,
+        )
+    }
+
+    fn resolve_token_with(
+        &self,
+        environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+        runner: &impl crate::copilot::credentials::GhAuthTokenRunner,
+    ) -> Result<String> {
+        if let Some(value) = environment("GITHUB_COPILOT_TOKEN") {
+            let token = value.into_string().map_err(|_| {
+                AppError::Credentials(
+                    "GitHub Copilot: GITHUB_COPILOT_TOKEN is not valid UTF-8.".into(),
+                )
+            })?;
+            if !token.is_empty() {
+                return Ok(token);
+            }
+        }
+        crate::copilot::credentials::resolve_with(runner, self.gh_binary.as_deref())
     }
 }
 
@@ -1022,7 +1063,7 @@ impl Config {
                 config.expand_paths();
                 config.validate()?;
                 #[cfg(unix)]
-                config.protect_inline_api_keys(path)?;
+                config.protect_inline_secrets(path)?;
                 Ok(config)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -1051,10 +1092,11 @@ impl Config {
         }
     }
 
-    /// Explicitly enumerate every inline API-key field. Adding a new API-key
-    /// vendor must add it here so its config file receives the same protection.
+    /// Explicitly enumerate every inline credential field. Adding a new
+    /// credential vendor must add it here so its config receives the same
+    /// protection.
     #[cfg(unix)]
-    fn has_inline_api_keys(&self) -> bool {
+    fn has_inline_secrets(&self) -> bool {
         [
             self.zai.api_key.as_deref(),
             self.openrouter.api_key.as_deref(),
@@ -1079,21 +1121,21 @@ impl Config {
     }
 
     #[cfg(unix)]
-    fn protect_inline_api_keys(&self, path: &Path) -> Result<()> {
-        if !self.has_inline_api_keys() {
+    fn protect_inline_secrets(&self, path: &Path) -> Result<()> {
+        if !self.has_inline_secrets() {
             return Ok(());
         }
 
         let metadata = std::fs::metadata(path).map_err(|_| {
             AppError::Credentials(format!(
-                "config at {} contains inline api_key values but its permissions could not be checked; fix permissions or move keys to environment variables",
+                "config at {} contains inline credentials but its permissions could not be checked; fix permissions or move credentials to environment variables",
                 path.display()
             ))
         })?;
         if inline_key_permission_decision(metadata.mode()) == InlineKeyPermissionDecision::Tighten {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|_| {
                 AppError::Credentials(format!(
-                    "config at {} contains inline api_key values but is group/other-readable and could not be tightened to 0600; fix permissions or move keys to environment variables",
+                    "config at {} contains inline credentials but is group/other-readable and could not be tightened to 0600; fix permissions or move credentials to environment variables",
                     path.display()
                 ))
             })?;
@@ -1106,6 +1148,7 @@ impl Config {
             VendorId::Anthropic => self.anthropic.enabled,
             VendorId::AnthropicApi => self.anthropic_api.enabled,
             VendorId::Openai => self.openai.enabled,
+            VendorId::Copilot => self.copilot.enabled,
             VendorId::Zai => self.zai.enabled,
             VendorId::Openrouter => self.openrouter.enabled,
             VendorId::Deepseek => self.deepseek.enabled,
@@ -1413,6 +1456,7 @@ mod tests {
         assert!(c.is_enabled(VendorId::Openrouter));
         for opt_in in [
             VendorId::AnthropicApi,
+            VendorId::Copilot,
             VendorId::Deepseek,
             VendorId::Kimi,
             VendorId::Kilo,
@@ -1436,14 +1480,15 @@ mod tests {
         assert!(!config.is_enabled(VendorId::OpenCodeGo));
         assert_eq!(config.opencode_go.api_key_env, "OPENCODE_GO_API_KEY");
         assert!(config.opencode_go.api_key.is_none());
+        assert!(!config.is_enabled(VendorId::Copilot));
     }
 
     #[cfg(unix)]
     #[test]
-    fn opencode_go_inline_key_is_protected_like_other_api_keys() {
+    fn inline_credentials_are_protected() {
         let mut config = Config::default();
         config.opencode_go.api_key = Some("<redacted>".to_string());
-        assert!(config.has_inline_api_keys());
+        assert!(config.has_inline_secrets());
     }
 
     #[cfg(unix)]
@@ -1455,7 +1500,7 @@ mod tests {
             api_key_env: None,
             api_key: Some("<redacted>".into()),
         });
-        assert!(config.has_inline_api_keys());
+        assert!(config.has_inline_secrets());
     }
 
     #[test]
@@ -1763,6 +1808,49 @@ enabled = false
         unsafe { std::env::remove_var(var) };
         let got = resolve_api_key("Zai", var, Some("inline-key")).unwrap();
         assert_eq!(got, "inline-key");
+    }
+
+    #[test]
+    fn copilot_token_prefers_explicit_environment_over_gh_cli() {
+        struct NeverRun;
+        impl crate::copilot::credentials::GhAuthTokenRunner for NeverRun {
+            fn run(
+                &self,
+                _: &crate::copilot::credentials::GhAuthTokenCommand,
+            ) -> std::io::Result<crate::copilot::credentials::GhAuthTokenOutput> {
+                panic!("environment override must not invoke gh")
+            }
+        }
+
+        let token = CopilotConfig::default()
+            .resolve_token_with(
+                |name| (name == "GITHUB_COPILOT_TOKEN").then(|| "from-environment".into()),
+                &NeverRun,
+            )
+            .unwrap();
+        assert_eq!(token, "from-environment");
+    }
+
+    #[test]
+    fn copilot_token_uses_injected_gh_cli_and_hides_failure_output() {
+        struct FailedGh;
+        impl crate::copilot::credentials::GhAuthTokenRunner for FailedGh {
+            fn run(
+                &self,
+                _: &crate::copilot::credentials::GhAuthTokenCommand,
+            ) -> std::io::Result<crate::copilot::credentials::GhAuthTokenOutput> {
+                Ok(crate::copilot::credentials::GhAuthTokenOutput {
+                    success: false,
+                    stdout: b"never-echo-gh-output".to_vec(),
+                })
+            }
+        }
+        let error = CopilotConfig::default()
+            .resolve_token_with(|_| None, &FailedGh)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("gh auth login --web"));
+        assert!(!error.contains("never-echo-gh-output"));
     }
 
     #[test]
