@@ -23,12 +23,16 @@ Each release is also published at
   alias and are unchanged.
 
 - Kimi's quota rows drop their `55 / 100 · 45 left` counters and show the
-  plain `Resets in 3d 20h` every other window row shows. Kimi reports each
-  quota as used/limit against a limit of 100, so the pair was the percentage
-  in longhand — the bar and its `55%` directly above already said it, three
+  plain `Resets in 3d 20h` every other window row shows. Kimi was the only
+  vendor spelling a ratio out beside the bar that already draws it, and the
+  raw figures stay available through the `{kimi_*_used}`, `{kimi_*_limit}`
+  and `{kimi_*_remaining}` placeholders for anyone who wants them in a
+  custom format — the bar and its `55%` directly above already said it, three
   times over. Kimi's rows now go through the shared `push_window` instead of
   a hand-rolled near-copy of it, so the panel and the Waybar tooltip cannot
-  drift apart again. The tooltip is 16 columns narrower for it.
+  drift apart again. The tooltip is 16 columns narrower for it. The shared
+  `WindowRow::with_detail` hook the old rows used goes with them — Kimi was
+  its only caller.
 
 ## [1.9.1] — 2026-08-30
 
