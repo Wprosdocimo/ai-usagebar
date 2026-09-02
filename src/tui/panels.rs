@@ -166,10 +166,13 @@ pub fn compact_cells(snapshot: &VendorSnapshot) -> (String, Vec<(String, PaceSev
         VendorSnapshot::SuperGrok(s) => (s.plan.clone(), vec![pct(s.period.short(), s.weekly_pct)]),
         VendorSnapshot::Antigravity(s) => (
             s.plan.clone(),
-            vec![
-                pct("S", s.session.utilization_pct),
-                pct("W", s.weekly.utilization_pct),
-            ],
+            [
+                s.session.as_ref().map(|w| pct("S", w.utilization_pct)),
+                s.weekly.as_ref().map(|w| pct("W", w.utilization_pct)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
         ),
         VendorSnapshot::Cursor(s) => (
             s.plan.clone(),
@@ -251,9 +254,15 @@ pub fn headline_pct(snapshot: &VendorSnapshot) -> Option<i32> {
         .flatten()
         .max(),
         VendorSnapshot::Kimi(s) => Some(s.weekly_pct().max(s.window_pct())),
-        VendorSnapshot::Antigravity(s) => {
-            Some(s.session.utilization_pct.max(s.weekly.utilization_pct))
-        }
+        VendorSnapshot::Antigravity(s) => [
+            s.session.as_ref().map(|w| w.utilization_pct),
+            s.weekly.as_ref().map(|w| w.utilization_pct),
+            s.third_party_session.as_ref().map(|w| w.utilization_pct),
+            s.third_party_weekly.as_ref().map(|w| w.utilization_pct),
+        ]
+        .into_iter()
+        .flatten()
+        .max(),
         VendorSnapshot::Cursor(s) => (!s.unlimited).then_some(s.total_pct),
         VendorSnapshot::Minimax(s) => Some(s.session.utilization_pct.max(s.weekly.utilization_pct)),
         VendorSnapshot::Kiro(s) => Some(s.pct()),
@@ -675,15 +684,26 @@ fn antigravity_sections(
         right: None,
     }]);
     for (heading, primary, third_party) in [
-        ("Session", &s.session, s.third_party_session.as_ref()),
-        ("Weekly", &s.weekly, s.third_party_weekly.as_ref()),
+        (
+            "Session",
+            s.session.as_ref(),
+            s.third_party_session.as_ref(),
+        ),
+        ("Weekly", s.weekly.as_ref(), s.third_party_weekly.as_ref()),
     ] {
+        // A cadence no bucket reported gets no heading either — an empty
+        // "Session" with nothing under it reads as a failed fetch.
+        if primary.is_none() && third_party.is_none() {
+            continue;
+        }
         v.push(Section::Spacer);
         v.push(Section::Text {
             label: heading.into(),
             value: String::new(),
         });
-        push_window(&mut v, GROUP_PRIMARY, primary, now, 5, false);
+        if let Some(w) = primary {
+            push_window(&mut v, GROUP_PRIMARY, w, now, 5, false);
+        }
         if let Some(w) = third_party {
             push_window(&mut v, GROUP_THIRD_PARTY, w, now, 5, false);
         }

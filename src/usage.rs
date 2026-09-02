@@ -354,8 +354,10 @@ pub enum VendorSnapshot {
 }
 
 /// Google Antigravity 2.0 / CLI snapshot. The API groups models into Gemini
-/// and third-party (Claude/GPT) buckets, and each group carries its own 5-hour
-/// and weekly window — four independent windows in total.
+/// and third-party (Claude/GPT) buckets, and each group may carry a 5-hour and
+/// a weekly window — up to four, and not every product or plan offers all of
+/// them. Antigravity CLI 1.1.22 returns weekly buckets only, so every window is
+/// optional and a snapshot is valid when at least one arrived.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AntigravitySnapshot {
     pub plan: String,
@@ -363,9 +365,9 @@ pub struct AntigravitySnapshot {
     /// cache written for one Google account is not served for another.
     pub account: String,
     /// Gemini group, 5-hour window.
-    pub session: UsageWindow,
+    pub session: Option<UsageWindow>,
     /// Gemini group, weekly window.
-    pub weekly: UsageWindow,
+    pub weekly: Option<UsageWindow>,
     /// Claude/GPT group, 5-hour window.
     pub third_party_session: Option<UsageWindow>,
     /// Claude/GPT group, weekly window.
