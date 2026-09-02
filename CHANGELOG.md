@@ -9,6 +9,8 @@ Each release is also published at
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-09-02
+
 ### Added
 
 - **GitHub Copilot** is supported as a vendor, selectable with
@@ -1932,7 +1934,8 @@ vendors. Highlights:
 - Live API smoke test suite (`make smoke`) that exercises the real
   undocumented endpoints to detect schema drift before users do.
 
-[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.9.1...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-usagebar/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.9.1...v1.10.0
 [1.9.1]: https://github.com/akitaonrails/ai-usagebar/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/akitaonrails/ai-usagebar/compare/v1.7.0...v1.8.0
