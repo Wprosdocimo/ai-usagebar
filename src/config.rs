@@ -534,6 +534,9 @@ impl Default for OpenAiConfig {
 #[serde(default)]
 pub struct CopilotConfig {
     pub enabled: bool,
+    /// Path to the official GitHub CLI. Unset looks `gh` up on `PATH`, which
+    /// is how `gh` is normally installed; set it to pin the executable.
+    pub gh_binary: Option<PathBuf>,
 }
 
 impl CopilotConfig {
@@ -559,7 +562,7 @@ impl CopilotConfig {
                 return Ok(token);
             }
         }
-        crate::copilot::credentials::resolve_with(runner)
+        crate::copilot::credentials::resolve_with(runner, self.gh_binary.as_deref())
     }
 }
 

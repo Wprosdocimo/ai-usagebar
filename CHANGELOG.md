@@ -9,6 +9,26 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Added
+
+- **GitHub Copilot** is supported as a vendor, selectable with
+  `--vendor copilot` and enabled with `[copilot]` in config. It shows the
+  premium-request, Chat and Completions quotas with their reset, from the
+  `api.github.com/copilot_internal/user` endpoint the VS Code extension uses.
+  There is no key to paste: the OAuth token comes from `gh auth token`, so an
+  existing `gh auth login` is the whole setup, and `GITHUB_COPILOT_TOKEN`
+  overrides it. `gh` is looked up on `PATH` — it has no canonical install
+  location — so `[copilot] gh_binary` pins the executable when that matters.
+  The token is only ever read: it is used in one outgoing `Authorization`
+  header and never copied, cached, logged, or echoed in an error.
+
+### Fixed
+
+- A credential typed into the Omarchy settings panel is now scrubbed from the
+  panel's memory even when the save *fails*. It was only cleared on the success
+  path, so a failed save left the pasted value in a long-lived QML shell. This
+  affects every key-authenticated vendor, not just the new one.
+
 ## [1.9.1] — 2026-08-30
 
 ### Fixed

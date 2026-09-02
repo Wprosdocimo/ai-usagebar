@@ -12,15 +12,19 @@ use crate::vendor::vendor_secret_env_vars_to_remove;
 /// inspectable in tests and prevents a shell from entering this path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhAuthTokenCommand {
-    pub program: &'static str,
+    pub program: std::path::PathBuf,
     pub args: [&'static str; 2],
     pub env_remove: Vec<&'static str>,
 }
 
 impl GhAuthTokenCommand {
-    pub fn standard() -> Self {
+    /// `gh` has no canonical install path across distributions, so unlike
+    /// `grok` it is looked up on `PATH` by default. That makes the binary an
+    /// ambient choice, which is why `[copilot] gh_binary` exists: point it at
+    /// the trusted executable and the lookup stops being ambient.
+    pub fn standard(gh_binary: Option<&std::path::Path>) -> Self {
         Self {
-            program: "gh",
+            program: gh_binary.map_or_else(|| std::path::PathBuf::from("gh"), Into::into),
             args: ["auth", "token"],
             // `gh auth token` must use its saved OAuth login, rather than an
             // arbitrary provider token inherited from this process.
@@ -45,7 +49,7 @@ pub struct SystemGhAuthTokenRunner;
 
 impl GhAuthTokenRunner for SystemGhAuthTokenRunner {
     fn run(&self, command: &GhAuthTokenCommand) -> io::Result<GhAuthTokenOutput> {
-        let mut process = Command::new(command.program);
+        let mut process = Command::new(&command.program);
         process
             .args(command.args)
             .stdin(Stdio::null())
@@ -62,8 +66,11 @@ impl GhAuthTokenRunner for SystemGhAuthTokenRunner {
     }
 }
 
-pub fn resolve_with(runner: &impl GhAuthTokenRunner) -> Result<String> {
-    let command = GhAuthTokenCommand::standard();
+pub fn resolve_with(
+    runner: &impl GhAuthTokenRunner,
+    gh_binary: Option<&std::path::Path>,
+) -> Result<String> {
+    let command = GhAuthTokenCommand::standard(gh_binary);
     let output = match runner.run(&command) {
         Ok(output) => output,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -120,14 +127,44 @@ mod tests {
             command: RefCell::new(None),
         };
 
-        assert_eq!(resolve_with(&runner).unwrap(), "test-github-oauth-token");
+        assert_eq!(
+            resolve_with(&runner, None).unwrap(),
+            "test-github-oauth-token"
+        );
         let command = runner.command.into_inner().unwrap();
-        assert_eq!(command.program, "gh");
+        assert_eq!(command.program, std::path::Path::new("gh"));
         assert_eq!(command.args, ["auth", "token"]);
         assert!(command.env_remove.contains(&"ZAI_API_KEY"));
         assert!(command.env_remove.contains(&"GITHUB_COPILOT_TOKEN"));
         assert!(command.env_remove.contains(&"GH_TOKEN"));
         assert!(command.env_remove.contains(&"GITHUB_TOKEN"));
+    }
+
+    /// `gh` has no canonical path, so `PATH` is the sensible default — but it
+    /// is still an ambient choice about which binary runs on every refresh.
+    /// `[copilot] gh_binary` is how a user pins it, so the setting has to
+    /// actually reach the spawned command.
+    #[test]
+    fn a_configured_gh_binary_replaces_the_path_lookup() {
+        let pinned = std::path::Path::new("/opt/github/bin/gh");
+        assert_eq!(
+            GhAuthTokenCommand::standard(Some(pinned)).program,
+            pinned,
+            "a pinned binary must be used verbatim"
+        );
+        assert_eq!(
+            GhAuthTokenCommand::standard(None).program,
+            std::path::Path::new("gh"),
+            "unset still means the PATH lookup"
+        );
+        // The rest of the boundary is fixed either way.
+        for command in [
+            GhAuthTokenCommand::standard(Some(pinned)),
+            GhAuthTokenCommand::standard(None),
+        ] {
+            assert_eq!(command.args, ["auth", "token"]);
+            assert!(command.env_remove.contains(&"GITHUB_TOKEN"));
+        }
     }
 
     #[test]
@@ -140,7 +177,7 @@ mod tests {
             command: RefCell::new(None),
         };
 
-        let error = resolve_with(&runner).unwrap_err().to_string();
+        let error = resolve_with(&runner, None).unwrap_err().to_string();
         assert!(error.contains("gh auth login --web"));
         assert!(!error.contains("private-token-or-error"));
     }

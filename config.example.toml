@@ -119,6 +119,10 @@ enabled = true
 # Set GITHUB_COPILOT_TOKEN only as an optional explicit environment override.
 # In Omarchy Settings, select GitHub Copilot as Primary Provider to enable it.
 enabled = false
+# Path to the official GitHub CLI. Unset looks `gh` up on PATH, which is how it
+# is normally installed; set this to pin the executable that runs on every
+# refresh.
+# gh_binary = "/usr/bin/gh"
 
 [zai]
 enabled = true
