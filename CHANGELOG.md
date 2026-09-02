@@ -9,6 +9,31 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Fixed
+
+- Kimi leads with its rolling 5h window and carries the weekly quota under it,
+  the order every other two-window vendor uses — Claude's `Session (5h)` above
+  `Weekly (7d)`, Codex's `Codex 5h` above `Codex weekly`, GLM's `Session (5h)`
+  above `Weekly`. It was the one provider drawing the long window first, so a
+  glance across vendors compared different rows. The Waybar tooltip and the
+  shared panel projection both move, which carries the Omarchy Quattro panel,
+  the KDE plasmoid, the TUI detail panel, the TUI Overview row (`5h` before
+  `wk`) and `usage --json` with them. Kimi's Waybar bar text, the macOS menu
+  bar and the GNOME dropdown already read the 5h window off the `session_*`
+  alias and are unchanged.
+
+- Kimi's quota rows drop their `55 / 100 · 45 left` counters and show the
+  plain `Resets in 3d 20h` every other window row shows. Kimi was the only
+  vendor spelling a ratio out beside the bar that already draws it, and the
+  raw figures stay available through the `{kimi_*_used}`, `{kimi_*_limit}`
+  and `{kimi_*_remaining}` placeholders for anyone who wants them in a
+  custom format — the bar and its `55%` directly above already said it, three
+  times over. Kimi's rows now go through the shared `push_window` instead of
+  a hand-rolled near-copy of it, so the panel and the Waybar tooltip cannot
+  drift apart again. The tooltip is 16 columns narrower for it. The shared
+  `WindowRow::with_detail` hook the old rows used goes with them — Kimi was
+  its only caller.
+
 ## [1.9.1] — 2026-08-30
 
 ### Fixed
