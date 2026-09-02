@@ -32,8 +32,10 @@ has one pool, so it maps `kiro_pct` to both percentage slots.
 
 Claude and Codex also provide `*_elapsed`, `*_pace`, and `*_bar` families.
 Z.AI and MiniMax provide elapsed aliases plus provider-specific pace families.
-Antigravity provides elapsed values for all four windows plus
-`{session_model}`, `{weekly_model}`, `{scoped_model}`, and `{extra_model}`.
+Antigravity provides elapsed values plus `{session_model}`, `{weekly_model}`,
+`{scoped_model}`, and `{extra_model}` for whichever of its four windows the
+running product reports — a product that exposes only weekly buckets leaves the
+5-hour placeholders empty rather than reporting a figure it never received.
 Provider-specific families such as `{oai_*}`, `{zai_*}`, and `{or_*}` are empty
 for providers that do not define them.
 

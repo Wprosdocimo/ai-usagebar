@@ -61,7 +61,9 @@ Each release is also published at
   with nothing under it no longer draws an empty heading, and the placeholders
   for a window that did not arrive are empty rather than claiming a figure.
   Rejecting a summary with nothing recognisable in it is unchanged, and it
-  still names the buckets it did receive.
+  still names the buckets it did receive. `docs/vendor-endpoints.md` gains the
+  Antigravity row it never had — it was the only provider missing from that
+  table — and the placeholder reference no longer promises all four windows.
 
 ## [1.9.1] — 2026-08-30
 
