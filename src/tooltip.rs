@@ -30,20 +30,17 @@ pub enum Line {
 /// plain row every vendor drew before pacing reached the tooltip: bar +
 /// percentage, then `⏱  Resets in …`.
 ///
-/// `glyph` and `detail` are inserted into Pango markup as-is, so a caller
-/// passing anything vendor-reported must [`escape`] it first.
+/// `glyph` is inserted into Pango markup as-is, so a caller passing anything
+/// vendor-reported must [`escape`] it first.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct WindowRow<'a> {
+pub struct WindowRow {
     /// Elapsed-time marker drawn inside the bar (`--tooltip-pace-pts`).
     pub marker_pct: Option<i32>,
     /// Pace glyph appended after the bold percentage (`↑` / `→` / `↓`).
     pub glyph: Option<&'static str>,
-    /// Extra dim text appended to the reset line — Kimi's `2 / 100` counters,
-    /// which the bar's percentage summarises but does not spell out.
-    pub detail: Option<&'a str>,
 }
 
-impl<'a> WindowRow<'a> {
+impl WindowRow {
     /// The Anthropic tooltip's pace convention in one place (mirrors
     /// `widget::render::pick_pace_glyph`): the ratio glyph by default, and with
     /// `point_mode` (`--tooltip-pace-pts`) the point-delta glyph plus the
@@ -67,15 +64,6 @@ impl<'a> WindowRow<'a> {
             } else {
                 p.ratio_pace.glyph()
             }),
-            detail: None,
-        }
-    }
-
-    /// Same row, carrying an extra dim fragment on the reset line.
-    pub fn with_detail(self, detail: &'a str) -> Self {
-        Self {
-            detail: Some(detail),
-            ..self
         }
     }
 }
@@ -85,7 +73,7 @@ impl<'a> WindowRow<'a> {
 ///
 /// `elapsed` draws the pace marker inside the bar; pass `None` for a plain bar.
 /// Keep this signature stable for library callers — a row that also wants the
-/// pace glyph or a detail fragment goes through [`push_window_with_row`].
+/// pace glyph goes through [`push_window_with_row`].
 pub fn push_window(
     lines: &mut Vec<Line>,
     label: &str,
@@ -114,14 +102,13 @@ pub fn push_window_with_row(
     w: &UsageWindow,
     theme: &Theme,
     now: DateTime<Utc>,
-    row: WindowRow<'_>,
+    row: WindowRow,
 ) {
     let color = severity_color(severity_for(w.utilization_pct), theme);
     let bar = pango::progress_bar(w.utilization_pct, color, theme, row.marker_pct);
     let fg = &theme.fg;
     let dim = &theme.dim;
     let glyph = row.glyph.map(|g| format!(" {g}")).unwrap_or_default();
-    let detail = row.detail.map(|d| format!(" · {d}")).unwrap_or_default();
     lines.push(Line::Body(format!(
         " <span foreground='{fg}'>{label}</span>"
     )));
@@ -130,7 +117,7 @@ pub fn push_window_with_row(
         pct = w.utilization_pct
     )));
     lines.push(Line::Body(format!(
-        " <span foreground='{dim}'>  ⏱  Resets in {cd}{detail}</span>",
+        " <span foreground='{dim}'>  ⏱  Resets in {cd}</span>",
         cd = escape(&countdown::format(w.resets_at, now))
     )));
 }
@@ -279,7 +266,7 @@ mod tests {
         }
     }
 
-    fn row_markup(w: &UsageWindow, row: WindowRow<'_>) -> String {
+    fn row_markup(w: &UsageWindow, row: WindowRow) -> String {
         let mut lines = Vec::new();
         push_window_with_row(&mut lines, "  L", w, &theme(), at(12), row);
         render_bordered(&lines, &theme())
@@ -338,13 +325,13 @@ mod tests {
     }
 
     #[test]
-    fn the_glyph_and_detail_reach_the_rendered_row() {
+    fn the_glyph_reaches_the_rendered_row() {
         let w = window(40, 3);
-        let out = row_markup(
-            &w,
-            WindowRow::paced(&w, at(12), 5, false).with_detail("2 / 100"),
-        );
+        let out = row_markup(&w, WindowRow::paced(&w, at(12), 5, false));
         assert!(out.contains("40% →"), "{out}");
-        assert!(out.contains("Resets in 3h 00m · 2 / 100"), "{out}");
+        assert!(out.contains("Resets in 3h 00m"), "{out}");
+        // The reset line carries nothing after the countdown now that no
+        // vendor appends a fragment to it.
+        assert!(!out.contains("Resets in 3h 00m ·"), "{out}");
     }
 }

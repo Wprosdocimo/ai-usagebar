@@ -76,9 +76,9 @@ fn the_zai_mcp_placeholders_the_macos_menu_bar_reads_keep_their_names() {
 }
 
 /// `push_window` is the shared tooltip row helper. Its sixth argument stayed an
-/// `Option<i32>` marker when the row gained a pace glyph and a detail fragment:
-/// those live on `WindowRow` behind `push_window_with_row`, so a library caller
-/// written against the original six-argument form still compiles.
+/// `Option<i32>` marker when the row gained a pace glyph: that lives on
+/// `WindowRow` behind `push_window_with_row`, so a library caller written
+/// against the original six-argument form still compiles.
 #[test]
 fn push_window_keeps_its_option_marker_api() {
     let now = Utc.with_ymd_and_hms(2026, 8, 19, 12, 0, 0).unwrap();
