@@ -52,6 +52,17 @@ Each release is also published at
   path, so a failed save left the pasted value in a long-lived QML shell. This
   affects every key-authenticated vendor, not just the new one.
 
+- Antigravity renders whatever windows the running product reports instead of
+  failing when a 5-hour bucket is absent (#139). Antigravity CLI 1.1.22 returns
+  weekly buckets only, so requiring a Gemini 5h window threw away two perfectly
+  good ones and failed the whole vendor with "quota summary has no Gemini 5h
+  bucket". All four windows are optional now — as Z.AI's already were — and a
+  snapshot needs one recognised bucket rather than two specific ones. A cadence
+  with nothing under it no longer draws an empty heading, and the placeholders
+  for a window that did not arrive are empty rather than claiming a figure.
+  Rejecting a summary with nothing recognisable in it is unchanged, and it
+  still names the buckets it did receive.
+
 ## [1.9.1] — 2026-08-30
 
 ### Fixed
