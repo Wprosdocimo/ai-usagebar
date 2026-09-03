@@ -9,6 +9,14 @@ Each release is also published at
 
 ## [Unreleased]
 
+### Changed
+
+- `docs/vendor-endpoints.md` records which providers have been evaluated and not
+  added, and the credential bar a new one has to clear (#146, #147). Xiaomi MiMo
+  is blocked on Xiaomi: its quota routes need a web SSO session, not the plan's
+  API key. Alibaba Cloud Model Studio's Token Plan is wanted and fits the
+  existing patterns, pending the evidence to build it against.
+
 ## [1.10.0] — 2026-09-02
 
 ### Added
